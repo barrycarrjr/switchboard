@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('sb', {
   getUpdateRepo: () => ipcRenderer.invoke('sb:getUpdateRepo'),
   setUpdateRepo: (slug) => ipcRenderer.invoke('sb:setUpdateRepo', slug),
   onUpdateAvailable: (cb) => ipcRenderer.on('sb:updateAvailable', (_e, info) => cb(info)),
+  onUpdateProgress: (cb) => ipcRenderer.on('sb:updateProgress', (_e, p) => cb(p)),
   onRefresh: (cb) => ipcRenderer.on('sb:refresh', cb),
   onNavigate: (cb) => ipcRenderer.on('sb:navigate', (_e, hash) => cb(hash)),
 });

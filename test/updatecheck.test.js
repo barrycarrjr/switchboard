@@ -72,3 +72,25 @@ test('downloadUpdate writes the public asset into the target dir', async () => {
   assert.equal(path.basename(file), 'Switchboard-Setup-0.6.0.exe');
   assert.deepEqual(fs.readFileSync(file), bytes);
 });
+
+test('downloadUpdate streams with progress when the response has a body reader', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-u2-'));
+  const parts = [Buffer.from('MZ part one '), Buffer.from('part two')];
+  const total = parts[0].length + parts[1].length;
+  let i = 0;
+  const seen = [];
+  const file = await downloadUpdate({
+    repo: 'o/r',
+    tag: 'v0.6.0',
+    assetUrl: 'https://example.invalid/dl/Switchboard-Setup-0.6.0.exe',
+    dir,
+    onProgress: (received, t) => seen.push([received, t]),
+    fetchImpl: async () => ({
+      ok: true,
+      headers: { get: () => String(total) },
+      body: { getReader: () => ({ read: async () => (i < parts.length ? { done: false, value: parts[i++] } : { done: true }) }) },
+    }),
+  });
+  assert.equal(fs.readFileSync(file).toString(), 'MZ part one part two');
+  assert.deepEqual(seen, [[parts[0].length, total], [total, total]]);
+});

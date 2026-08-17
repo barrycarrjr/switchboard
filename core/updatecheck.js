@@ -68,14 +68,30 @@ export async function checkAppUpdate({ repo, currentVersion, fetchImpl = fetch, 
   return { available: newer, tag, assetUrl };
 }
 
-/** Download the release installer into dir and return its path. */
-export async function downloadUpdate({ repo, tag, assetUrl, dir, fetchImpl = fetch, execFn = run }) {
+/** Download the release installer into dir and return its path. Reports progress. */
+export async function downloadUpdate({ repo, tag, assetUrl, dir, fetchImpl = fetch, execFn = run, onProgress = null }) {
   if (assetUrl) {
     const resp = await fetchImpl(assetUrl);
     if (resp.ok) {
       const name = decodeURIComponent(new URL(assetUrl).pathname.split('/').pop());
       const file = path.join(dir, name);
-      fs.writeFileSync(file, Buffer.from(await resp.arrayBuffer()));
+      const total = Number(resp.headers?.get?.('content-length')) || null;
+      if (resp.body?.getReader) {
+        const reader = resp.body.getReader();
+        const chunks = [];
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(Buffer.from(value));
+          received += value.byteLength;
+          if (onProgress) onProgress(received, total);
+        }
+        fs.writeFileSync(file, Buffer.concat(chunks));
+      } else {
+        fs.writeFileSync(file, Buffer.from(await resp.arrayBuffer()));
+        if (onProgress) onProgress(1, 1);
+      }
       return file;
     }
   }

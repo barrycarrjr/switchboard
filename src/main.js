@@ -443,7 +443,19 @@ ipcMain.handle('sb:updateCheck', () => {
 });
 
 ipcMain.handle('sb:updateRun', async (_e, tag, assetUrl) => {
-  const exe = await downloadUpdate({ repo: effectiveUpdateRepo(), tag, assetUrl, dir: app.getPath('temp') });
+  let lastSent = 0;
+  const exe = await downloadUpdate({
+    repo: effectiveUpdateRepo(),
+    tag,
+    assetUrl,
+    dir: app.getPath('temp'),
+    onProgress: (received, total) => {
+      const now = Date.now();
+      if (now - lastSent < 200 && received !== total) return; // do not flood the renderer
+      lastSent = now;
+      win?.webContents.send('sb:updateProgress', { received, total });
+    },
+  });
   // The installer closes the running app, upgrades in place, and relaunches.
   spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
   return { ok: true };

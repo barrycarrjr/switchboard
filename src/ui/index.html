@@ -70,6 +70,8 @@
   .menu button{display:block;width:100%;text-align:left;font:inherit;font-size:.85rem;border:none;background:none;padding:7px 11px;border-radius:6px;cursor:pointer}
   .menu button:hover{background:#eef1f5}
   .menu button.danger{color:var(--bad)}
+  .spin{display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;vertical-align:-2px;margin-right:6px;animation:sbspin .8s linear infinite}
+  @keyframes sbspin{to{transform:rotate(360deg)}}
   .prov .pi{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff;flex:0 0 auto}
   .prov .pm{flex:1;min-width:0}
   .prov .pm b{font-size:.9rem;display:block}
@@ -720,11 +722,10 @@ async function renderAbout() {
     checkBtn.textContent = 'Check for updates';
     verNote.style.display = 'block';
     if (r.available) {
-      verNote.innerHTML = `A newer version is available: <b>${esc(r.tag)}</b>. Use the Update button in the header, or click <a>update now</a>.`;
-      verNote.querySelector('a').addEventListener('click', async () => {
-        verNote.textContent = 'Downloading; the installer will restart Switchboard.';
-        try { await sb.updateRun(r.tag, r.assetUrl ?? null); } catch (e) { verNote.textContent = 'Update failed: ' + (e.message || e); }
-      });
+      verNote.innerHTML = `A newer version is available: <b>${esc(r.tag)}</b>. `;
+      const go = el('button', 'btn primary', `Update to ${esc(r.tag)}`);
+      go.addEventListener('click', () => runUpdate(r, go, 'Launching installer…'));
+      verNote.appendChild(go);
       showUpdateButton(r);
     } else if (r.error === 'no-repo') {
       verNote.textContent = 'No update source configured yet.';
@@ -791,23 +792,40 @@ const UPDATE_ERRORS = {
   'api': 'Update check failed; try again later.',
 };
 
+let updateBusy = false;
+let progressTarget = null;
+sb.onUpdateProgress(({ received, total }) => {
+  if (!progressTarget) return;
+  const pct = total ? Math.round((received / total) * 100) : null;
+  progressTarget.innerHTML = `<span class="spin"></span>Downloading${pct != null ? ' ' + pct + '%' : '…'}`;
+});
+
+async function runUpdate(info, button, doneText) {
+  if (updateBusy) return;
+  updateBusy = true;
+  button.disabled = true;
+  progressTarget = button;
+  button.innerHTML = '<span class="spin"></span>Starting download…';
+  try {
+    await sb.updateRun(info.tag, info.assetUrl ?? null);
+    progressTarget = null;
+    button.innerHTML = doneText;
+    toast('Installer launched. Switchboard will close, upgrade, and restart itself.');
+  } catch (e) {
+    updateBusy = false;
+    progressTarget = null;
+    button.disabled = false;
+    button.textContent = `Update to ${info.tag}`;
+    toast('Update failed: ' + (e.message || e));
+  }
+}
+
 function showUpdateButton(info) {
   const v = $('#ver');
   v.innerHTML = '';
   const b = el('button', 'btn primary', `Update to ${esc(info.tag)}`);
   b.style.fontSize = '.78rem';
-  b.addEventListener('click', async () => {
-    b.disabled = true;
-    b.textContent = 'Downloading…';
-    try {
-      await sb.updateRun(info.tag, info.assetUrl ?? null);
-      toast('Installer launched. Switchboard will close, upgrade, and restart itself.');
-    } catch (e) {
-      b.disabled = false;
-      b.textContent = `Update to ${info.tag}`;
-      toast('Update failed: ' + (e.message || e));
-    }
-  });
+  b.addEventListener('click', () => runUpdate(info, b, 'Launching installer…'));
   v.appendChild(b);
 }
 
