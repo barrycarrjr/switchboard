@@ -377,7 +377,7 @@ async function renderAccounts() {
     for (const t of presence) {
       const card = el('div', 'acct' + (t.signedIn ? ' active' : ''));
       const top = el('div', 'top');
-      const state = [t.cliInstalled ? 'CLI installed' : 'CLI not installed', t.signedIn ? 'signed in' : 'not signed in'].join(' &middot; ');
+      const state = [t.cliInstalled ? 'CLI installed' : 'CLI not installed', t.signedIn ? `signed in${t.who ? ' as ' + esc(t.who) : ''}` : 'not signed in'].join(' &middot; ');
       top.appendChild(el('div', 'who', `<b>${esc(t.name)} <small style="font-weight:400;color:var(--muted)">(${esc(t.account)})</small></b><span>${state}</span>`));
       top.appendChild(el('div', 'sp'));
       if (t.signedIn) top.appendChild(el('span', 'badge', 'SIGNED IN'));

@@ -33,8 +33,9 @@ export const PRESENCE = [
     url: 'https://github.com/github/copilot-cli',
     bin: 'copilot',
     home: () => path.join(os.homedir(), '.copilot'),
-    // The token lives in the OS keyring; the JSONC config records who is logged in.
-    credContent: { file: 'config.json', pattern: /"(lastLoggedInUser|loggedInUsers)"\s*:\s*("[^"]+"|\[\s*")/ },
+    // The token lives in the OS keyring; the JSONC config records who is logged in
+    // as objects like { "login": "someone", "host": "..." } under loggedInUsers.
+    credContent: { file: 'config.json', pattern: /"login"\s*:\s*"[^"]+"/, identity: /"login"\s*:\s*"([^"]+)"/ },
     note: 'Signs in with GitHub; usage and plan live in GitHub settings, no local API.',
   },
   {
@@ -49,19 +50,21 @@ export const PRESENCE = [
   },
 ];
 
-function hasCredential(entry, homeDir) {
+function credentialState(entry, homeDir) {
   try {
     if (entry.credFiles) {
-      return entry.credFiles.some((f) => fs.existsSync(path.join(homeDir, f)));
+      return { signedIn: entry.credFiles.some((f) => fs.existsSync(path.join(homeDir, f))), who: null };
     }
     if (entry.credContent) {
-      return entry.credContent.pattern.test(fs.readFileSync(path.join(homeDir, entry.credContent.file), 'utf8'));
+      const raw = fs.readFileSync(path.join(homeDir, entry.credContent.file), 'utf8');
+      const who = entry.credContent.identity ? (entry.credContent.identity.exec(raw)?.[1] ?? null) : null;
+      return { signedIn: entry.credContent.pattern.test(raw), who };
     }
     if (entry.credPattern) {
-      return fs.readdirSync(homeDir).some((f) => entry.credPattern.test(f) && fs.statSync(path.join(homeDir, f)).isFile());
+      return { signedIn: fs.readdirSync(homeDir).some((f) => entry.credPattern.test(f) && fs.statSync(path.join(homeDir, f)).isFile()), who: null };
     }
   } catch { /* unreadable is not signed in */ }
-  return false;
+  return { signedIn: false, who: null };
 }
 
 async function onPath(bin, whichFn) {
@@ -80,7 +83,7 @@ export async function detectPresence({ whichFn = null } = {}) {
   for (const entry of PRESENCE) {
     const home = entry.home();
     const cliInstalled = await onPath(entry.bin, whichFn);
-    const signedIn = hasCredential(entry, home);
+    const { signedIn, who } = credentialState(entry, home);
     if (!cliInstalled && !signedIn) continue; // nothing real to show
     out.push({
       id: entry.id,
@@ -91,6 +94,7 @@ export async function detectPresence({ whichFn = null } = {}) {
       note: entry.note,
       cliInstalled,
       signedIn,
+      who,
     });
   }
   return out;

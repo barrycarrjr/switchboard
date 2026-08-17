@@ -14,12 +14,14 @@ test('presence table invariants: unique ids, account names, vendor sites, a cred
   }
 });
 
-test('the copilot signed-in check matches its JSONC config content, not filenames', () => {
+test('the copilot signed-in check matches the real nested JSONC shape and extracts who', () => {
   const entry = PRESENCE.find((p) => p.id === 'copilot');
-  const signedIn = '// User settings\n{"lastLoggedInUser": "someone", "loggedInUsers": ["someone"]}';
-  const signedOut = '// User settings\n{"firstLaunchAt": "2026-01-01"}';
+  // The vendor writes objects, not strings: users carry a nested "login" field.
+  const signedIn = '// User settings\n{"lastLoggedInUser": {\n  "login": "someone",\n  "host": "https://example.invalid"\n}, "loggedInUsers": [{"login": "someone", "host": "https://example.invalid"}]}';
+  const signedOut = '// User settings\n{"firstLaunchAt": "2026-01-01", "loggedInUsers": []}';
   assert.equal(entry.credContent.pattern.test(signedIn), true);
   assert.equal(entry.credContent.pattern.test(signedOut), false);
+  assert.equal(entry.credContent.identity.exec(signedIn)[1], 'someone');
 });
 
 test('detectPresence hides entries with nothing to show and reports CLI state from the finder', async () => {
