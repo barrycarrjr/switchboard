@@ -81,6 +81,18 @@ export async function antigravityPresence() {
   return out;
 }
 
+/**
+ * Apply the person's saved ordering. Known ids come first in their saved order;
+ * anything new appends in default order until it gets placed.
+ */
+export function orderApps(apps, order = []) {
+  if (!Array.isArray(order) || order.length === 0) return apps;
+  const rank = new Map(order.map((id, i) => [id, i]));
+  const known = apps.filter((a) => rank.has(a.id)).sort((x, y) => rank.get(x.id) - rank.get(y.id));
+  const fresh = apps.filter((a) => !rank.has(a.id));
+  return [...known, ...fresh];
+}
+
 /** Launch by exe path when there is one, else through the Windows app registry. */
 export function launchApp({ exePath, appId }) {
   if (exePath) {

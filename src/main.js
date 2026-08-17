@@ -8,7 +8,7 @@ import { runChecks } from '../core/doctor.js';
 import { accountQuota } from '../core/quota.js';
 import { applyFix } from '../core/fixes.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
-import { detectApps, getStartApps, launchApp, antigravityPresence, APPS } from '../core/apps.js';
+import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, APPS } from '../core/apps.js';
 import { detectPresence } from '../core/presence.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
 import { createRequire } from 'node:module';
@@ -354,9 +354,18 @@ ipcMain.handle('sb:doctor', () => runChecks({ accounts: registry().accounts }));
 
 ipcMain.handle('sb:apps', async () => {
   const startApps = await getStartApps();
+  const settings = loadSettings();
   const builtin = detectApps(startApps);
-  const custom = loadSettings().customApps.map((c) => ({ id: `custom:${c.appId}`, name: c.label, installed: true, appId: c.appId, exePath: null, custom: true }));
-  return [...builtin, ...custom];
+  const custom = settings.customApps.map((c) => ({ id: `custom:${c.appId}`, name: c.label, installed: true, appId: c.appId, exePath: null, custom: true }));
+  return orderApps([...builtin, ...custom], settings.appOrder);
+});
+
+ipcMain.handle('sb:setAppOrder', (_e, ids) => {
+  if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) throw new Error('order must be a list of app ids');
+  const settings = loadSettings();
+  settings.appOrder = ids;
+  saveSettings(settings);
+  return { ok: true };
 });
 
 ipcMain.handle('sb:appLaunch', async (_e, id) => {

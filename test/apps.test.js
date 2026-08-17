@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { APPS, parseStartApps, detectApps } from '../core/apps.js';
+import { APPS, parseStartApps, detectApps, orderApps } from '../core/apps.js';
+
+test('orderApps applies the saved order and appends unknown apps in default order', () => {
+  const apps = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+  assert.deepEqual(orderApps(apps, []).map((x) => x.id), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(orderApps(apps, ['c', 'a']).map((x) => x.id), ['c', 'a', 'b', 'd']);
+  assert.deepEqual(orderApps(apps, ['d', 'ghost', 'b']).map((x) => x.id), ['d', 'b', 'a', 'c']);
+});
 
 test('app table invariants: unique ids, detectability, vendor installs or links', () => {
   const ids = APPS.map((a) => a.id);

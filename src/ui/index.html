@@ -72,6 +72,9 @@
   .menu button.danger{color:var(--bad)}
   .spin{display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;vertical-align:-2px;margin-right:6px;animation:sbspin .8s linear infinite}
   @keyframes sbspin{to{transform:rotate(360deg)}}
+  .prov[draggable="true"]{cursor:grab}
+  .prov.dragging{opacity:.45}
+  .prov.dragover{box-shadow:0 -2px 0 0 var(--accent)}
   .prov .pi{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff;flex:0 0 auto}
   .prov .pm{flex:1;min-width:0}
   .prov .pm b{font-size:.9rem;display:block}
@@ -514,8 +517,25 @@ async function renderApps() {
   }
 
   panel.appendChild(el('div', 'grouphead', 'Applications'));
+  const appIds = apps.map((x) => x.id);
+  let draggedId = null;
   for (const a of apps) {
     const row = el('div', 'prov');
+    row.draggable = true;
+    row.dataset.appId = a.id;
+    row.addEventListener('dragstart', () => { draggedId = a.id; row.classList.add('dragging'); });
+    row.addEventListener('dragend', () => { draggedId = null; row.classList.remove('dragging'); });
+    row.addEventListener('dragover', (ev) => { if (draggedId && draggedId !== a.id) { ev.preventDefault(); row.classList.add('dragover'); } });
+    row.addEventListener('dragleave', () => row.classList.remove('dragover'));
+    row.addEventListener('drop', async (ev) => {
+      ev.preventDefault();
+      row.classList.remove('dragover');
+      if (!draggedId || draggedId === a.id) return;
+      const order = appIds.filter((id) => id !== draggedId);
+      order.splice(order.indexOf(a.id), 0, draggedId);
+      await sb.setAppOrder(order);
+      renderApps();
+    });
     row.appendChild(el('div', 'pi', esc(a.name[0])));
     row.lastChild.style.background = APP_COLORS[a.id] || '#5b6675';
     const apm = el('div', 'pm', `<b>${esc(a.name)}${a.url ? ` <a class="ext" title="Vendor site">&#8599;</a>` : ''}</b><span>${a.installed ? 'Installed' : 'Not installed'}${a.custom ? ' &middot; custom launcher' : ''}</span>`);

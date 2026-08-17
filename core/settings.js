@@ -10,6 +10,7 @@ const DEFAULTS = {
   lastAutoSwitchAt: 0,
   customApps: [],             // [{label, appId}] user-added launchers from the Start menu
   updateRepo: null,           // "owner/name" GitHub slug for self-update; local-only by design
+  appOrder: [],               // Apps-panel card order, by app id; new apps append until placed
 };
 
 export function settingsFile() {
@@ -23,6 +24,7 @@ export function loadSettings(file = settingsFile()) {
     if (!WATCH_MODES.includes(merged.quotaWatch)) merged.quotaWatch = 'off';
     if (typeof merged.usageSources !== 'object' || merged.usageSources === null) merged.usageSources = {};
     if (!Array.isArray(merged.customApps)) merged.customApps = [];
+    if (!Array.isArray(merged.appOrder)) merged.appOrder = [];
     return merged;
   } catch {
     return { ...DEFAULTS };

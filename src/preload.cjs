@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('sb', {
   openExternal: (url) => ipcRenderer.invoke('sb:openExternal', url),
   openPath: (p) => ipcRenderer.invoke('sb:openPath', p),
   apps: () => ipcRenderer.invoke('sb:apps'),
+  setAppOrder: (ids) => ipcRenderer.invoke('sb:setAppOrder', ids),
   antigravity: () => ipcRenderer.invoke('sb:antigravity'),
   presence: () => ipcRenderer.invoke('sb:presence'),
   appLaunch: (id) => ipcRenderer.invoke('sb:appLaunch', id),
