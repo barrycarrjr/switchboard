@@ -33,7 +33,8 @@ export const PRESENCE = [
     url: 'https://github.com/github/copilot-cli',
     bin: 'copilot',
     home: () => path.join(os.homedir(), '.copilot'),
-    credPattern: /auth|token|credential|host/i,
+    // The token lives in the OS keyring; the JSONC config records who is logged in.
+    credContent: { file: 'config.json', pattern: /"(lastLoggedInUser|loggedInUsers)"\s*:\s*("[^"]+"|\[\s*")/ },
     note: 'Signs in with GitHub; usage and plan live in GitHub settings, no local API.',
   },
   {
@@ -52,6 +53,9 @@ function hasCredential(entry, homeDir) {
   try {
     if (entry.credFiles) {
       return entry.credFiles.some((f) => fs.existsSync(path.join(homeDir, f)));
+    }
+    if (entry.credContent) {
+      return entry.credContent.pattern.test(fs.readFileSync(path.join(homeDir, entry.credContent.file), 'utf8'));
     }
     if (entry.credPattern) {
       return fs.readdirSync(homeDir).some((f) => entry.credPattern.test(f) && fs.statSync(path.join(homeDir, f)).isFile());

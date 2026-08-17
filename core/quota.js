@@ -123,8 +123,11 @@ export async function accountQuota(home, fetchImpl = fetch, usageSource = null, 
       return { windows: await fetchClaudeQuota(token, fetchImpl), source: 'token' };
     } catch (e) {
       // 401/403 means the stored access token is stale; the vendor CLI refreshes it
-      // on its next real use, which is an actionable instruction, not a shrug.
-      return { error: e.status === 401 || e.status === 403 ? 'auth' : 'unavailable' };
+      // on its next real use. 429 means we asked too often; callers should serve
+      // their cached numbers rather than an error.
+      if (e.status === 401 || e.status === 403) return { error: 'auth' };
+      if (e.status === 429) return { error: 'rate-limited' };
+      return { error: 'unavailable' };
     }
   }
   if (usageSource) {

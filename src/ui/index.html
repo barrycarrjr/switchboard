@@ -269,6 +269,8 @@ async function renderAccounts() {
               bars.appendChild(link);
             } else if (q.error === 'auth') {
               bars.innerHTML = '<div class="resets">The stored token needs a refresh: use "Sign in / re-authenticate" below, run one prompt in that terminal, then retry.</div>';
+            } else if (q.error === 'rate-limited') {
+              bars.innerHTML = '<div class="resets">The usage endpoint is rate-limiting checks; numbers return on their own shortly.</div>';
             } else {
               bars.innerHTML = '<div class="resets">Quota unavailable right now.</div>';
             }
@@ -293,6 +295,9 @@ async function renderAccounts() {
           if (q.source === 'desktop') {
             const when = new Date(q.sampledAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
             resets.push(`via Claude Desktop, sampled ${esc(when)}${q.stale ? ' (stale; open the desktop app to refresh)' : ''}`);
+          }
+          if (q.staleAt && Date.now() - q.staleAt > 3 * 60 * 1000) {
+            resets.push(`as of ${esc(new Date(q.staleAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}`);
           }
           if (resets.length) bars.appendChild(el('div', 'resets', resets.join(' &middot; ')));
         });

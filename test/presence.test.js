@@ -9,9 +9,17 @@ test('presence table invariants: unique ids, account names, vendor sites, a cred
     assert.ok(p.name && p.account, `${p.id} names the tool and the account kind`);
     assert.match(p.url, /^https:\/\//);
     assert.ok(p.bin, `${p.id} is detectable`);
-    assert.ok(p.credFiles || p.credPattern, `${p.id} has a signed-in check`);
+    assert.ok(p.credFiles || p.credPattern || p.credContent, `${p.id} has a signed-in check`);
     assert.ok(p.note, `${p.id} carries its honest capability note`);
   }
+});
+
+test('the copilot signed-in check matches its JSONC config content, not filenames', () => {
+  const entry = PRESENCE.find((p) => p.id === 'copilot');
+  const signedIn = '// User settings\n{"lastLoggedInUser": "someone", "loggedInUsers": ["someone"]}';
+  const signedOut = '// User settings\n{"firstLaunchAt": "2026-01-01"}';
+  assert.equal(entry.credContent.pattern.test(signedIn), true);
+  assert.equal(entry.credContent.pattern.test(signedOut), false);
 });
 
 test('detectPresence hides entries with nothing to show and reports CLI state from the finder', async () => {

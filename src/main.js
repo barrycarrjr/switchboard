@@ -19,7 +19,7 @@ const pkgMeta = createRequire(import.meta.url)('../package.json');
 function effectiveUpdateRepo() {
   return loadSettings().updateRepo ?? pkgMeta.updateRepo ?? null;
 }
-import { snapshotQuotas, decideDefaultSwitch } from '../core/watch.js';
+import { decideDefaultSwitch } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -174,7 +174,11 @@ async function runQuotaWatch() {
     if (settings.quotaWatch === 'off') return;
     const reg = registry();
     const active = activeAccount(reg, 'claude');
-    const snapshots = await snapshotQuotas({ accounts: reg.accounts, usageSources: settings.usageSources });
+    // The watch shares the render cache, so it never burns the rate-limit allowance.
+    const snapshots = {};
+    for (const a of reg.accounts.filter((x) => x.provider === 'claude')) {
+      snapshots[a.id] = await cachedQuota(a);
+    }
     const pinPresent = Boolean(readUserEnv('CLAUDE_CODE_OAUTH_TOKEN') || readMachineEnv('CLAUDE_CODE_OAUTH_TOKEN'));
     const decision = decideDefaultSwitch({
       mode: settings.quotaWatch,
@@ -417,12 +421,34 @@ ipcMain.handle('sb:openTerminal', (_e, bin) => {
   return { ok: true };
 });
 
+/**
+ * Quota cache. The usage endpoint rate-limits per token aggressively, so the app
+ * asks at most once per account per interval and otherwise serves the last good
+ * answer (marked stale) rather than burning the allowance on every render.
+ */
+const QUOTA_TTL_MS = 90 * 1000;
+const quotaCache = new Map(); // accountId -> { at, result }
+
+async function cachedQuota(account) {
+  const hit = quotaCache.get(account.id);
+  const now = Date.now();
+  if (hit && now - hit.at < QUOTA_TTL_MS) return { ...hit.result, staleAt: hit.at };
+  const settings = loadSettings();
+  const result = await accountQuota(account.home, fetch, settings.usageSources[account.id] ?? null);
+  if (!result.error) {
+    quotaCache.set(account.id, { at: now, result });
+    return result;
+  }
+  // Old truth labeled as such beats a fresh shrug.
+  if (hit) return { ...hit.result, staleAt: hit.at };
+  return result;
+}
+
 ipcMain.handle('sb:quota', (_e, accountId) => {
   const account = registry().accounts.find((a) => a.id === accountId);
   if (!account) throw new Error(`no such account: ${accountId}`);
   if (account.provider !== 'claude') return { error: 'unsupported' };
-  const settings = loadSettings();
-  return accountQuota(account.home, fetch, settings.usageSources[accountId] ?? null);
+  return cachedQuota(account);
 });
 
 ipcMain.handle('sb:setUsageSource', async (_e, accountId) => {

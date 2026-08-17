@@ -78,4 +78,5 @@ test('accountQuota reports unknowns instead of guessing, and names auth failures
   assert.deepEqual(await accountQuota(dir, failWith(500)), { error: 'unavailable' });
   assert.deepEqual(await accountQuota(dir, failWith(401)), { error: 'auth' });
   assert.deepEqual(await accountQuota(dir, failWith(403)), { error: 'auth' });
+  assert.deepEqual(await accountQuota(dir, failWith(429)), { error: 'rate-limited' });
 });
