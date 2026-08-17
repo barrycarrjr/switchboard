@@ -252,7 +252,12 @@ async function renderAccounts() {
       if (a.provider === 'claude') {
         const bars = el('div', 'bars', '<div class="resets">Loading quota&hellip;</div>');
         card.appendChild(bars);
-        const fillQuota = () => sb.quota(a.id).then((q) => {
+        const fillQuota = (attempt = 0) => sb.quota(a.id).then((q) => {
+          // One silent retry absorbs transient endpoint blips before anything is shown.
+          if (q.error === 'unavailable' && attempt === 0) {
+            setTimeout(() => fillQuota(1), 2500);
+            return;
+          }
           if (q.error) {
             if (q.error === 'no-credentials') {
               bars.innerHTML = '<div class="resets">No readable token (the credentials live in the system store).</div>';
@@ -270,7 +275,7 @@ async function renderAccounts() {
             const retry = el('div', 'qnote', '<a>Retry</a>');
             retry.querySelector('a').addEventListener('click', () => {
               bars.innerHTML = '<div class="resets">Loading quota&hellip;</div>';
-              fillQuota();
+              fillQuota(1);
             });
             bars.appendChild(retry);
             return;
