@@ -115,11 +115,13 @@
     <button class="tab" data-tab="providers">Providers</button>
     <button class="tab" data-tab="apps">Apps</button>
     <button class="tab" data-tab="health">Health</button>
+    <button class="tab" data-tab="about">About</button>
   </div>
   <div class="panel on" id="tab-accounts"><div class="empty">Loading&hellip;</div></div>
   <div class="panel" id="tab-providers"><div class="empty">Detecting installed tools&hellip;</div></div>
   <div class="panel" id="tab-apps"><div class="empty">Detecting installed apps&hellip;</div></div>
   <div class="panel" id="tab-health"><div class="empty">Run checks to see the state of this machine.</div></div>
+  <div class="panel" id="tab-about"></div>
   <div id="picker" style="display:none;position:fixed;inset:0;background:rgba(20,25,35,.45);z-index:5">
     <div style="background:var(--card);border-radius:10px;max-width:360px;margin:60px auto;padding:14px;max-height:70vh;display:flex;flex-direction:column;gap:8px">
       <b style="font-size:.95rem">Add a launcher from the Start menu</b>
@@ -151,6 +153,7 @@ function openTab(name) {
   if (name === 'providers') renderProviders();
   if (name === 'apps') renderApps();
   if (name === 'health') renderHealth();
+  if (name === 'about') renderAbout();
 }
 
 // Panels render into a detached box and swap in atomically; the sequence guard
@@ -659,6 +662,85 @@ function watchTool(t, btn, expectInstalled) {
       renderProviders();
     }
   }, 4000);
+}
+
+async function renderAbout() {
+  const seq = beginRender('about');
+  const realPanel = $('#tab-about');
+  const repo = await sb.getUpdateRepo();
+  const state = await sb.state();
+  if (!isCurrentRender('about', seq)) return;
+  const panel = el('div');
+
+  panel.appendChild(el('div', 'grouphead', 'What is Switchboard?'));
+  const what = el('div', 'acct');
+  what.appendChild(el('div', '', '<p style="margin:2px 0 8px;font-size:.9rem">A Windows tray app that answers one question: <b>which AI account is this machine using right now?</b> And lets you change it.</p><p style="margin:0;font-size:.86rem;color:var(--muted)">Register multiple subscription accounts per AI tool, switch the machine default in two clicks, see each account\'s remaining quota, install and update the tools through their vendors\' own mechanisms, and catch the setups that silently bill the wrong thing.</p>'));
+  panel.appendChild(what);
+
+  panel.appendChild(el('div', 'grouphead', 'The panels'));
+  const panels = el('div', 'acct', [
+    '<b style="font-size:.86rem">Accounts</b><div class="qnote" style="margin:2px 0 8px">Your accounts per tool, which one is active, live quota, and one-click switching.</div>',
+    '<b style="font-size:.86rem">Providers</b><div class="qnote" style="margin:2px 0 8px">The AI command-line tools: detected versions, honest update checks, install, reinstall, uninstall.</div>',
+    '<b style="font-size:.86rem">Apps</b><div class="qnote" style="margin:2px 0 8px">Desktop AI apps and terminals: detect, install, launch, plus your own Start-menu launchers.</div>',
+    '<b style="font-size:.86rem">Health</b><div class="qnote" style="margin:2px 0">Checks for billing traps, expired logins, PATH problems, and dead proxy configs, with safe one-click fixes.</div>',
+  ].join(''));
+  panel.appendChild(panels);
+
+  panel.appendChild(el('div', 'grouphead', 'What it never does'));
+  panel.appendChild(el('div', 'acct', '<div class="qnote" style="margin:0">It never runs tasks, never holds sessions, never touches a running application or any GUI app\'s login, never stores your tokens, and sends no telemetry. Installs only ever run vendor mechanisms in a visible terminal.</div>'));
+
+  if (repo) {
+    panel.appendChild(el('div', 'grouphead', 'Project'));
+    const links = el('div', 'acct');
+    const mkLink = (label, url) => {
+      const a = el('div', 'qnote', `<a>${esc(label)}</a>`);
+      a.style.margin = '3px 0';
+      a.querySelector('a').addEventListener('click', () => sb.openExternal(url));
+      return a;
+    };
+    links.appendChild(mkLink('Open the project on GitHub', `https://github.com/${repo}`));
+    links.appendChild(mkLink('Report an issue or request a feature', `https://github.com/${repo}/issues/new`));
+    links.appendChild(mkLink('All releases', `https://github.com/${repo}/releases`));
+    panel.appendChild(links);
+  }
+
+  panel.appendChild(el('div', 'grouphead', 'This install'));
+  const ver = el('div', 'acct');
+  const verTop = el('div', 'top');
+  verTop.appendChild(el('div', 'who', `<b>Version ${esc(state.version)}</b><span>MIT licensed, free to share</span>`));
+  verTop.appendChild(el('div', 'sp'));
+  const checkBtn = el('button', 'btn', 'Check for updates');
+  const verNote = el('div', 'qnote');
+  verNote.style.display = 'none';
+  checkBtn.addEventListener('click', async () => {
+    checkBtn.disabled = true;
+    checkBtn.textContent = 'Checking…';
+    const r = await sb.updateCheck();
+    checkBtn.disabled = false;
+    checkBtn.textContent = 'Check for updates';
+    verNote.style.display = 'block';
+    if (r.available) {
+      verNote.innerHTML = `A newer version is available: <b>${esc(r.tag)}</b>. Use the Update button in the header, or click <a>update now</a>.`;
+      verNote.querySelector('a').addEventListener('click', async () => {
+        verNote.textContent = 'Downloading; the installer will restart Switchboard.';
+        try { await sb.updateRun(r.tag, r.assetUrl ?? null); } catch (e) { verNote.textContent = 'Update failed: ' + (e.message || e); }
+      });
+      showUpdateButton(r);
+    } else if (r.error === 'no-repo') {
+      verNote.textContent = 'No update source configured yet.';
+      openRepoModal();
+    } else if (r.error) {
+      verNote.textContent = UPDATE_ERRORS[r.error] || r.error;
+    } else {
+      verNote.textContent = 'You are on the latest version.';
+    }
+  });
+  verTop.appendChild(checkBtn);
+  ver.appendChild(verTop);
+  ver.appendChild(verNote);
+  panel.appendChild(ver);
+
+  realPanel.replaceChildren(...panel.childNodes);
 }
 
 const MARK = { ok: '&#10003;', warn: '!', bad: '&#10007;', info: 'i' };

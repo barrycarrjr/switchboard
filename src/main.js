@@ -114,6 +114,7 @@ function buildTrayMenu() {
   }
   items.push({ label: 'Open Switchboard', click: () => showWindow() });
   items.push({ label: 'Run health checks', click: () => showWindow('health') });
+  items.push({ label: 'About Switchboard', click: () => showWindow('about') });
   const settings = loadSettings();
   items.push({
     label: 'Quota watch',
