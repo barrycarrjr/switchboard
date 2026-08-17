@@ -30,8 +30,9 @@ jobs:
       - run: npm run icons
       - run: npm test
       # Stamp the publishing repository into the packaged app so installed copies
-      # know where updates live; the committed source stays name-free.
-      - run: npm run dist -- -c.extraMetadata.updateRepo=${{ github.repository }}
+      # know where updates live; the committed source stays name-free. Invoked
+      # directly (not via npm run) because npm splits the -c.key=value argument.
+      - run: npx electron-builder --win nsis --publish never "-c.extraMetadata.updateRepo=${{ github.repository }}"
 
       - name: Attach installer to the release
         uses: softprops/action-gh-release@v2
