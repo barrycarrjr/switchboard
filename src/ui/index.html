@@ -153,15 +153,25 @@ function openTab(name) {
   if (name === 'health') renderHealth();
 }
 
+// Panels render into a detached box and swap in atomically; the sequence guard
+// makes the newest render the only one that lands, so overlapping async renders
+// can never interleave their sections into the page (the duplicated-accounts bug).
+const renderSeqs = {};
+function beginRender(key) {
+  renderSeqs[key] = (renderSeqs[key] || 0) + 1;
+  return renderSeqs[key];
+}
+function isCurrentRender(key, seq) { return renderSeqs[key] === seq; }
+
 function barClass(pct) { return pct >= 90 ? 'bar hot' : pct >= 70 ? 'bar warn' : 'bar'; }
 function fmtReset(ms) { return ms ? new Date(ms).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null; }
 
 async function renderAccounts() {
+  const seq = beginRender('accounts');
   const state = await sb.state();
   state.candidates = await sb.candidates();
-  $('#ver').textContent = 'v' + state.version;
-  const panel = $('#tab-accounts');
-  panel.innerHTML = '';
+  const realPanel = $('#tab-accounts');
+  const panel = el('div');
 
   const names = [];
   for (const p of Object.values(state.providers)) {
@@ -356,21 +366,27 @@ async function renderAccounts() {
   }
 
   panel.appendChild(el('p', 'panelnote', 'Switching changes the default for <b>new</b> terminals and newly launched tools. Running apps and pinned automation are never touched.'));
+
+  if (!isCurrentRender('accounts', seq)) return;
+  if (!$('#ver').querySelector('button')) $('#ver').textContent = 'v' + state.version;
+  realPanel.replaceChildren(...panel.childNodes);
   $('#defaults').innerHTML = names.length ? 'Defaults for new terminals: ' + names.join(' &middot; ') : 'No active accounts registered yet.';
 }
 
 const TOOL_COLORS = { claude: '#c96f4a', codex: '#10a37f', gemini: '#4285f4', copilot: '#24292f', junie: '#087cfa', qwen: '#615ced', amp: '#f34e3f', opencode: '#5b6675', grok: '#1c1c1c', cursor: '#3b3b3b', aider: '#0a7d36', antigravity: '#2e6ff2', ollama: '#222222', lmstudio: '#6d28d9' };
 
 async function renderProviders() {
-  const panel = $('#tab-providers');
+  const seq = beginRender('providers');
+  const realPanel = $('#tab-providers');
   let tools;
   try {
     tools = await sb.providers();
   } catch (e) {
-    panel.innerHTML = `<div class="empty">Detection failed: ${esc(e.message || e)}</div>`;
+    if (isCurrentRender('providers', seq)) realPanel.innerHTML = `<div class="empty">Detection failed: ${esc(e.message || e)}</div>`;
     return;
   }
-  panel.innerHTML = '';
+  if (!isCurrentRender('providers', seq)) return;
+  const panel = el('div');
   const rows = {};
   for (const t of tools) {
     const row = el('div', 'prov');
@@ -420,9 +436,11 @@ async function renderProviders() {
     panel.appendChild(row);
   }
   panel.appendChild(el('p', 'panelnote', 'Install, update, and uninstall run in a visible terminal through the vendor\'s own mechanism (winget, npm, pip). "Update available" comes from asking that same mechanism; Switchboard never guesses, and it never wires a button to an unverified package. The &#8599; icon opens the vendor site. Re-detect by reopening this tab.'));
+  realPanel.replaceChildren(...panel.childNodes);
 
   // Second pass: only claim an update when the vendor mechanism reports one.
   const updates = await sb.updates();
+  if (!isCurrentRender('providers', seq)) return;
   for (const [id, u] of Object.entries(updates)) {
     const row = rows[id];
     if (!row) continue;
@@ -449,15 +467,17 @@ async function renderProviders() {
 const APP_COLORS = { 'claude-desktop': '#c96f4a', t3code: '#7c3aed', chatgpt: '#10a37f', antigravity: '#2e6ff2', lmstudio: '#6d28d9' };
 
 async function renderApps() {
-  const panel = $('#tab-apps');
+  const seq = beginRender('apps');
+  const realPanel = $('#tab-apps');
   let apps;
   try {
     apps = await sb.apps();
   } catch (e) {
-    panel.innerHTML = `<div class="empty">Detection failed: ${esc(e.message || e)}</div>`;
+    if (isCurrentRender('apps', seq)) realPanel.innerHTML = `<div class="empty">Detection failed: ${esc(e.message || e)}</div>`;
     return;
   }
-  panel.innerHTML = '';
+  if (!isCurrentRender('apps', seq)) return;
+  const panel = el('div');
 
   panel.appendChild(el('div', 'grouphead', 'Terminals (open on the active account)'));
   for (const t of [{ bin: 'claude', label: 'Claude Code terminal' }, { bin: 'codex', label: 'Codex terminal' }]) {
@@ -530,6 +550,7 @@ async function renderApps() {
   add.addEventListener('click', openPicker);
   panel.appendChild(add);
   panel.appendChild(el('p', 'panelnote', 'Launching is where Switchboard stops: it never manages what an app does or which account a GUI app is signed into.'));
+  realPanel.replaceChildren(...panel.childNodes);
 }
 
 function watchApp(a, btn, expectInstalled) {
@@ -643,10 +664,12 @@ function watchTool(t, btn, expectInstalled) {
 const MARK = { ok: '&#10003;', warn: '!', bad: '&#10007;', info: 'i' };
 
 async function renderHealth() {
-  const panel = $('#tab-health');
-  panel.innerHTML = '<div class="empty">Running checks&hellip;</div>';
+  const seq = beginRender('health');
+  const realPanel = $('#tab-health');
+  realPanel.innerHTML = '<div class="empty">Running checks&hellip;</div>';
   const checks = await sb.doctor();
-  panel.innerHTML = '';
+  if (!isCurrentRender('health', seq)) return;
+  const panel = el('div');
   for (const c of checks) {
     const row = el('div', 'hc ' + c.level);
     row.appendChild(el('div', 'hi', MARK[c.level] || 'i'));
@@ -675,6 +698,7 @@ async function renderHealth() {
   foot.appendChild(run);
   foot.appendChild(el('span', 'last', 'Last run: just now'));
   panel.appendChild(foot);
+  realPanel.replaceChildren(...panel.childNodes);
 }
 
 // ---- Self-update surface: the version number is the button. ----
