@@ -21,11 +21,20 @@ touches a running application or any GUI application's login.
 
 ## Install
 
-Download the latest `Switchboard-Setup-<version>.exe` from this repository's **Releases**
-page and run it. It installs per-user (no admin prompt) to
-`%LOCALAPPDATA%\Programs\Switchboard`, registers an uninstaller in Apps & Features, and
-running a newer setup upgrades in place. App data lives in `%APPDATA%\Switchboard` and is
-kept on uninstall.
+1. Go to the [latest release](../../releases/latest) and download
+   `Switchboard-Setup-<version>.exe` (under Assets).
+2. Run it. Windows shows a SmartScreen warning because the app is not code-signed yet:
+   choose **More info**, then **Run anyway**.
+3. That's it. No admin rights needed. Switchboard appears in your system tray, detects
+   your installed AI tools, and registers your existing accounts if you have them.
+
+It installs per-user to `%LOCALAPPDATA%\Programs\Switchboard`, registers an uninstaller in
+Apps & Features, and running a newer setup upgrades in place. App data lives in
+`%APPDATA%\Switchboard` and is kept on uninstall.
+
+After installing, updates come from inside the app: it checks the [Releases](../../releases)
+automatically, and the version number in the header becomes an Update button when a newer
+version exists.
 
 Releases are built by CI from a version tag (`v<version>`); the tag must match the version
 in `package.json`.
