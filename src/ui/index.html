@@ -599,7 +599,7 @@ async function openPicker() {
   const render = () => {
     const q = filter.value.toLowerCase();
     list.innerHTML = '';
-    for (const e of entries.filter((x) => x.name.toLowerCase().includes(q)).slice(0, 60)) {
+    for (const e of entries.filter((x) => x.name.toLowerCase().includes(q))) {
       const item = el('div', 'hc', `<div class="hm">${esc(e.name)}</div>`);
       item.style.cursor = 'pointer';
       item.addEventListener('click', async () => {
