@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<title>Switchboard</title>
+<style>
+  :root{
+    --accent:#0067c0; --accent-soft:#e3f0fb;
+    --ink:#1b1b1b; --muted:#616a75; --line:#e2e5e9;
+    --winbg:#f3f3f3; --card:#ffffff;
+    --ok:#0f7b3d; --ok-bg:#e2f3e9;
+    --warn:#9a6700; --warn-bg:#fff1cc;
+    --bad:#b42318; --bad-bg:#fde8e6;
+    --info:#175cd3; --info-bg:#e6effc;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--winbg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column}
+  .titlebar{display:flex;align-items:center;gap:9px;padding:12px 14px 6px}
+  .appicon{width:24px;height:24px;border-radius:6px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
+  .titlebar .name{font-weight:600;font-size:.98rem}
+  .titlebar .ver{color:var(--muted);font-size:.75rem;margin-left:auto}
+  .defaults{padding:0 14px 8px;color:var(--muted);font-size:.8rem;min-height:18px}
+  .defaults b{color:var(--ink)}
+  .tabs{display:flex;gap:4px;padding:0 12px;border-bottom:1px solid var(--line)}
+  .tab{border:none;background:none;font:inherit;font-size:.9rem;padding:8px 12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent}
+  .tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+  .panel{display:none;padding:12px;overflow-y:auto;flex:1}
+  .panel.on{display:block}
+  .grouphead{font-size:.78rem;font-weight:600;letter-spacing:.04em;color:var(--muted);text-transform:uppercase;margin:10px 2px 6px}
+  .grouphead:first-child{margin-top:2px}
+  .acct{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:6px 0}
+  .acct .top{display:flex;align-items:center;gap:8px}
+  .acct .who{min-width:0}
+  .acct .who b{font-size:.92rem}
+  .acct .who .pen{visibility:hidden;color:var(--muted);cursor:pointer;font-size:.8rem;margin-left:5px}
+  .acct:hover .who .pen{visibility:visible}
+  .acct .who .pen:hover{color:var(--accent)}
+  .acct .who input{font:inherit;font-size:.9rem;font-weight:600;border:1px solid var(--accent);border-radius:5px;padding:1px 6px;width:12em}
+  .acct .who span{display:block;color:var(--muted);font-size:.76rem;word-break:break-all;cursor:pointer}
+  .acct .who span:hover{color:var(--accent)}
+  .acct .top .sp{flex:1}
+  .badge{font-size:.72rem;font-weight:700;border-radius:99px;padding:2px 9px;background:var(--ok-bg);color:var(--ok)}
+  .btn{font:inherit;font-size:.8rem;border:1px solid #c9ced6;border-radius:6px;background:#fff;padding:3px 10px;cursor:pointer;white-space:nowrap}
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{color:#fff;filter:brightness(1.08)}
+  .btn[disabled]{opacity:.6;cursor:default}
+  .btn.ghost{border:none;background:none;color:var(--muted);padding:3px 6px}
+  .btn.ghost:hover{color:var(--bad)}
+  .bars{margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px 14px}
+  .q label{display:flex;justify-content:space-between;font-size:.74rem;color:var(--muted)}
+  .q label em{font-style:normal;color:var(--ink);font-weight:600}
+  .bar{height:6px;border-radius:4px;background:#e8eaee;margin-top:3px;overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:4px;background:var(--accent)}
+  .bar.warn i{background:#d99a00}
+  .bar.hot i{background:#d13438}
+  .resets{grid-column:1 / -1;color:var(--muted);font-size:.72rem;margin-top:1px}
+  .qnote{color:var(--muted);font-size:.78rem;margin-top:7px}
+  .qnote a{color:var(--accent);cursor:pointer;text-decoration:underline}
+  .addbtn{width:100%;font:inherit;font-size:.83rem;padding:7px;border:1px dashed #b9c0c9;border-radius:8px;background:none;color:var(--muted);cursor:pointer;margin:4px 0 2px}
+  .addbtn:hover{color:var(--accent);border-color:var(--accent)}
+  .panelnote{color:var(--muted);font-size:.76rem;margin:10px 2px 2px;line-height:1.45}
+  .prov{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:6px 0;display:flex;align-items:center;gap:10px;position:relative}
+  .kebab{border:none;background:none;font:inherit;font-size:1rem;color:var(--muted);cursor:pointer;padding:2px 8px;border-radius:6px;line-height:1}
+  .kebab:hover{background:#eef1f5;color:var(--ink)}
+  .menu{position:absolute;right:8px;top:calc(100% - 6px);background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 22px rgba(20,30,50,.16);z-index:20;min-width:150px;padding:4px;display:none}
+  .menu.open{display:block}
+  .menu button{display:block;width:100%;text-align:left;font:inherit;font-size:.85rem;border:none;background:none;padding:7px 11px;border-radius:6px;cursor:pointer}
+  .menu button:hover{background:#eef1f5}
+  .menu button.danger{color:var(--bad)}
+  .prov .pi{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff;flex:0 0 auto}
+  .prov .pm{flex:1;min-width:0}
+  .prov .pm b{font-size:.9rem;display:block}
+  .prov .pm .ext{color:var(--muted);cursor:pointer;font-size:.85em;margin-left:4px}
+  .prov .pm .ext:hover{color:var(--accent)}
+  .prov .pm span{color:var(--muted);font-size:.77rem;word-break:break-all}
+  .chip{font-size:.7rem;font-weight:600;border-radius:99px;padding:1px 8px;margin-left:6px;background:var(--warn-bg);color:var(--warn)}
+  .hc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0;display:flex;align-items:flex-start;gap:9px;font-size:.85rem}
+  .hi{flex:0 0 auto;width:20px;height:20px;border-radius:99px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px}
+  .hc.ok .hi{background:var(--ok-bg);color:var(--ok)}
+  .hc.warn .hi{background:var(--warn-bg);color:var(--warn)}
+  .hc.bad .hi{background:var(--bad-bg);color:var(--bad)}
+  .hc.info .hi{background:var(--info-bg);color:var(--info)}
+  .hc .hm{flex:1}
+  .hc .hm span{display:block;color:var(--muted);font-size:.76rem}
+  .healthfoot{display:flex;align-items:center;gap:10px;margin-top:10px}
+  .healthfoot .last{color:var(--muted);font-size:.78rem}
+  .toast{position:fixed;left:12px;right:12px;bottom:12px;background:#1f2937;color:#fff;border-radius:8px;padding:10px 14px;font-size:.84rem;opacity:0;transition:opacity .25s;pointer-events:none}
+  .toast.show{opacity:.96}
+  .empty{color:var(--muted);font-size:.85rem;padding:14px 4px}
+</style>
+</head>
+<body>
+  <div class="titlebar">
+    <div class="appicon">S</div>
+    <div class="name">Switchboard</div>
+    <div class="ver" id="ver"></div>
+  </div>
+  <div class="defaults" id="defaults">Loading&hellip;</div>
+  <div class="tabs">
+    <button class="tab on" data-tab="accounts">Accounts</button>
+    <button class="tab" data-tab="providers">Providers</button>
+    <button class="tab" data-tab="apps">Apps</button>
+    <button class="tab" data-tab="health">Health</button>
+  </div>
+  <div class="panel on" id="tab-accounts"><div class="empty">Loading&hellip;</div></div>
+  <div class="panel" id="tab-providers"><div class="empty">Detecting installed tools&hellip;</div></div>
+  <div class="panel" id="tab-apps"><div class="empty">Detecting installed apps&hellip;</div></div>
+  <div class="panel" id="tab-health"><div class="empty">Run checks to see the state of this machine.</div></div>
+  <div id="picker" style="display:none;position:fixed;inset:0;background:rgba(20,25,35,.45);z-index:5">
+    <div style="background:var(--card);border-radius:10px;max-width:360px;margin:60px auto;padding:14px;max-height:70vh;display:flex;flex-direction:column;gap:8px">
+      <b style="font-size:.95rem">Add a launcher from the Start menu</b>
+      <input id="picker-filter" placeholder="Type to filter&hellip;" style="font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px">
+      <div id="picker-list" style="overflow-y:auto;flex:1"></div>
+      <button class="btn" id="picker-close" style="align-self:flex-end">Cancel</button>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+let toastTimer = null;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => openTab(t.dataset.tab)));
+function openTab(name) {
+  document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach((x) => x.classList.toggle('on', x.id === 'tab-' + name));
+  if (name === 'providers') renderProviders();
+  if (name === 'apps') renderApps();
+  if (name === 'health') renderHealth();
+}
+
+function barClass(pct) { return pct >= 90 ? 'bar hot' : pct >= 70 ? 'bar warn' : 'bar'; }
+function fmtReset(ms) { return ms ? new Date(ms).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null; }
+
+async function renderAccounts() {
+  const state = await sb.state();
+  state.candidates = await sb.candidates();
+  $('#ver').textContent = 'v' + state.version;
+  const panel = $('#tab-accounts');
+  panel.innerHTML = '';
+
+  const names = [];
+  for (const p of Object.values(state.providers)) {
+    const mine = state.accounts.filter((a) => a.provider === p.id);
+    panel.appendChild(el('div', 'grouphead', esc(p.name)));
+    const active = mine.find((a) => a.id === p.activeAccountId);
+    if (active) names.push(`${p.name} = <b>${esc(active.label)}</b>`);
+
+    for (const a of mine) {
+      const isActive = a.id === p.activeAccountId;
+      const card = el('div', 'acct' + (isActive ? ' active' : ''));
+      const top = el('div', 'top');
+      const who = el('div', 'who', `<b>${esc(a.label)}</b><a class="pen" title="Rename">&#9998;</a><span title="Open folder">${esc(a.home)}</span>`);
+      who.querySelector('span').addEventListener('click', () => sb.openPath(a.home));
+      who.querySelector('.pen').addEventListener('click', () => {
+        const nameEl = who.querySelector('b');
+        const input = el('input');
+        input.value = a.label;
+        nameEl.replaceWith(input);
+        who.querySelector('.pen').style.display = 'none';
+        input.focus();
+        input.select();
+        let done = false;
+        const commit = async () => {
+          if (done) return;
+          done = true;
+          const value = input.value.trim();
+          if (value && value !== a.label) {
+            try { await sb.rename(a.id, value); } catch (e) { toast('Rename failed: ' + (e.message || e)); }
+          }
+          renderAccounts();
+        };
+        input.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') commit();
+          if (ev.key === 'Escape') { done = true; renderAccounts(); }
+        });
+        input.addEventListener('blur', commit);
+      });
+      top.appendChild(who);
+      top.appendChild(el('div', 'sp'));
+      if (isActive) {
+        top.appendChild(el('span', 'badge', 'ACTIVE'));
+      } else {
+        const mk = el('button', 'btn', 'Make active');
+        mk.addEventListener('click', async () => {
+          await sb.setActive(a.id);
+          toast(`New terminals and apps will use ${p.name}: ${a.label}. Running processes are unchanged.`);
+          renderAccounts();
+        });
+        top.appendChild(mk);
+        const rm = el('button', 'btn ghost', 'Remove');
+        rm.title = 'Unregister (the folder is never deleted)';
+        rm.addEventListener('click', async () => {
+          if (!confirm(`Unregister "${a.label}"? The folder and its login are not touched.`)) return;
+          await sb.removeAccount(a.id);
+          renderAccounts();
+        });
+        top.appendChild(rm);
+      }
+      card.appendChild(top);
+
+      if (a.provider === 'claude') {
+        const bars = el('div', 'bars', '<div class="resets">Loading quota&hellip;</div>');
+        card.appendChild(bars);
+        sb.quota(a.id).then((q) => {
+          if (q.error) {
+            if (q.error === 'no-credentials') {
+              bars.innerHTML = '<div class="resets">No readable token (the credentials live in the system store).</div>';
+              const link = el('div', 'qnote', '<a>Use Claude Desktop usage data for this account&hellip;</a>');
+              link.querySelector('a').addEventListener('click', async () => {
+                const r = await sb.setUsageSource(a.id);
+                if (r.ok) renderAccounts();
+              });
+              bars.appendChild(link);
+            } else {
+              bars.innerHTML = '<div class="resets">Quota unavailable right now</div>';
+            }
+            return;
+          }
+          bars.innerHTML = '';
+          const resets = [];
+          for (const w of q.windows) {
+            if (w.key === 'week_sonnet') continue; // keep the card compact
+            const pct = w.usedPercent;
+            const value = pct == null ? esc(w.valueLabel ?? 'n/a') : pct + '%' + (w.valueLabel ? ` &middot; ${esc(w.valueLabel)}` : '');
+            const q1 = el('div', 'q', `<label>${esc(w.label)} <em>${value}</em></label><div class="${barClass(pct ?? 0)}"><i style="width:${pct ?? 0}%"></i></div>`);
+            bars.appendChild(q1);
+            if (w.resetsAt && resets.length < 2) resets.push(`${esc(w.label.toLowerCase())} resets ${esc(fmtReset(w.resetsAt))}`);
+          }
+          if (q.source === 'desktop') {
+            const when = new Date(q.sampledAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+            resets.push(`via Claude Desktop, sampled ${esc(when)}${q.stale ? ' (stale; open the desktop app to refresh)' : ''}`);
+          }
+          if (resets.length) bars.appendChild(el('div', 'resets', resets.join(' &middot; ')));
+        });
+      } else if (a.provider === 'codex') {
+        const note = el('div', 'qnote', 'No usage API for Codex subscriptions. <a>View usage on the official page</a>');
+        note.querySelector('a').addEventListener('click', () => sb.openExternal('https://chatgpt.com/codex/settings/usage'));
+        card.appendChild(note);
+      }
+      const signRow = el('div', 'qnote', '<a>Sign in / re-authenticate&hellip;</a> <small style="color:var(--muted)">opens a terminal preset to this account</small>');
+      signRow.querySelector('a').addEventListener('click', () => sb.signin(a.id));
+      card.appendChild(signRow);
+      panel.appendChild(card);
+    }
+
+    for (const c of (state.candidates || []).filter((x) => x.provider === p.id)) {
+      const card = el('div', 'acct');
+      const top = el('div', 'top');
+      top.appendChild(el('div', 'who', `<b>Found: ${esc(c.label)}</b><span>${esc(c.home)}</span>`));
+      top.appendChild(el('div', 'sp'));
+      const reg = el('button', 'btn primary', 'Register');
+      reg.addEventListener('click', async () => {
+        await sb.register(c);
+        toast(`Registered "${c.label}".`);
+        renderAccounts();
+      });
+      top.appendChild(reg);
+      card.appendChild(top);
+      card.appendChild(el('div', 'qnote', 'This folder looks like a signed-in account that is not registered yet.'));
+      panel.appendChild(card);
+    }
+
+    const add = el('button', 'addbtn', `+ Add ${esc(p.name)} account`);
+    add.addEventListener('click', async () => {
+      const r = await sb.addAccount(p.id);
+      if (r.ok) toast(`Registered "${r.account.label}". Sign it in from a terminal: ${r.loginHint}`);
+      renderAccounts();
+    });
+    panel.appendChild(add);
+  }
+
+  panel.appendChild(el('div', 'grouphead', 'Antigravity (Google)'));
+  const ag = await sb.antigravity();
+  const agCard = el('div', 'acct' + (ag.cliInstalled || ag.appInstalled ? ' active' : ''));
+  const agTop = el('div', 'top');
+  const agState = [ag.appInstalled ? 'app installed' : 'app not installed', ag.cliInstalled ? 'agy CLI installed' : 'agy CLI not installed'].join(' &middot; ');
+  agTop.appendChild(el('div', 'who', `<b>This machine's Google login</b><span>${agState}</span>`));
+  agTop.appendChild(el('div', 'sp'));
+  if (ag.cliInstalled) {
+    const open = el('button', 'btn', 'Open agy terminal');
+    open.addEventListener('click', () => sb.openTerminal('agy'));
+    agTop.appendChild(open);
+  } else {
+    const inst = el('button', 'btn primary', 'Install CLI');
+    inst.addEventListener('click', async () => {
+      inst.disabled = true;
+      const r = await sb.install('antigravity', 'install');
+      toast(`Opened a terminal running: ${r.cmd}`);
+      inst.textContent = 'Waiting for install…';
+      pollUntil(async () => (await sb.antigravity()).cliInstalled, () => {
+        toast('Antigravity CLI installed. Sign in once from its terminal.');
+        renderAccounts();
+      }, () => {
+        toast('Still not seeing agy. Check the terminal output.');
+        renderAccounts();
+      });
+    });
+    agTop.appendChild(inst);
+  }
+  agCard.appendChild(agTop);
+  agCard.appendChild(el('div', 'qnote', 'One Google login per machine, by the vendor\'s design: no account switching and no usage API for Switchboard to read. Check usage inside agy with /usage, credits with /credits.'));
+  panel.appendChild(agCard);
+
+  const presence = await sb.presence();
+  if (presence.length) {
+    panel.appendChild(el('div', 'grouphead', 'Other tool accounts'));
+    for (const t of presence) {
+      const card = el('div', 'acct' + (t.signedIn ? ' active' : ''));
+      const top = el('div', 'top');
+      const state = [t.cliInstalled ? 'CLI installed' : 'CLI not installed', t.signedIn ? 'signed in' : 'not signed in'].join(' &middot; ');
+      top.appendChild(el('div', 'who', `<b>${esc(t.name)} <small style="font-weight:400;color:var(--muted)">(${esc(t.account)})</small></b><span>${state}</span>`));
+      top.appendChild(el('div', 'sp'));
+      if (t.signedIn) top.appendChild(el('span', 'badge', 'SIGNED IN'));
+      if (t.cliInstalled) {
+        const open = el('button', 'btn', t.signedIn ? 'Open terminal' : 'Sign in');
+        open.addEventListener('click', () => {
+          sb.openTerminal(t.bin);
+          if (!t.signedIn) {
+            pollUntil(async () => (await sb.presence()).find((x) => x.id === t.id)?.signedIn === true, () => {
+              toast(`${t.name} signed in.`);
+              renderAccounts();
+            }, null);
+          }
+        });
+        top.appendChild(open);
+      }
+      card.appendChild(top);
+      card.appendChild(el('div', 'qnote', esc(t.note)));
+      panel.appendChild(card);
+    }
+  }
+
+  panel.appendChild(el('p', 'panelnote', 'Switching changes the default for <b>new</b> terminals and newly launched tools. Running apps and pinned automation are never touched.'));
+  $('#defaults').innerHTML = names.length ? 'Defaults for new terminals: ' + names.join(' &middot; ') : 'No active accounts registered yet.';
+}
+
+const TOOL_COLORS = { claude: '#c96f4a', codex: '#10a37f', gemini: '#4285f4', copilot: '#24292f', junie: '#087cfa', qwen: '#615ced', amp: '#f34e3f', opencode: '#5b6675', grok: '#1c1c1c', cursor: '#3b3b3b', aider: '#0a7d36', antigravity: '#2e6ff2', ollama: '#222222', lmstudio: '#6d28d9' };
+
+async function renderProviders() {
+  const panel = $('#tab-providers');
+  let tools;
+  try {
+    tools = await sb.providers();
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">Detection failed: ${esc(e.message || e)}</div>`;
+    return;
+  }
+  panel.innerHTML = '';
+  const rows = {};
+  for (const t of tools) {
+    const row = el('div', 'prov');
+    row.appendChild(el('div', 'pi', esc(t.name[0])));
+    row.lastChild.style.background = TOOL_COLORS[t.id] || '#5b6675';
+    const sub = t.installed
+      ? `Installed${t.version ? ' &middot; ' + esc(t.version) : ''}${t.bin && !t.onPath ? '<span class="chip">not on PATH</span>' : ''}<span class="upd" style="color:var(--muted)"> &middot; checking for updates&hellip;</span>`
+      : `Not installed${t.note ? ' &middot; ' + esc(t.note) : ''}`;
+    const pm = el('div', 'pm', `<b>${esc(t.name)}${t.url ? ` <a class="ext" title="Vendor site">&#8599;</a>` : ''}</b><span>${sub}</span>`);
+    if (t.url) pm.querySelector('.ext').addEventListener('click', () => sb.openExternal(t.url));
+    row.appendChild(pm);
+    if (!t.installed && t.install.via !== 'manual') {
+      const btn = el('button', 'btn primary', 'Install');
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const r = await sb.install(t.id, 'install');
+        toast(`Opened a terminal running: ${r.cmd}`);
+        watchTool(t, btn, true);
+      });
+      row.appendChild(btn);
+    }
+    const toolMenu = [];
+    if (t.installed && t.install.via !== 'manual') {
+      toolMenu.push({
+        label: 'Reinstall',
+        onClick: async () => {
+          if (!confirm(`Reinstall ${t.name}? This re-runs the vendor install in a visible terminal, useful when the tool is misbehaving. Accounts and config folders are not touched.`)) return;
+          const r = await sb.install(t.id, 'reinstall');
+          toast(`Reinstalling in the terminal: ${r.cmd}`);
+        },
+      });
+    }
+    if (t.installed && t.uninstallCmd) {
+      toolMenu.push({
+        label: 'Uninstall',
+        danger: true,
+        onClick: async () => {
+          if (!confirm(`Uninstall ${t.name}? This runs "${t.uninstallCmd}" in a visible terminal. Your accounts and their config folders are not touched.`)) return;
+          const r = await sb.install(t.id, 'uninstall');
+          toast(`Opened a terminal running: ${r.cmd}`);
+          watchTool(t, null, false);
+        },
+      });
+    }
+    if (toolMenu.length) attachMenu(row, toolMenu);
+    rows[t.id] = row;
+    panel.appendChild(row);
+  }
+  panel.appendChild(el('p', 'panelnote', 'Install, update, and uninstall run in a visible terminal through the vendor\'s own mechanism (winget, npm, pip). "Update available" comes from asking that same mechanism; Switchboard never guesses, and it never wires a button to an unverified package. The &#8599; icon opens the vendor site. Re-detect by reopening this tab.'));
+
+  // Second pass: only claim an update when the vendor mechanism reports one.
+  const updates = await sb.updates();
+  for (const [id, u] of Object.entries(updates)) {
+    const row = rows[id];
+    if (!row) continue;
+    const slot = row.querySelector('.upd');
+    if (!slot) continue;
+    if (u.updateAvailable === true) {
+      slot.innerHTML = ` &middot; <b style="color:var(--warn)">update available${u.latest ? ': ' + esc(u.latest) : ''}</b>`;
+      const btn = el('button', 'btn', 'Update');
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const r = await sb.install(id, 'update');
+        toast(`Opened a terminal running: ${r.cmd}`);
+        btn.textContent = 'Terminal opened';
+      });
+      row.appendChild(btn);
+    } else if (u.updateAvailable === false) {
+      slot.innerHTML = ' &middot; up to date';
+    } else {
+      slot.innerHTML = ' &middot; update status unknown';
+    }
+  }
+}
+
+const APP_COLORS = { 'claude-desktop': '#c96f4a', t3code: '#7c3aed', chatgpt: '#10a37f', antigravity: '#2e6ff2', lmstudio: '#6d28d9' };
+
+async function renderApps() {
+  const panel = $('#tab-apps');
+  let apps;
+  try {
+    apps = await sb.apps();
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">Detection failed: ${esc(e.message || e)}</div>`;
+    return;
+  }
+  panel.innerHTML = '';
+
+  panel.appendChild(el('div', 'grouphead', 'Terminals (open on the active account)'));
+  for (const t of [{ bin: 'claude', label: 'Claude Code terminal' }, { bin: 'codex', label: 'Codex terminal' }]) {
+    const row = el('div', 'prov');
+    row.appendChild(el('div', 'pi', '&gt;_'));
+    row.lastChild.style.background = '#33404f';
+    row.appendChild(el('div', 'pm', `<b>${esc(t.label)}</b><span>Uses the current machine default</span>`));
+    const btn = el('button', 'btn', 'Open');
+    btn.addEventListener('click', () => sb.openTerminal(t.bin));
+    row.appendChild(btn);
+    panel.appendChild(row);
+  }
+
+  panel.appendChild(el('div', 'grouphead', 'Applications'));
+  for (const a of apps) {
+    const row = el('div', 'prov');
+    row.appendChild(el('div', 'pi', esc(a.name[0])));
+    row.lastChild.style.background = APP_COLORS[a.id] || '#5b6675';
+    const apm = el('div', 'pm', `<b>${esc(a.name)}${a.url ? ` <a class="ext" title="Vendor site">&#8599;</a>` : ''}</b><span>${a.installed ? 'Installed' : 'Not installed'}${a.custom ? ' &middot; custom launcher' : ''}</span>`);
+    if (a.url) apm.querySelector('.ext').addEventListener('click', () => sb.openExternal(a.url));
+    row.appendChild(apm);
+    if (a.installed) {
+      const launch = el('button', 'btn primary', 'Launch');
+      launch.addEventListener('click', () => sb.appLaunch(a.id));
+      row.appendChild(launch);
+      const appMenu = [];
+      if (a.custom) {
+        appMenu.push({ label: 'Remove launcher', danger: true, onClick: async () => { await sb.removeCustomApp(a.appId); renderApps(); } });
+      } else {
+        if (a.install?.via === 'winget') {
+          appMenu.push({
+            label: 'Reinstall',
+            onClick: async () => {
+              if (!confirm(`Reinstall ${a.name}? This re-runs the vendor install in a visible terminal, useful when the app is misbehaving.`)) return;
+              const r = await sb.appInstall(a.id, 'reinstall');
+              toast(`Reinstalling in the terminal: ${r.cmd}`);
+            },
+          });
+          appMenu.push({
+            label: 'Uninstall',
+            danger: true,
+            onClick: async () => {
+              if (!confirm(`Uninstall ${a.name}? This runs winget uninstall in a visible terminal. Your data and logins for that app are handled by its own uninstaller.`)) return;
+              const r = await sb.appInstall(a.id, 'uninstall');
+              toast(`Opened a terminal running: ${r.cmd}`);
+              watchApp(a, null, false);
+            },
+          });
+        }
+      }
+      if (appMenu.length) attachMenu(row, appMenu);
+    } else if (a.install?.via === 'manual') {
+      const btn = el('button', 'btn', 'Get');
+      btn.addEventListener('click', () => sb.openExternal(a.install.url));
+      row.appendChild(btn);
+    } else if (a.install) {
+      const btn = el('button', 'btn primary', 'Install');
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const r = await sb.appInstall(a.id, 'install');
+        toast(`Opened a terminal running: ${r.cmd}`);
+        watchApp(a, btn, true);
+      });
+      row.appendChild(btn);
+    }
+    panel.appendChild(row);
+  }
+
+  const add = el('button', 'addbtn', '+ Add a launcher from the Start menu');
+  add.addEventListener('click', openPicker);
+  panel.appendChild(add);
+  panel.appendChild(el('p', 'panelnote', 'Launching is where Switchboard stops: it never manages what an app does or which account a GUI app is signed into.'));
+}
+
+function watchApp(a, btn, expectInstalled) {
+  let ticks = 0;
+  if (btn) btn.textContent = expectInstalled ? 'Waiting for install…' : 'Waiting for removal…';
+  const timer = setInterval(async () => {
+    ticks += 1;
+    let apps;
+    try { apps = await sb.apps(); } catch { return; }
+    const now = apps.find((x) => x.id === a.id);
+    if (now && now.installed === expectInstalled) {
+      clearInterval(timer);
+      toast(expectInstalled ? `${a.name} installed.` : `${a.name} removed.`);
+      renderApps();
+      return;
+    }
+    if (ticks >= 50) { // ~5 minutes
+      clearInterval(timer);
+      toast(`Still not seeing ${a.name} ${expectInstalled ? 'appear' : 'go away'}. Check the terminal output.`);
+      renderApps();
+    }
+  }, 6000);
+}
+
+async function openPicker() {
+  const overlay = $('#picker');
+  const list = $('#picker-list');
+  const filter = $('#picker-filter');
+  overlay.style.display = 'block';
+  list.innerHTML = '<div class="empty">Loading Start menu entries&hellip;</div>';
+  const entries = await sb.startAppsList();
+  const render = () => {
+    const q = filter.value.toLowerCase();
+    list.innerHTML = '';
+    for (const e of entries.filter((x) => x.name.toLowerCase().includes(q)).slice(0, 60)) {
+      const item = el('div', 'hc', `<div class="hm">${esc(e.name)}</div>`);
+      item.style.cursor = 'pointer';
+      item.addEventListener('click', async () => {
+        await sb.addCustomApp({ label: e.name, appId: e.appId });
+        overlay.style.display = 'none';
+        renderApps();
+      });
+      list.appendChild(item);
+    }
+  };
+  filter.value = '';
+  filter.oninput = render;
+  render();
+  filter.focus();
+  $('#picker-close').onclick = () => { overlay.style.display = 'none'; };
+}
+
+/** A "..." menu of secondary actions on a row. One open at a time; outside click closes. */
+function attachMenu(row, items) {
+  const kebab = el('button', 'kebab', '&#8943;');
+  kebab.title = 'More actions';
+  const menu = el('div', 'menu');
+  for (const item of items) {
+    const b = el('button', item.danger ? 'danger' : '', esc(item.label));
+    b.addEventListener('click', (ev) => { ev.stopPropagation(); menu.classList.remove('open'); item.onClick(); });
+    menu.appendChild(b);
+  }
+  kebab.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    document.querySelectorAll('.menu.open').forEach((m) => { if (m !== menu) m.classList.remove('open'); });
+    menu.classList.toggle('open');
+  });
+  row.appendChild(kebab);
+  row.appendChild(menu);
+}
+document.addEventListener('click', () => document.querySelectorAll('.menu.open').forEach((m) => m.classList.remove('open')));
+
+/** Poll a condition every 4s for ~5 minutes; onDone when true, onTimeout (optional) after the cap. */
+function pollUntil(condition, onDone, onTimeout) {
+  let ticks = 0;
+  const timer = setInterval(async () => {
+    ticks += 1;
+    let hit = false;
+    try { hit = await condition(); } catch { /* try again next tick */ }
+    if (hit) { clearInterval(timer); onDone(); return; }
+    if (ticks >= 75) { clearInterval(timer); if (onTimeout) onTimeout(); }
+  }, 4000);
+}
+
+/**
+ * After opening an install/uninstall terminal, watch for the tool's state to
+ * actually flip, and only then declare success. Five-minute cap with an honest
+ * timeout message; the panel re-renders itself either way.
+ */
+function watchTool(t, btn, expectInstalled) {
+  let ticks = 0;
+  if (btn) btn.textContent = expectInstalled ? 'Waiting for install…' : 'Waiting for removal…';
+  const timer = setInterval(async () => {
+    ticks += 1;
+    let d;
+    try { d = await sb.detectOne(t.id); } catch { return; }
+    if (d.installed === expectInstalled) {
+      clearInterval(timer);
+      toast(expectInstalled ? `${t.name} installed${d.version ? ` (${d.version})` : ''}.` : `${t.name} removed.`);
+      renderProviders();
+      return;
+    }
+    if (ticks >= 75) { // ~5 minutes
+      clearInterval(timer);
+      toast(`Still not seeing ${t.name} ${expectInstalled ? 'appear' : 'go away'}. Check the terminal output; if it succeeded and added a new PATH entry, restart Switchboard to pick it up.`);
+      renderProviders();
+    }
+  }, 4000);
+}
+
+const MARK = { ok: '&#10003;', warn: '!', bad: '&#10007;', info: 'i' };
+
+async function renderHealth() {
+  const panel = $('#tab-health');
+  panel.innerHTML = '<div class="empty">Running checks&hellip;</div>';
+  const checks = await sb.doctor();
+  panel.innerHTML = '';
+  for (const c of checks) {
+    const row = el('div', 'hc ' + c.level);
+    row.appendChild(el('div', 'hi', MARK[c.level] || 'i'));
+    row.appendChild(el('div', 'hm', `${esc(c.title)}<span>${esc(c.detail)}</span>`));
+    if (c.fix) {
+      const btn = el('button', 'btn', esc(c.fix.label));
+      btn.addEventListener('click', async () => {
+        if (!confirm(c.fix.confirm)) return;
+        btn.disabled = true;
+        try {
+          const r = await sb.fix(c.fix.action, c.fix.args);
+          toast(r.did || 'Done.');
+          renderHealth();
+        } catch (e) {
+          btn.disabled = false;
+          toast('Fix failed: ' + (e.message || e));
+        }
+      });
+      row.appendChild(btn);
+    }
+    panel.appendChild(row);
+  }
+  const foot = el('div', 'healthfoot');
+  const run = el('button', 'btn primary', 'Run checks again');
+  run.addEventListener('click', renderHealth);
+  foot.appendChild(run);
+  foot.appendChild(el('span', 'last', 'Last run: just now'));
+  panel.appendChild(foot);
+}
+
+sb.onRefresh(() => renderAccounts());
+sb.onNavigate((hash) => openTab(hash));
+renderAccounts();
+</script>
+</body>
+</html>

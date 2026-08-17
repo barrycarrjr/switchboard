@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.forbidden-local.json
+build/icon.ico
+assets/tray.png
+assets/icon-256.png
+*.log
+.DS_Store
