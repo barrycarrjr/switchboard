@@ -100,6 +100,14 @@
     <div class="name">Switchboard</div>
     <div class="ver" id="ver" title="Check for updates" style="cursor:pointer"></div>
   </div>
+  <div id="updateOverlay" style="display:none;position:fixed;inset:0;background:rgba(20,25,35,.55);z-index:8">
+    <div style="background:var(--card);border-radius:12px;max-width:330px;margin:150px auto;padding:22px;text-align:center">
+      <div class="appicon" style="margin:0 auto 10px;width:34px;height:34px;font-size:17px">S</div>
+      <b style="font-size:1rem">Updating Switchboard</b>
+      <div id="updStatus" style="color:var(--muted);font-size:.85rem;margin:8px 0 12px">Starting download&hellip;</div>
+      <div class="bar" style="height:8px"><i id="updBar" style="width:0%"></i></div>
+    </div>
+  </div>
   <div id="repoModal" style="display:none;position:fixed;inset:0;background:rgba(20,25,35,.45);z-index:6">
     <div style="background:var(--card);border-radius:10px;max-width:340px;margin:90px auto;padding:16px;display:flex;flex-direction:column;gap:9px">
       <b style="font-size:.95rem">Where do updates come from?</b>
@@ -733,7 +741,7 @@ async function renderAbout() {
     if (r.available) {
       verNote.innerHTML = `A newer version is available: <b>${esc(r.tag)}</b>. `;
       const go = el('button', 'btn primary', `Update to ${esc(r.tag)}`);
-      go.addEventListener('click', () => runUpdate(r, go, 'Launching installer…'));
+      go.addEventListener('click', () => runUpdate(r, go));
       verNote.appendChild(go);
       showUpdateButton(r);
     } else if (r.error === 'no-repo') {
@@ -802,27 +810,32 @@ const UPDATE_ERRORS = {
 };
 
 let updateBusy = false;
-let progressTarget = null;
+let updatingTag = null;
 sb.onUpdateProgress(({ received, total }) => {
-  if (!progressTarget) return;
+  if (!updateBusy) return;
   const pct = total ? Math.round((received / total) * 100) : null;
-  progressTarget.innerHTML = `<span class="spin"></span>Downloading${pct != null ? ' ' + pct + '%' : '…'}`;
+  const done = total && received >= total;
+  $('#updBar').style.width = (pct ?? 30) + '%';
+  $('#updStatus').textContent = done
+    ? 'Restarting to finish the update…'
+    : `Downloading ${updatingTag ?? ''}${pct != null ? ` (${pct}%)` : '…'}`;
 });
 
-async function runUpdate(info, button, doneText) {
+async function runUpdate(info, button) {
   if (updateBusy) return;
   updateBusy = true;
+  updatingTag = info.tag;
   button.disabled = true;
-  progressTarget = button;
-  button.innerHTML = '<span class="spin"></span>Starting download…';
+  $('#updStatus').textContent = 'Starting download…';
+  $('#updBar').style.width = '0%';
+  $('#updateOverlay').style.display = 'block';
   try {
     await sb.updateRun(info.tag, info.assetUrl ?? null);
-    progressTarget = null;
-    button.innerHTML = doneText;
-    toast('Installer launched. Switchboard will close, upgrade, and restart itself.');
+    $('#updStatus').textContent = 'Restarting to finish the update…';
+    $('#updBar').style.width = '100%';
   } catch (e) {
     updateBusy = false;
-    progressTarget = null;
+    $('#updateOverlay').style.display = 'none';
     button.disabled = false;
     button.textContent = `Update to ${info.tag}`;
     toast('Update failed: ' + (e.message || e));
@@ -834,7 +847,7 @@ function showUpdateButton(info) {
   v.innerHTML = '';
   const b = el('button', 'btn primary', `Update to ${esc(info.tag)}`);
   b.style.fontSize = '.78rem';
-  b.addEventListener('click', () => runUpdate(info, b, 'Launching installer…'));
+  b.addEventListener('click', () => runUpdate(info, b));
   v.appendChild(b);
 }
 

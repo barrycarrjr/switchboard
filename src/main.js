@@ -456,7 +456,11 @@ ipcMain.handle('sb:updateRun', async (_e, tag, assetUrl) => {
       win?.webContents.send('sb:updateProgress', { received, total });
     },
   });
-  // The installer closes the running app, upgrades in place, and relaunches.
+  // A short hold so the "restarting" state is legible even on a connection fast
+  // enough to finish the download in a blink; then the installer closes the app,
+  // upgrades in place, and relaunches.
+  win?.webContents.send('sb:updateProgress', { received: 1, total: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 1000));
   spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
   return { ok: true };
 });
