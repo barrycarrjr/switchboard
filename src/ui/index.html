@@ -241,7 +241,7 @@ async function renderAccounts() {
       if (a.provider === 'claude') {
         const bars = el('div', 'bars', '<div class="resets">Loading quota&hellip;</div>');
         card.appendChild(bars);
-        sb.quota(a.id).then((q) => {
+        const fillQuota = () => sb.quota(a.id).then((q) => {
           if (q.error) {
             if (q.error === 'no-credentials') {
               bars.innerHTML = '<div class="resets">No readable token (the credentials live in the system store).</div>';
@@ -251,9 +251,17 @@ async function renderAccounts() {
                 if (r.ok) renderAccounts();
               });
               bars.appendChild(link);
+            } else if (q.error === 'auth') {
+              bars.innerHTML = '<div class="resets">The stored token needs a refresh: use "Sign in / re-authenticate" below, run one prompt in that terminal, then retry.</div>';
             } else {
-              bars.innerHTML = '<div class="resets">Quota unavailable right now</div>';
+              bars.innerHTML = '<div class="resets">Quota unavailable right now.</div>';
             }
+            const retry = el('div', 'qnote', '<a>Retry</a>');
+            retry.querySelector('a').addEventListener('click', () => {
+              bars.innerHTML = '<div class="resets">Loading quota&hellip;</div>';
+              fillQuota();
+            });
+            bars.appendChild(retry);
             return;
           }
           bars.innerHTML = '';
@@ -272,6 +280,7 @@ async function renderAccounts() {
           }
           if (resets.length) bars.appendChild(el('div', 'resets', resets.join(' &middot; ')));
         });
+        fillQuota();
       } else if (a.provider === 'codex') {
         const note = el('div', 'qnote', 'No usage API for Codex subscriptions. <a>View usage on the official page</a>');
         note.querySelector('a').addEventListener('click', () => sb.openExternal('https://chatgpt.com/codex/settings/usage'));

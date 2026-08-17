@@ -83,7 +83,9 @@ async function main() {
       for (const a of registry.accounts.filter((x) => x.provider === 'claude')) {
         out(`${a.label} (${a.home})`);
         const q = await accountQuota(a.home);
-        if (q.error) out(`  quota ${q.error === 'no-credentials' ? 'unavailable: no readable token (sign in, or the credentials live in the system store)' : 'unavailable'}`);
+        if (q.error === 'no-credentials') out('  quota unavailable: no readable token (sign in, or the credentials live in the system store)');
+        else if (q.error === 'auth') out('  quota unavailable: stored token needs a refresh (run the CLI once on this account)');
+        else if (q.error) out('  quota unavailable right now');
         else q.windows.forEach((w) => out(fmtWindow(w)));
       }
       const codex = registry.accounts.filter((x) => x.provider === 'codex');

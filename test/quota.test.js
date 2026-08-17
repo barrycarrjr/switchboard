@@ -70,10 +70,12 @@ test('fetchClaudeQuota sends the bearer token and beta header', async () => {
   assert.equal(seen.init.headers['anthropic-beta'], 'oauth-2025-04-20');
 });
 
-test('accountQuota reports unknowns instead of guessing', async () => {
+test('accountQuota reports unknowns instead of guessing, and names auth failures', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-q2-'));
   assert.deepEqual(await accountQuota(dir), { error: 'no-credentials' });
   fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't' } }));
-  const failingFetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
-  assert.deepEqual(await accountQuota(dir, failingFetch), { error: 'unavailable' });
+  const failWith = (status) => async () => ({ ok: false, status, json: async () => ({}) });
+  assert.deepEqual(await accountQuota(dir, failWith(500)), { error: 'unavailable' });
+  assert.deepEqual(await accountQuota(dir, failWith(401)), { error: 'auth' });
+  assert.deepEqual(await accountQuota(dir, failWith(403)), { error: 'auth' });
 });

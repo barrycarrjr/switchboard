@@ -75,7 +75,11 @@ export async function fetchClaudeQuota(token, fetchImpl = fetch) {
       headers: { authorization: `Bearer ${token}`, 'anthropic-beta': OAUTH_BETA },
       signal: controller.signal,
     });
-    if (!resp.ok) throw new Error(`usage endpoint returned ${resp.status}`);
+    if (!resp.ok) {
+      const err = new Error(`usage endpoint returned ${resp.status}`);
+      err.status = resp.status;
+      throw err;
+    }
     return mapUsage(await resp.json());
   } finally {
     clearTimeout(timer);
@@ -117,8 +121,10 @@ export async function accountQuota(home, fetchImpl = fetch, usageSource = null, 
   if (token) {
     try {
       return { windows: await fetchClaudeQuota(token, fetchImpl), source: 'token' };
-    } catch {
-      return { error: 'unavailable' };
+    } catch (e) {
+      // 401/403 means the stored access token is stale; the vendor CLI refreshes it
+      // on its next real use, which is an actionable instruction, not a shrug.
+      return { error: e.status === 401 || e.status === 403 ? 'auth' : 'unavailable' };
     }
   }
   if (usageSource) {
