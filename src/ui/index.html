@@ -96,7 +96,18 @@
   <div class="titlebar">
     <div class="appicon">S</div>
     <div class="name">Switchboard</div>
-    <div class="ver" id="ver"></div>
+    <div class="ver" id="ver" title="Check for updates" style="cursor:pointer"></div>
+  </div>
+  <div id="repoModal" style="display:none;position:fixed;inset:0;background:rgba(20,25,35,.45);z-index:6">
+    <div style="background:var(--card);border-radius:10px;max-width:340px;margin:90px auto;padding:16px;display:flex;flex-direction:column;gap:9px">
+      <b style="font-size:.95rem">Where do updates come from?</b>
+      <span style="font-size:.8rem;color:var(--muted)">The GitHub repository that publishes Switchboard releases, as owner/name.</span>
+      <input id="repoInput" placeholder="owner/name" style="font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px">
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" id="repoCancel">Cancel</button>
+        <button class="btn primary" id="repoSave">Save</button>
+      </div>
+    </div>
   </div>
   <div class="defaults" id="defaults">Loading&hellip;</div>
   <div class="tabs">
@@ -665,6 +676,66 @@ async function renderHealth() {
   foot.appendChild(el('span', 'last', 'Last run: just now'));
   panel.appendChild(foot);
 }
+
+// ---- Self-update surface: the version number is the button. ----
+const UPDATE_ERRORS = {
+  'no-gh': 'This update source is private; updates need the GitHub CLI (gh) signed in.',
+  'no-auth': 'gh is not signed in; run: gh auth login',
+  'no-release': 'No releases published yet.',
+  'api': 'Update check failed; try again later.',
+};
+
+function showUpdateButton(info) {
+  const v = $('#ver');
+  v.innerHTML = '';
+  const b = el('button', 'btn primary', `Update to ${esc(info.tag)}`);
+  b.style.fontSize = '.78rem';
+  b.addEventListener('click', async () => {
+    b.disabled = true;
+    b.textContent = 'Downloading…';
+    try {
+      await sb.updateRun(info.tag, info.assetUrl ?? null);
+      toast('Installer launched. Switchboard will close, upgrade, and restart itself.');
+    } catch (e) {
+      b.disabled = false;
+      b.textContent = `Update to ${info.tag}`;
+      toast('Update failed: ' + (e.message || e));
+    }
+  });
+  v.appendChild(b);
+}
+
+async function manualUpdateCheck() {
+  const v = $('#ver');
+  const original = v.textContent;
+  v.textContent = 'checking…';
+  const r = await sb.updateCheck();
+  if (r.available) { showUpdateButton(r); return; }
+  v.textContent = original;
+  if (r.error === 'no-repo') { openRepoModal(); return; }
+  if (r.error) { toast(UPDATE_ERRORS[r.error] || r.error); return; }
+  toast('Switchboard is up to date.');
+}
+
+function openRepoModal() {
+  const overlay = $('#repoModal');
+  overlay.style.display = 'block';
+  const input = $('#repoInput');
+  sb.getUpdateRepo().then((slug) => { input.value = slug ?? ''; input.focus(); });
+  $('#repoCancel').onclick = () => { overlay.style.display = 'none'; };
+  $('#repoSave').onclick = async () => {
+    try {
+      await sb.setUpdateRepo(input.value.trim() || null);
+      overlay.style.display = 'none';
+      if (input.value.trim()) manualUpdateCheck();
+    } catch (e) {
+      toast(e.message || String(e));
+    }
+  };
+}
+
+$('#ver').addEventListener('click', manualUpdateCheck);
+sb.onUpdateAvailable((info) => showUpdateButton(info));
 
 sb.onRefresh(() => renderAccounts());
 sb.onNavigate((hash) => openTab(hash));

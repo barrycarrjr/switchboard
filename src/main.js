@@ -10,6 +10,15 @@ import { applyFix } from '../core/fixes.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import { detectApps, getStartApps, launchApp, antigravityPresence, APPS } from '../core/apps.js';
 import { detectPresence } from '../core/presence.js';
+import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
+import { createRequire } from 'node:module';
+
+// CI stamps updateRepo into the packaged package.json (extraMetadata); the committed
+// source carries no repository name. Local settings, when set, win over the stamp.
+const pkgMeta = createRequire(import.meta.url)('../package.json');
+function effectiveUpdateRepo() {
+  return loadSettings().updateRepo ?? pkgMeta.updateRepo ?? null;
+}
 import { snapshotQuotas, decideDefaultSwitch } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 
@@ -232,6 +241,16 @@ app.whenReady().then(() => {
   // Quota watch: first pass shortly after startup, then every five minutes.
   setTimeout(runQuotaWatch, 20 * 1000);
   setInterval(runQuotaWatch, 5 * 60 * 1000);
+
+  // Update check: shortly after startup, then twice a day. Renderer shows the button.
+  const updateCheck = async () => {
+    try {
+      const r = await checkAppUpdate({ repo: effectiveUpdateRepo(), currentVersion: app.getVersion() });
+      if (r.available) win?.webContents.send('sb:updateAvailable', { tag: r.tag, assetUrl: r.assetUrl ?? null });
+    } catch { /* checked again next interval */ }
+  };
+  setTimeout(updateCheck, 30 * 1000);
+  setInterval(updateCheck, 12 * 60 * 60 * 1000);
 });
 
 app.on('window-all-closed', () => { /* stay in the tray */ });
@@ -414,6 +433,29 @@ ipcMain.handle('sb:setUsageSource', async (_e, accountId) => {
 ipcMain.handle('sb:openExternal', (_e, url) => {
   if (!/^https:\/\//.test(url)) throw new Error('https URLs only');
   return shell.openExternal(url);
+});
+
+// ---- Self-update through the user's own gh login; see core/updatecheck.js ----
+
+ipcMain.handle('sb:updateCheck', () => {
+  return checkAppUpdate({ repo: effectiveUpdateRepo(), currentVersion: app.getVersion() });
+});
+
+ipcMain.handle('sb:updateRun', async (_e, tag, assetUrl) => {
+  const exe = await downloadUpdate({ repo: effectiveUpdateRepo(), tag, assetUrl, dir: app.getPath('temp') });
+  // The installer closes the running app, upgrades in place, and relaunches.
+  spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+  return { ok: true };
+});
+
+ipcMain.handle('sb:getUpdateRepo', () => effectiveUpdateRepo());
+
+ipcMain.handle('sb:setUpdateRepo', (_e, slug) => {
+  if (slug !== null && !validRepoSlug(slug)) throw new Error('use the owner/name form');
+  const settings = loadSettings();
+  settings.updateRepo = slug;
+  saveSettings(settings);
+  return { ok: true };
 });
 
 ipcMain.handle('sb:openPath', (_e, p) => shell.openPath(p));

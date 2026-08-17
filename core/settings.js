@@ -9,6 +9,7 @@ const DEFAULTS = {
   usageSources: {},           // accountId -> Claude Desktop profile folder
   lastAutoSwitchAt: 0,
   customApps: [],             // [{label, appId}] user-added launchers from the Start menu
+  updateRepo: null,           // "owner/name" GitHub slug for self-update; local-only by design
 };
 
 export function settingsFile() {

@@ -28,6 +28,11 @@ contextBridge.exposeInMainWorld('sb', {
   addCustomApp: (entry) => ipcRenderer.invoke('sb:addCustomApp', entry),
   removeCustomApp: (appId) => ipcRenderer.invoke('sb:removeCustomApp', appId),
   openTerminal: (bin) => ipcRenderer.invoke('sb:openTerminal', bin),
+  updateCheck: () => ipcRenderer.invoke('sb:updateCheck'),
+  updateRun: (tag, assetUrl) => ipcRenderer.invoke('sb:updateRun', tag, assetUrl),
+  getUpdateRepo: () => ipcRenderer.invoke('sb:getUpdateRepo'),
+  setUpdateRepo: (slug) => ipcRenderer.invoke('sb:setUpdateRepo', slug),
+  onUpdateAvailable: (cb) => ipcRenderer.on('sb:updateAvailable', (_e, info) => cb(info)),
   onRefresh: (cb) => ipcRenderer.on('sb:refresh', cb),
   onNavigate: (cb) => ipcRenderer.on('sb:navigate', (_e, hash) => cb(hash)),
 });

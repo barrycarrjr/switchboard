@@ -21,10 +21,14 @@ touches a running application or any GUI application's login.
 
 ## Install
 
-Run `Switchboard-Setup-<version>.exe`. It installs per-user (no admin prompt) to
+Download the latest `Switchboard-Setup-<version>.exe` from this repository's **Releases**
+page and run it. It installs per-user (no admin prompt) to
 `%LOCALAPPDATA%\Programs\Switchboard`, registers an uninstaller in Apps & Features, and
 running a newer setup upgrades in place. App data lives in `%APPDATA%\Switchboard` and is
 kept on uninstall.
+
+Releases are built by CI from a version tag (`v<version>`); the tag must match the version
+in `package.json`.
 
 ## Development
 
