@@ -350,14 +350,24 @@ async function renderAccounts() {
 
   panel.appendChild(el('div', 'grouphead', 'Antigravity (Google)'));
   const ag = await sb.antigravity();
-  const agCard = el('div', 'acct' + (ag.cliInstalled || ag.appInstalled ? ' active' : ''));
+  const agCard = el('div', 'acct' + (ag.signedIn ? ' active' : ''));
   const agTop = el('div', 'top');
-  const agState = [ag.appInstalled ? 'app installed' : 'app not installed', ag.cliInstalled ? 'agy CLI installed' : 'agy CLI not installed'].join(' &middot; ');
+  const agSigned = ag.signedIn ? `signed in${ag.who ? ' as ' + esc(ag.who) : ''}${ag.plan ? ' (Google AI ' + esc(ag.plan) + ')' : ''}` : 'not signed in';
+  const agState = [ag.appInstalled ? 'app installed' : 'app not installed', ag.cliInstalled ? 'agy CLI installed' : 'agy CLI not installed', agSigned].join(' &middot; ');
   agTop.appendChild(el('div', 'who', `<b>This machine's Google login</b><span>${agState}</span>`));
   agTop.appendChild(el('div', 'sp'));
+  if (ag.signedIn) agTop.appendChild(el('span', 'badge', 'SIGNED IN'));
   if (ag.cliInstalled) {
-    const open = el('button', 'btn', 'Open agy terminal');
-    open.addEventListener('click', () => sb.openTerminal('agy'));
+    const open = el('button', 'btn', ag.signedIn ? 'Open agy terminal' : 'Sign in');
+    open.addEventListener('click', () => {
+      sb.openTerminal('agy');
+      if (!ag.signedIn) {
+        pollUntil(async () => (await sb.antigravity()).signedIn === true, () => {
+          toast('Antigravity signed in.');
+          renderAccounts();
+        }, null);
+      }
+    });
     agTop.appendChild(open);
   } else {
     const inst = el('button', 'btn primary', 'Install CLI');

@@ -46,7 +46,10 @@ export const PRESENCE = [
     bin: 'gemini',
     home: () => path.join(os.homedir(), '.gemini'),
     credFiles: ['oauth_creds.json'],
-    note: 'A separate Google login from Antigravity, even for the same person.',
+    // Google retired Gemini CLI for personal accounts (free / AI Pro / Ultra) on
+    // 2026-06-18 and points those users at Antigravity (agy). Enterprise licenses
+    // and paid API keys still work, so the card stays while the tool is present.
+    note: 'Retired by Google for personal accounts in June 2026, replaced by Antigravity (agy). Still works with enterprise licenses or paid API keys. A separate Google login from Antigravity.',
   },
 ];
 

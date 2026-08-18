@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { findBinIn } from './providers.js';
 import { freshPathDirs } from './env.js';
@@ -68,12 +69,84 @@ export function detectApps(startApps) {
 }
 
 /**
+ * True when a `cmdkey /list:<target>` listing actually contains the credential.
+ * cmdkey exits 0 either way and prints "* NONE *" on a miss, so only a Target
+ * line naming the credential counts. Pure for tests.
+ */
+export function cmdkeyHasCredential(stdout, target) {
+  const escaped = String(target).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('Target:\\s*(?:LegacyGeneric:target=)?' + escaped + '\\s*$', 'mi').test(String(stdout || ''));
+}
+
+/**
+ * The one Google login Antigravity keeps per machine lives in the OS keyring under
+ * the service name "gemini:antigravity" (shared by the desktop app and the agy CLI).
+ * Listing it proves signed-in without ever reading the secret.
+ */
+async function antigravityKeyringPresent() {
+  try {
+    if (process.platform === 'win32') {
+      const { stdout } = await run('cmdkey', ['/list:gemini:antigravity'], { windowsHide: true, timeout: 4000 });
+      return cmdkeyHasCredential(stdout, 'gemini:antigravity');
+    }
+    if (process.platform === 'darwin') {
+      // Exits non-zero (throws) when the item is absent; -s matches the service name.
+      await run('security', ['find-generic-password', '-s', 'gemini:antigravity'], { timeout: 4000 });
+      return true;
+    }
+  } catch { /* absent, or the keyring tool failed: treat as not signed in */ }
+  return false;
+}
+
+/**
+ * Extract identity from the Antigravity desktop app's state store, pure for tests.
+ * The antigravityAuthStatus record also holds a live OAuth token: this reads ONLY
+ * the name, email, and the plan word out of the status proto, and must never touch
+ * or return the token. Plan comes from the printable strings of the base64 proto,
+ * accepted only on an exact tier-name match so a person's name can never leak in.
+ */
+export function parseAntigravityAuth(raw) {
+  const out = { who: null, name: null, plan: null };
+  const text = String(raw || '');
+  // The key string also shows up on SQLite index pages with no value attached, so
+  // walk every occurrence and keep the first one actually followed by the record.
+  for (let at = text.indexOf('antigravityAuthStatus'); at >= 0; at = text.indexOf('antigravityAuthStatus', at + 1)) {
+    const win = text.slice(at, at + 4000);
+    const who = win.match(/"email"\s*:\s*"([^"]+)"/)?.[1] ?? null;
+    if (!who) continue;
+    out.who = who;
+    out.name = win.match(/"name"\s*:\s*"([^"]+)"/)?.[1] ?? null;
+    const b64 = win.match(/"userStatusProtoBinaryBase64"\s*:\s*"([A-Za-z0-9+/=]+)/)?.[1];
+    if (b64) {
+      try {
+        const runs = Buffer.from(b64, 'base64').toString('latin1').match(/[\x20-\x7E]{3,}/g) ?? [];
+        out.plan = runs.find((s) => /^(Free|Pro|Ultra)$/.test(s)) ?? null;
+      } catch { /* not decodable, plan stays unknown */ }
+    }
+    break;
+  }
+  return out;
+}
+
+/** Where the desktop app keeps its state store, most-preferred first. */
+function antigravityStateDbPaths() {
+  const base = process.platform === 'win32'
+    ? path.join(process.env.APPDATA || '', 'Antigravity')
+    : process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support', 'Antigravity')
+      : path.join(os.homedir(), '.config', 'Antigravity');
+  const dir = path.join(base, 'User', 'globalStorage');
+  return [path.join(dir, 'state.vscdb'), path.join(dir, 'state.vscdb.backup')];
+}
+
+/**
  * Antigravity presence for the Accounts page. The vendor caches ONE Google login per
- * machine in the OS keyring, offers no headless whoami/usage command, and no account
- * selection variable, so presence plus honest notes is everything that can be shown.
+ * machine (no account switching, no usage API), but signed-in state IS knowable from
+ * the keyring entry, and who/plan from the desktop app's state store when it exists.
+ * A CLI-only machine still shows signed in, just without the account name.
  */
 export async function antigravityPresence() {
-  const out = { cliInstalled: false, appInstalled: false };
+  const out = { cliInstalled: false, appInstalled: false, signedIn: false, who: null, plan: null };
   try {
     const finder = process.platform === 'win32' ? 'where' : 'which';
     const { stdout } = await run(finder, ['agy'], { windowsHide: true, timeout: 4000 });
@@ -83,6 +156,19 @@ export async function antigravityPresence() {
     out.cliInstalled = findBinIn(freshPathDirs(), 'agy') != null;
   }
   out.appInstalled = fs.existsSync(path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Antigravity', 'Antigravity.exe'));
+  out.signedIn = await antigravityKeyringPresent();
+  if (out.signedIn) {
+    for (const p of antigravityStateDbPaths()) {
+      try {
+        const id = parseAntigravityAuth(fs.readFileSync(p, 'latin1'));
+        if (id.who || id.plan) {
+          out.who = id.who;
+          out.plan = id.plan;
+          break;
+        }
+      } catch { /* no desktop state store to read, keep the keyring answer */ }
+    }
+  }
   return out;
 }
 
