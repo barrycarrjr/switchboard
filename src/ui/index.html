@@ -65,7 +65,21 @@
   .prov{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:6px 0;display:flex;align-items:center;gap:10px;position:relative}
   .kebab{border:none;background:none;font:inherit;font-size:1rem;color:var(--muted);cursor:pointer;padding:2px 8px;border-radius:6px;line-height:1}
   .kebab:hover{background:#eef1f5;color:var(--ink)}
-  .menu{position:absolute;right:8px;top:calc(100% - 6px);background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 22px rgba(20,30,50,.16);z-index:20;min-width:150px;padding:4px;display:none}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 4px}
+  .chips > *{flex:0 0 auto}
+  .btn.term{display:inline-flex;align-items:center;gap:7px;padding:5px 10px;font-size:.82rem}
+  .btn.term i{font-style:normal;font-family:Consolas,ui-monospace,monospace;font-size:.7rem;color:#fff;background:#33404f;border-radius:4px;padding:1px 4px}
+  .btn.term em{font-style:normal;color:var(--muted);font-size:.76rem}
+  .split{position:relative;display:flex;align-items:stretch;flex:0 0 auto}
+  .split .btn{border-top-right-radius:0;border-bottom-right-radius:0}
+  .caret{font:inherit;font-size:.68rem;line-height:1;display:flex;align-items:center;cursor:pointer;padding:0 7px;border:1px solid #c9ced6;border-left:none;border-radius:0 6px 6px 0;background:#fff;color:var(--muted)}
+  .caret:hover{border-color:var(--accent);color:var(--accent)}
+  .btn + .caret{border-left:1px solid #dfe3e9}
+  .btn.primary + .caret{background:var(--accent);border-color:var(--accent);border-left:1px solid rgba(255,255,255,.4);color:#fff}
+  .btn.primary + .caret:hover{color:#fff;filter:brightness(1.08)}
+  .menu{position:absolute;right:8px;top:calc(100% - 6px);background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 22px rgba(20,30,50,.16);z-index:20;min-width:150px;max-width:320px;padding:4px;display:none}
+  .split .menu{right:0;top:calc(100% + 5px)}
+  .menu button span{display:block;color:var(--muted);font-size:.73rem;margin-top:1px;word-break:break-all}
   .menu.open{display:block}
   .menu button{display:block;width:100%;text-align:left;font:inherit;font-size:.85rem;border:none;background:none;padding:7px 11px;border-radius:6px;cursor:pointer}
   .menu button:hover{background:#eef1f5}
@@ -514,17 +528,10 @@ async function renderApps() {
   if (!isCurrentRender('apps', seq)) return;
   const panel = el('div');
 
-  panel.appendChild(el('div', 'grouphead', 'Terminals (open on the active account)'));
-  for (const t of [{ bin: 'claude', label: 'Claude Code terminal' }, { bin: 'codex', label: 'Codex terminal' }]) {
-    const row = el('div', 'prov');
-    row.appendChild(el('div', 'pi', '&gt;_'));
-    row.lastChild.style.background = '#33404f';
-    row.appendChild(el('div', 'pm', `<b>${esc(t.label)}</b><span>Uses the current machine default</span>`));
-    const btn = el('button', 'btn', 'Open');
-    btn.addEventListener('click', () => sb.openTerminal(t.bin));
-    row.appendChild(btn);
-    panel.appendChild(row);
-  }
+  panel.appendChild(el('div', 'grouphead', 'Terminals'));
+  const terminals = el('div');
+  terminals.appendChild(el('div', 'empty', 'Looking for installed CLIs&hellip;'));
+  panel.appendChild(terminals);
 
   panel.appendChild(el('div', 'grouphead', 'Applications'));
   const appIds = apps.map((x) => x.id);
@@ -554,7 +561,6 @@ async function renderApps() {
     if (a.installed) {
       const launch = el('button', 'btn primary', 'Launch');
       launch.addEventListener('click', () => sb.appLaunch(a.id));
-      row.appendChild(launch);
       const appMenu = [];
       if (a.custom) {
         appMenu.push({ label: 'Remove launcher', danger: true, onClick: async () => { await sb.removeCustomApp(a.appId); renderApps(); } });
@@ -580,7 +586,8 @@ async function renderApps() {
           });
         }
       }
-      if (appMenu.length) attachMenu(row, appMenu);
+      if (appMenu.length) attachMenu(row, appMenu, launch);
+      else row.appendChild(launch);
     } else if (a.install?.via === 'manual') {
       const btn = el('button', 'btn', 'Get');
       btn.addEventListener('click', () => sb.openExternal(a.install.url));
@@ -601,8 +608,50 @@ async function renderApps() {
   const add = el('button', 'addbtn', '+ Add a launcher from the Start menu');
   add.addEventListener('click', openPicker);
   panel.appendChild(add);
-  panel.appendChild(el('p', 'panelnote', 'Launching is where Switchboard stops: it never manages what an app does or which account a GUI app is signed into.'));
+  panel.appendChild(el('p', 'panelnote', 'A terminal button opens that CLI on the account named on it, and sets the account for that window only: the machine default and every other running terminal stay as they are. Where a CLI has more than one account, the arrow opens on one of the others. Launching is where Switchboard stops: it never manages what an app does or which account a GUI app is signed into.'));
   realPanel.replaceChildren(...panel.childNodes);
+  fillTerminals(terminals, seq);
+}
+
+/**
+ * Second pass for the Terminals group. Detecting every CLI takes a moment, so the
+ * rest of the panel draws first. One row per installed CLI, and for the CLIs that
+ * keep their sign-in in a config folder, one row per registered account.
+ */
+async function fillTerminals(host, seq) {
+  let chips;
+  try {
+    chips = await sb.terminals();
+  } catch (e) {
+    host.replaceChildren(el('div', 'empty', `Could not detect terminals: ${esc(e.message || e)}`));
+    return;
+  }
+  if (!isCurrentRender('apps', seq)) return;
+  if (!chips.length) {
+    host.replaceChildren(el('div', 'empty', 'No CLI installed yet. The Providers tab installs them.'));
+    return;
+  }
+  const wrap = el('div', 'chips');
+  for (const c of chips) {
+    const on = c.openLabel ? `<em>${esc(c.openLabel)}</em>` : '';
+    const open = el('button', 'btn term', `<i>&gt;_</i>${esc(c.name)}${on}`);
+    const home = c.accounts.find((a) => a.id === c.openAccountId)?.home;
+    open.title = c.openAccountId
+      ? `Opens ${c.name} on ${c.openLabel}\n${home}`
+      : `Runs ${c.bin} on this machine's current sign-in`;
+    open.addEventListener('click', () => sb.openTerminal(c.bin, c.openAccountId));
+    // The arrow only appears when there is genuinely another account to open on.
+    if (c.accounts.length > 1) {
+      attachMenu(wrap, c.accounts.map((a) => ({
+        label: a.label,
+        sub: a.home,
+        onClick: () => sb.openTerminal(c.bin, a.id),
+      })), open);
+    } else {
+      wrap.appendChild(open);
+    }
+  }
+  host.replaceChildren(wrap);
 }
 
 function watchApp(a, btn, expectInstalled) {
@@ -655,25 +704,51 @@ async function openPicker() {
   $('#picker-close').onclick = () => { overlay.style.display = 'none'; };
 }
 
-/** A "..." menu of secondary actions on a row. One open at a time; outside click closes. */
-function attachMenu(row, items) {
-  const kebab = el('button', 'kebab', '&#8943;');
-  kebab.title = 'More actions';
+/**
+ * Secondary actions for a row. Given the row's main button, the two become one
+ * split control: the left half still does the main thing on a single click, and
+ * the caret next to it opens the rest. Rows with no main action (an installed
+ * provider, say) keep a "..." button in the same place. One menu open at a time;
+ * an outside click or Escape closes it.
+ */
+function attachMenu(row, items, primary) {
   const menu = el('div', 'menu');
   for (const item of items) {
-    const b = el('button', item.danger ? 'danger' : '', esc(item.label));
-    b.addEventListener('click', (ev) => { ev.stopPropagation(); menu.classList.remove('open'); item.onClick(); });
+    // An optional second line carries the detail the label leaves out, a config folder
+    // being the case that needs it.
+    const b = el('button', item.danger ? 'danger' : '', item.sub ? `${esc(item.label)}<span>${esc(item.sub)}</span>` : esc(item.label));
+    b.addEventListener('click', (ev) => { ev.stopPropagation(); closeMenus(); item.onClick(); });
     menu.appendChild(b);
   }
-  kebab.addEventListener('click', (ev) => {
+  const toggle = el('button', primary ? 'caret' : 'kebab', primary ? '&#9662;' : '&#8943;');
+  toggle.title = 'More actions';
+  toggle.setAttribute('aria-haspopup', 'true');
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.addEventListener('click', (ev) => {
     ev.stopPropagation();
-    document.querySelectorAll('.menu.open').forEach((m) => { if (m !== menu) m.classList.remove('open'); });
-    menu.classList.toggle('open');
+    const wasOpen = menu.classList.contains('open');
+    closeMenus();
+    if (!wasOpen) {
+      menu.classList.add('open');
+      toggle.setAttribute('aria-expanded', 'true');
+    }
   });
-  row.appendChild(kebab);
-  row.appendChild(menu);
+  if (primary) {
+    const split = el('div', 'split');
+    split.append(primary, toggle, menu);
+    row.appendChild(split);
+  } else {
+    row.append(toggle, menu);
+  }
 }
-document.addEventListener('click', () => document.querySelectorAll('.menu.open').forEach((m) => m.classList.remove('open')));
+function closeMenus() {
+  for (const m of document.querySelectorAll('.menu.open')) {
+    m.classList.remove('open');
+    m.parentElement?.querySelector('[aria-expanded="true"]')?.setAttribute('aria-expanded', 'false');
+  }
+}
+document.addEventListener('click', closeMenus);
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeMenus(); });
 
 /** Poll a condition every 4s for ~5 minutes; onDone when true, onTimeout (optional) after the cap. */
 function pollUntil(condition, onDone, onTimeout) {

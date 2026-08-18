@@ -101,29 +101,40 @@ async function binVersion(bin, args) {
   }
 }
 
+/** Where a tool's binary is, if it is on this machine at all. No version calls. */
+async function locate(tool) {
+  if (tool.bin) {
+    let hit = await whichPath(tool.bin);
+    // The persisted PATH sees entries added since this process started.
+    if (!hit && process.platform === 'win32') hit = findBinIn(freshPathDirs(), tool.bin);
+    if (hit) return { path: hit, onPath: true };
+  }
+  const app = tool.appPaths?.().find((p) => p && fs.existsSync(p));
+  return { path: app ?? null, onPath: false };
+}
+
 export async function detectTool(tool) {
   const out = { id: tool.id, name: tool.name, url: tool.url ?? null, note: tool.note ?? null, bin: tool.bin ?? null, installed: false, onPath: false, version: null, path: null, install: tool.install, uninstallCmd: uninstallCmdFor(tool) };
-  if (tool.bin) {
-    out.path = await whichPath(tool.bin);
-    out.onPath = out.path != null;
-    if (!out.path && process.platform === 'win32') {
-      // The persisted PATH sees entries added since this process started.
-      out.path = findBinIn(freshPathDirs(), tool.bin);
-      out.onPath = out.path != null;
-    }
-    if (out.path) {
-      out.installed = true;
-      out.version = await binVersion(out.path, tool.versionArgs || ['--version']);
-    }
-  }
-  if (!out.installed && tool.appPaths) {
-    const hit = tool.appPaths().find((p) => p && fs.existsSync(p));
-    if (hit) {
-      out.installed = true;
-      out.path = hit;
-    }
-  }
+  const found = await locate(tool);
+  out.path = found.path;
+  out.onPath = found.onPath;
+  out.installed = found.path != null;
+  // A version means running the tool, which is the slow part; only the copy found on
+  // PATH can answer, and an app-path hit is already proof enough that it is installed.
+  if (found.onPath) out.version = await binVersion(out.path, tool.versionArgs || ['--version']);
   return out;
+}
+
+/**
+ * Installed-or-not for every tool. Same lookup as detectTool without asking each one
+ * for its version, which is what makes a full detect take seconds: the terminal
+ * buttons only need to know what exists.
+ */
+export async function detectInstalled() {
+  return Promise.all(TOOLS.map(async (tool) => {
+    const found = await locate(tool);
+    return { id: tool.id, name: tool.name, bin: tool.bin ?? null, installed: found.path != null };
+  }));
 }
 
 export async function detectAll() {

@@ -3,13 +3,14 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, PROVIDERS } from '../core/accounts.js';
-import { detectAll, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, TOOLS } from '../core/providers.js';
+import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, TOOLS } from '../core/providers.js';
 import { runChecks } from '../core/doctor.js';
 import { accountQuota } from '../core/quota.js';
 import { applyFix } from '../core/fixes.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, APPS } from '../core/apps.js';
 import { detectPresence } from '../core/presence.js';
+import { terminalRows, terminalChips } from '../core/terminals.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
 import { createRequire } from 'node:module';
 
@@ -441,11 +442,29 @@ ipcMain.handle('sb:antigravity', () => antigravityPresence());
 
 ipcMain.handle('sb:presence', () => detectPresence());
 
-ipcMain.handle('sb:openTerminal', (_e, bin) => {
-  if (!['claude', 'codex', 'agy', 'junie', 'copilot', 'gemini'].includes(bin)) throw new Error('unknown terminal target');
-  // Inherits the machine defaults, which is the whole point: the terminal opens on
-  // whatever account is currently active.
-  spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', bin], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+ipcMain.handle('sb:terminals', async () => {
+  const activeHomes = {};
+  for (const id of Object.keys(PROVIDERS)) activeHomes[id] = activeHome(id);
+  const rows = terminalRows({ tools: await detectInstalled(), accounts: registry().accounts, activeHomes });
+  return terminalChips(rows);
+});
+
+ipcMain.handle('sb:openTerminal', (_e, bin, accountId = null) => {
+  // Only a bin from the tool table can ever be run, and only an account that belongs
+  // to that tool: the renderer names things, it never supplies a command or a path.
+  const tool = TOOLS.find((t) => t.bin === bin);
+  if (!tool) throw new Error('unknown terminal target');
+  // No account named: inherit the machine defaults, so the terminal opens on whatever
+  // account is currently active. Named: point THIS terminal at that account's folder
+  // through its own environment, leaving the machine default alone.
+  const env = { ...process.env };
+  if (accountId) {
+    const account = registry().accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error(`no such account: ${accountId}`);
+    if (account.provider !== tool.id) throw new Error(`${account.label} is not a ${tool.name} account`);
+    env[PROVIDERS[account.provider].envVar] = account.home;
+  }
+  spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', bin], { detached: true, stdio: 'ignore', windowsHide: false, env }).unref();
   return { ok: true };
 });
 

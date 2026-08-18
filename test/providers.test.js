@@ -62,3 +62,14 @@ test('detectTool reports a missing binary as not installed, without throwing', a
   assert.equal(out.onPath, false);
   assert.equal(out.version, null);
 });
+
+test('detectInstalled answers for every tool in the table, without running any of them', async () => {
+  const { detectInstalled } = await import('../core/providers.js');
+  const out = await detectInstalled();
+  assert.deepEqual(out.map((t) => t.id), TOOLS.map((t) => t.id));
+  for (const t of out) {
+    assert.equal(typeof t.installed, 'boolean', `${t.id} says whether it is installed`);
+    assert.equal('version' in t, false, `${t.id} carries no version: asking for one means running the tool`);
+    assert.ok(t.name);
+  }
+});
