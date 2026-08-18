@@ -43,6 +43,9 @@ test('uninstall commands mirror the install mechanism, and only where safe', () 
   assert.equal(uninstallCmdFor({ install: { via: 'npm', cmd: 'npm install -g @scope/pkg' } }), 'npm uninstall -g @scope/pkg');
   assert.equal(uninstallCmdFor({ install: { via: 'pip', cmd: 'python -m pip install x' } }), null);
   assert.equal(uninstallCmdFor({ install: { via: 'manual', url: 'https://x' } }), null);
+  // A Store app: the product id installs it but never finds it again, so the entry says
+  // how to remove it and that wins over anything derived from the install command.
+  assert.equal(uninstallCmdFor({ install: { via: 'winget', cmd: 'winget install --id 9ABCDEF -e --source msstore', uninstallCmd: 'winget uninstall --id Vendor.App' } }), 'winget uninstall --id Vendor.App');
 });
 
 test('findBinIn finds windows launchers by extension and skips unreadable dirs', async () => {

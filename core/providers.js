@@ -45,6 +45,9 @@ export const TOOLS = [
 
 /** The uninstall command for a tool, when its mechanism supports one. */
 export function uninstallCmdFor(tool) {
+  // A Store app is installed by product id but listed under its package name, so the
+  // id that installs it will not find it again. Those entries state their own command.
+  if (tool.install.uninstallCmd) return tool.install.uninstallCmd;
   if (tool.install.via === 'winget') {
     const id = tool.install.cmd.match(/--id\s+(\S+)/)?.[1];
     return id ? `winget uninstall --id ${id}` : null;

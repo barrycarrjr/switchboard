@@ -43,3 +43,23 @@ test('detectApps matches by Start menu name and reports the rest as not installe
   assert.equal(byId.antigravity.installed, true);
   assert.equal(byId.chatgpt.installed, false);
 });
+
+test('the Codex app is detected under either name the vendor has used', () => {
+  const codex = APPS.find((a) => a.id === 'chatgpt');
+  assert.equal(codex.name, 'Codex');
+  for (const startMenuName of ['Codex', 'ChatGPT']) {
+    const detected = detectApps([{ name: startMenuName, appId: 'OpenAI.Codex_2p2nqsd0c76g0!App' }]);
+    const hit = detected.find((d) => d.id === 'chatgpt');
+    assert.equal(hit.installed, true, `Start menu entry "${startMenuName}"`);
+    assert.equal(hit.appId, 'OpenAI.Codex_2p2nqsd0c76g0!App');
+  }
+  assert.equal(codex.startAppsMatch.test('ChatGPT Helper'), false, 'a longer name is a different app');
+});
+
+test('every app the panel offers a menu for can actually be uninstalled', async () => {
+  const { uninstallCmdFor } = await import('../core/providers.js');
+  for (const a of APPS.filter((x) => x.install.via === 'winget')) {
+    const cmd = uninstallCmdFor(a);
+    assert.match(cmd, /^winget uninstall --id \S+$/, `${a.id} has a real uninstall command`);
+  }
+});

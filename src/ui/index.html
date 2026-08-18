@@ -21,8 +21,6 @@
   .appicon{width:24px;height:24px;border-radius:6px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
   .titlebar .name{font-weight:600;font-size:.98rem}
   .titlebar .ver{color:var(--muted);font-size:.75rem;margin-left:auto}
-  .defaults{padding:0 14px 8px;color:var(--muted);font-size:.8rem;min-height:18px}
-  .defaults b{color:var(--ink)}
   .tabs{display:flex;gap:4px;padding:0 12px;border-bottom:1px solid var(--line)}
   .tab{border:none;background:none;font:inherit;font-size:.9rem;padding:8px 12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent}
   .tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
@@ -136,7 +134,6 @@
       </div>
     </div>
   </div>
-  <div class="defaults" id="defaults">Loading&hellip;</div>
   <div class="tabs">
     <button class="tab on" data-tab="accounts">Accounts</button>
     <button class="tab" data-tab="providers">Providers</button>
@@ -203,12 +200,10 @@ async function renderAccounts() {
   const realPanel = $('#tab-accounts');
   const panel = el('div');
 
-  const names = [];
   for (const p of Object.values(state.providers)) {
     const mine = state.accounts.filter((a) => a.provider === p.id);
     panel.appendChild(el('div', 'grouphead', esc(p.name)));
     const active = mine.find((a) => a.id === p.activeAccountId);
-    if (active) names.push(`${p.name} = <b>${esc(active.label)}</b>`);
 
     for (const a of mine) {
       const isActive = a.id === p.activeAccountId;
@@ -419,7 +414,6 @@ async function renderAccounts() {
   if (!isCurrentRender('accounts', seq)) return;
   if (!$('#ver').querySelector('button')) $('#ver').textContent = 'v' + state.version;
   realPanel.replaceChildren(...panel.childNodes);
-  $('#defaults').innerHTML = names.length ? 'Defaults for new terminals: ' + names.join(' &middot; ') : 'No active accounts registered yet.';
 }
 
 const TOOL_COLORS = { claude: '#c96f4a', codex: '#10a37f', gemini: '#4285f4', copilot: '#24292f', junie: '#087cfa', qwen: '#615ced', amp: '#f34e3f', opencode: '#5b6675', grok: '#1c1c1c', cursor: '#3b3b3b', aider: '#0a7d36', antigravity: '#2e6ff2', ollama: '#222222', lmstudio: '#6d28d9' };

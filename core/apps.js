@@ -17,7 +17,12 @@ const run = promisify(execFile);
 export const APPS = [
   { id: 'claude-desktop', name: 'Claude Desktop', url: 'https://claude.ai/download', startAppsMatch: /^Claude$/, install: { via: 'winget', cmd: 'winget install --id Anthropic.Claude -e' } },
   { id: 't3code', name: 'T3 Code', url: 'https://t3.codes', startAppsMatch: /^T3 Code/, exePaths: () => [path.join(process.env.LOCALAPPDATA || '', 'Programs', 'T3 Code', 'T3 Code.exe')], install: { via: 'winget', cmd: 'winget install --id T3Tools.T3Code -e' } },
-  { id: 'chatgpt', name: 'ChatGPT', url: 'https://chatgpt.com/download', startAppsMatch: /^ChatGPT$/, install: { via: 'manual', url: 'https://chatgpt.com/download' } },
+  // OpenAI shipped Codex inside the app that used to be ChatGPT: the window says Codex,
+  // while the Store listing and the Start menu entry still say ChatGPT, so both names
+  // count as a hit. The id stays 'chatgpt' because it keys the saved card order.
+  // Uninstall names the installed package, not the Store product id: winget cannot find
+  // an installed app by the id it installs with (verified on a machine that has it).
+  { id: 'chatgpt', name: 'Codex', url: 'https://openai.com/codex/', startAppsMatch: /^(Codex|ChatGPT)$/, install: { via: 'winget', cmd: 'winget install --id 9PLM9XGG6VKS -e --source msstore', uninstallCmd: 'winget uninstall --id OpenAI.Codex' } },
   { id: 'antigravity', name: 'Antigravity', url: 'https://antigravity.google', startAppsMatch: /^Antigravity$/, exePaths: () => [path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Antigravity', 'Antigravity.exe')], install: { via: 'winget', cmd: 'winget install --id Google.Antigravity -e' } },
   { id: 'lmstudio', name: 'LM Studio', url: 'https://lmstudio.ai', startAppsMatch: /^LM Studio$/, exePaths: () => [path.join(process.env.LOCALAPPDATA || '', 'Programs', 'LM Studio', 'LM Studio.exe')], install: { via: 'winget', cmd: 'winget install --id ElementLabs.LMStudio -e' } },
 ];
