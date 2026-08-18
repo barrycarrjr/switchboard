@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, Notification } from 'electron';
+import { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, Notification, screen } from 'electron';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -62,10 +62,36 @@ function showWindow(hash = '') {
   win.focus();
 }
 
+function restorableBounds() {
+  const saved = loadSettings().windowBounds;
+  if (!saved) return {};
+  // Restore position only when it still lands on a connected display.
+  const visible = typeof saved.x === 'number' && typeof saved.y === 'number'
+    && screen.getAllDisplays().some((d) => {
+      const a = d.workArea;
+      return saved.x < a.x + a.width - 40 && saved.x + saved.width > a.x + 40
+        && saved.y < a.y + a.height - 40 && saved.y >= a.y - 10;
+    });
+  return visible ? saved : { width: saved.width, height: saved.height };
+}
+
+let boundsTimer = null;
+function rememberBounds() {
+  if (!win || win.isMaximized() || win.isMinimized()) return;
+  clearTimeout(boundsTimer);
+  boundsTimer = setTimeout(() => {
+    if (!win) return;
+    const settings = loadSettings();
+    settings.windowBounds = win.getBounds();
+    saveSettings(settings);
+  }, 500);
+}
+
 function createWindow() {
   win = new BrowserWindow({
-    width: 452,
-    height: 780,
+    width: 560,
+    height: 800,
+    ...restorableBounds(),
     minWidth: 420,
     minHeight: 560,
     autoHideMenuBar: true,
@@ -77,6 +103,8 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(here, 'ui', 'index.html'));
+  win.on('resize', rememberBounds);
+  win.on('move', rememberBounds);
   // Close hides to the tray; Quit lives in the tray menu.
   win.on('close', (e) => {
     if (!quitting) {

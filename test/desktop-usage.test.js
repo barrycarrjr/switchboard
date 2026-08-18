@@ -61,3 +61,13 @@ test('settings roundtrip and defaulting', () => {
   fs.writeFileSync(file, '{"quotaWatch":"bogus"}');
   assert.equal(loadSettings(file).quotaWatch, 'off');
 });
+
+test('window bounds only restore when they look like real bounds', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-s2-')), 'settings.json');
+  fs.writeFileSync(file, JSON.stringify({ windowBounds: { width: 662, height: 830, x: 100, y: 100 } }));
+  assert.deepEqual(loadSettings(file).windowBounds, { width: 662, height: 830, x: 100, y: 100 });
+  fs.writeFileSync(file, JSON.stringify({ windowBounds: { width: 5, height: 830 } }));
+  assert.equal(loadSettings(file).windowBounds, null);
+  fs.writeFileSync(file, JSON.stringify({ windowBounds: 'wat' }));
+  assert.equal(loadSettings(file).windowBounds, null);
+});

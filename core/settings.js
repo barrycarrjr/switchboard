@@ -11,6 +11,7 @@ const DEFAULTS = {
   customApps: [],             // [{label, appId}] user-added launchers from the Start menu
   updateRepo: null,           // "owner/name" GitHub slug for self-update; local-only by design
   appOrder: [],               // Apps-panel card order, by app id; new apps append until placed
+  windowBounds: null,         // last window size/position, restored on launch
 };
 
 export function settingsFile() {
@@ -25,6 +26,10 @@ export function loadSettings(file = settingsFile()) {
     if (typeof merged.usageSources !== 'object' || merged.usageSources === null) merged.usageSources = {};
     if (!Array.isArray(merged.customApps)) merged.customApps = [];
     if (!Array.isArray(merged.appOrder)) merged.appOrder = [];
+    const b = merged.windowBounds;
+    if (!b || typeof b.width !== 'number' || typeof b.height !== 'number' || b.width < 380 || b.height < 400) {
+      merged.windowBounds = null;
+    }
     return merged;
   } catch {
     return { ...DEFAULTS };
