@@ -70,9 +70,12 @@ export const FEATURED = [
     url: 'https://mcp.slack.com/mcp',
     // Slack publishes no registration endpoint and its token endpoint accepts only
     // client_secret_post, so a client must be a pre-registered confidential client.
-    // Clients without that arrangement fail sign-in with "Dynamic client registration
-    // not supported". Listed so the limitation is visible rather than rediscovered.
-    caveat: 'Only clients Slack has pre-registered can sign in. Others fail at login.',
+    // Anything else fails with "Dynamic client registration not supported", and a
+    // file-edited client fails later and more quietly, having written config that cannot
+    // work. Naming the clients that can use it stops the attempt rather than explaining
+    // the wreckage afterwards.
+    only: ['claude'],
+    caveat: 'Only clients Slack has pre-registered can sign in. Others cannot use it at all.',
   },
 ].map((s) => ({ ...s, transport: s.transport ?? 'http', featured: true }));
 
@@ -459,17 +462,63 @@ export async function clientAvailable(clientId) {
  * Register one server with one client. Sign-in is the client's own business and may
  * open a browser; that is the vendor's flow and Switchboard neither drives nor sees it.
  */
+/** Whether a server can work in a given client at all. No `only` list means anywhere. */
+export function supportsClient(server, clientId) {
+  const only = server?.only;
+  return !Array.isArray(only) || only.includes(clientId);
+}
+
+/**
+ * Trim a CLI failure down to the part a person can act on.
+ *
+ * Raw, these arrive as the whole invocation followed by the tool's own stack of prefixes:
+ * "Command failed: codex mcp add slack --url https://... Error: Registration failed:
+ * Dynamic registration failed: Registration failed: Dynamic client registration not
+ * supported". Echoing the command back says nothing the button did not, and the repeated
+ * prefixes bury the one clause that matters.
+ */
+export function cleanCliError(text) {
+  let s = String(text ?? '').replace(/\r/g, ' ').replace(/\n+/g, ' ').trim();
+  s = s.replace(/^Command failed:\s*\S+(?:\s+\S+)*?(?=\s+Error:)/i, '').trim();
+  s = s.replace(/^(?:Error:\s*)+/i, '').trim();
+  // The tools stack their own prefixes; the last clause is the actual reason.
+  const parts = s.split(/:\s+/).map((p) => p.trim()).filter(Boolean);
+  const seen = new Set();
+  const kept = parts.filter((p) => (seen.has(p.toLowerCase()) ? false : seen.add(p.toLowerCase())));
+  const out = (kept.length ? kept[kept.length - 1] : s).trim();
+  return out || 'the command failed without saying why';
+}
+
 export async function registerServer(clientId, server) {
   const c = client(clientId);
   assertValidServer(server);
+  if (!supportsClient(server, c.id)) {
+    throw new Error(`${server.label ?? server.name} cannot be used from ${c.name}.`);
+  }
   if (c.via === 'file') {
     const file = c.configFile();
     const out = upsertJsonServer(readIfPresent(file), c.rootKey, server.name, c.entry(server));
     writeConfig(file, out);
     return { ok: true, client: c.id, server: server.name, output: `Wrote ${server.name} to ${file}` };
   }
-  const { stdout, stderr } = await run(c.bin, c.addArgs(server), execOpts);
-  return { ok: true, client: c.id, server: server.name, output: `${stdout ?? ''}${stderr ?? ''}`.trim() };
+
+  // Some CLIs write the entry and then fail signing in, leaving a server the client lists
+  // but cannot use. Left alone it reads as registered, which is the opposite of the truth,
+  // so anything this call created is taken back out before the error is reported.
+  const wasThere = registeredNames(c.id).includes(server.name);
+  try {
+    const { stdout, stderr } = await run(c.bin, c.addArgs(server), execOpts);
+    return { ok: true, client: c.id, server: server.name, output: `${stdout ?? ''}${stderr ?? ''}`.trim() };
+  } catch (e) {
+    if (!wasThere && registeredNames(c.id).includes(server.name) && c.removeArgs) {
+      try {
+        await run(c.bin, c.removeArgs(server), execOpts);
+      } catch { /* best effort: the reported failure matters more than a tidy rollback */ }
+    }
+    const err = new Error(`${c.name} could not add ${server.name}: ${cleanCliError(e?.stderr || e?.message || e)}`);
+    err.rolledBack = !wasThere;
+    throw err;
+  }
 }
 
 export async function unregisterServer(clientId, server) {

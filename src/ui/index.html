@@ -970,6 +970,15 @@ function mcpSubtabs(onPick) {
 /** One client chip. Clicking toggles registration, then re-reads the client afterwards. */
 function mcpChip(server, client, onDone) {
   const state = (server.state && server.state[client.id]) || 'off';
+  // A server that cannot work in this client is shown greyed rather than hidden, so the
+  // limitation is visible instead of looking like an oversight.
+  const usable = !Array.isArray(server.only) || server.only.includes(client.id);
+  if (!usable && state === 'off') {
+    const dead = el('button', 'btn', '&ndash; ' + esc(client.name));
+    dead.disabled = true;
+    dead.title = (server.caveat || (server.label || server.name) + ' cannot be used from ' + client.name + '.');
+    return dead;
+  }
   const look = MCP_CHIP[state] || MCP_CHIP.off;
   const btn = el('button', look.cls, look.mark + ' ' + esc(client.name));
   const on = state !== 'off';
@@ -994,7 +1003,12 @@ function mcpChip(server, client, onDone) {
         toast('Added to ' + client.name + '. Sign in from ' + client.name + ' itself when it first connects.');
       }
     } catch (e) {
-      toast(client.name + ' refused: ' + (e.message || e));
+      // Electron wraps a handler failure with its own plumbing; the useful sentence is
+      // the one core/mcp.js composed, so strip the wrapper before showing it.
+      const msg = String(e && e.message ? e.message : e)
+        .replace(/^Error invoking remote method '[^']*':\s*/, '')
+        .replace(/^Error:\s*/, '');
+      toast(msg);
     } finally {
       onDone();
     }

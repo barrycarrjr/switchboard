@@ -16,6 +16,9 @@ import {
   allServers,
   browseServers,
   sameEndpoint,
+  supportsClient,
+  cleanCliError,
+  registerServer,
   dedupeServers,
   yourServers,
   parseCodexServerNames,
@@ -525,4 +528,63 @@ test('a client that cannot report sign-in returns null rather than guessing', ()
   // Codex keeps MCP tokens in the OS credential store, so there is nothing to read.
   assert.equal(CLIENTS.codex.authFile, undefined);
   assert.equal(authorizedUrls('codex'), null);
+});
+
+// ---- A server that cannot work in a client ----
+//
+// Slack needs a pre-registered confidential client. Codex fails loudly at sign-in, while a
+// file-edited client like Junie writes config that simply never works. Naming the clients
+// it can use stops the attempt instead of explaining the wreckage afterwards.
+
+test('a server with an only list is restricted to those clients', () => {
+  const s = { name: 'slack', only: ['claude'] };
+  assert.equal(supportsClient(s, 'claude'), true);
+  assert.equal(supportsClient(s, 'codex'), false);
+  assert.equal(supportsClient(s, 'junie'), false);
+  assert.equal(supportsClient(s, 'vscode'), false);
+});
+
+test('a server with no only list works anywhere', () => {
+  for (const id of Object.keys(CLIENTS)) {
+    assert.equal(supportsClient({ name: 'atlassian' }, id), true);
+  }
+  assert.equal(supportsClient(undefined, 'claude'), true);
+});
+
+test('the shipped Slack entry is restricted to the client that can sign in', () => {
+  const slack = FEATURED.find((s) => s.name === 'slack');
+  assert.deepEqual(slack.only, ['claude']);
+  assert.ok(slack.caveat, 'and says why');
+});
+
+test('registering somewhere unsupported is refused before anything is run', async () => {
+  await assert.rejects(
+    () => registerServer('codex', { name: 'slack', url: 'https://mcp.slack.com/mcp', only: ['claude'] }),
+    /cannot be used from Codex/,
+  );
+});
+
+// ---- Turning a CLI failure into something a person can act on ----
+
+test('the command echo and the stacked prefixes are stripped', () => {
+  const raw = 'Command failed: codex mcp add slack --url https://mcp.slack.com/mcp\n'
+    + 'Error: Registration failed: Dynamic registration failed: Registration failed: '
+    + 'Dynamic client registration not supported';
+  const out = cleanCliError(raw);
+  assert.equal(out, 'Dynamic client registration not supported');
+  assert.ok(!/Command failed/.test(out), 'the invocation says nothing the button did not');
+  assert.ok(!/mcp add/.test(out));
+});
+
+test('a repeated prefix is not shown twice', () => {
+  assert.equal(cleanCliError('Error: Error: Something broke'), 'Something broke');
+});
+
+test('a plain message survives intact', () => {
+  assert.equal(cleanCliError('the server refused the connection'), 'the server refused the connection');
+});
+
+test('an empty failure still says something', () => {
+  assert.match(cleanCliError(''), /without saying why/);
+  assert.match(cleanCliError(undefined), /without saying why/);
 });
