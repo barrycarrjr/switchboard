@@ -50,6 +50,33 @@ export function claudeLoginState(oauth = {}, now = Date.now()) {
   return { level: 'ok', detail: 'Signed in' };
 }
 
+/**
+ * Login state for one account, for the Accounts page as well as the Health tab.
+ *
+ * The Accounts page offers "Sign in / re-authenticate" on every card, and without this the
+ * link reads the same whether the login is good for a month or ran out yesterday. Saying
+ * which gives the link a reason.
+ *
+ * Only Claude publishes a login expiry. Codex writes short-lived tokens and no stamp for
+ * the login behind them, so it reports being signed in and nothing more. Inventing a date
+ * from the token it does have would repeat the mistake this check was just fixed for.
+ */
+export function accountLoginState(account, now = Date.now(), readFile = fs.readFileSync) {
+  const def = PROVIDERS[account?.provider];
+  if (!def) return { signedIn: false, level: 'warn', detail: 'Unknown provider' };
+  const credPath = path.join(account.home, def.credFile);
+  if (!fs.existsSync(credPath)) {
+    return { signedIn: false, level: 'warn', detail: 'Not signed in' };
+  }
+  if (account.provider !== 'claude') return { signedIn: true, level: 'ok', detail: 'Signed in' };
+  try {
+    const oauth = JSON.parse(readFile(credPath, 'utf8'))?.claudeAiOauth ?? {};
+    return { signedIn: true, ...claudeLoginState(oauth, now) };
+  } catch {
+    return { signedIn: true, level: 'ok', detail: 'Signed in' };
+  }
+}
+
 function fmtDate(ms) {
   return new Date(ms).toLocaleDateString();
 }

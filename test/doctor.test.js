@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runChecks, claudeLoginState } from '../core/doctor.js';
+import { runChecks, claudeLoginState, accountLoginState } from '../core/doctor.js';
 
 const noFetch = async () => { throw new Error('offline'); };
 const envNone = { user: () => null, machine: () => null };
@@ -169,4 +169,68 @@ test('epoch seconds and epoch milliseconds are both understood', () => {
   const asSeconds = claudeLoginState({ refreshTokenExpiresAt: Math.floor(inTwentyDays / 1000) }, now);
   assert.equal(asMs.level, 'ok');
   assert.equal(asSeconds.level, 'ok', 'seconds must not read as 1970');
+});
+
+// ---- Login state on the Accounts page ----
+//
+// The card offers "Sign in / re-authenticate" whatever the state, so without this the link
+// reads the same whether the login is good for a month or ran out yesterday.
+
+test('an account with no credential file reads as not signed in', () => {
+  const s = accountLoginState({ provider: 'claude', home: tmpHome() });
+  assert.equal(s.signedIn, false);
+  assert.equal(s.level, 'warn');
+  assert.match(s.detail, /Not signed in/);
+});
+
+test('a healthy claude account carries its login date, not its access token', () => {
+  const now = Date.now();
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({
+    claudeAiOauth: {
+      accessToken: 't',
+      expiresAt: now + 6 * 3600 * 1000,
+      refreshTokenExpiresAt: now + 27 * 24 * 3600 * 1000,
+    },
+  }));
+  const s = accountLoginState({ provider: 'claude', home }, now);
+  assert.equal(s.signedIn, true);
+  assert.equal(s.level, 'ok');
+  assert.match(s.detail, /valid until/);
+});
+
+test('an expired claude login says so on the account card', () => {
+  const now = Date.now();
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({
+    claudeAiOauth: { refreshTokenExpiresAt: now - 24 * 3600 * 1000 },
+  }));
+  const s = accountLoginState({ provider: 'claude', home }, now);
+  assert.equal(s.level, 'warn');
+  assert.match(s.detail, /Sign in again/);
+});
+
+// Codex writes no stamp for the login behind its short-lived tokens. Inventing a date from
+// the token it does have would repeat the bug this all came from.
+test('codex reports being signed in and claims no expiry it cannot know', () => {
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {} }));
+  const s = accountLoginState({ provider: 'codex', home });
+  assert.equal(s.signedIn, true);
+  assert.equal(s.level, 'ok');
+  assert.equal(s.detail, 'Signed in');
+});
+
+test('an unreadable credential file still counts as signed in', () => {
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.credentials.json'), '{not json');
+  const s = accountLoginState({ provider: 'claude', home });
+  assert.equal(s.signedIn, true);
+  assert.equal(s.level, 'ok');
+});
+
+test('an unknown provider is reported rather than assumed fine', () => {
+  const s = accountLoginState({ provider: 'nope', home: tmpHome() });
+  assert.equal(s.signedIn, false);
+  assert.equal(s.level, 'warn');
 });

@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, PROVIDERS } from '../core/accounts.js';
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, TOOLS } from '../core/providers.js';
-import { runChecks } from '../core/doctor.js';
+import { runChecks, accountLoginState } from '../core/doctor.js';
 import { accountQuota } from '../core/quota.js';
 import { applyFix } from '../core/fixes.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
@@ -54,7 +54,10 @@ function stateSnapshot() {
       activeHome: activeHome(p.id),
     };
   }
-  return { accounts: reg.accounts, providers, version: app.getVersion() };
+  // Login state travels with each account so the Accounts page can say why its
+  // sign-in link is there, rather than offering it identically in every state.
+  const accounts = reg.accounts.map((a) => ({ ...a, login: accountLoginState(a) }));
+  return { accounts, providers, version: app.getVersion() };
 }
 
 function showWindow(hash = '') {

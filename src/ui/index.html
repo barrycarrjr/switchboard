@@ -66,6 +66,11 @@
   .resets{grid-column:1 / -1;color:var(--muted);font-size:.72rem;margin-top:1px}
   .qnote{color:var(--muted);font-size:.78rem;margin-top:7px}
   .qnote a{color:var(--accent);cursor:pointer;text-decoration:underline}
+  /* The login state leads the row; the action follows it and stays quiet when nothing is wrong. */
+  .qnote .loginstate{font-weight:600;color:var(--ink)}
+  .qnote small{margin-left:6px}
+  .qnote.needsauth{color:var(--warn);background:var(--warn-bg);border-radius:6px;padding:5px 8px;margin-top:8px}
+  .qnote.needsauth .loginstate{color:var(--warn)}
   .addbtn{width:100%;font:inherit;font-size:.83rem;padding:7px;border:1px dashed #b9c0c9;border-radius:8px;background:none;color:var(--muted);cursor:pointer;margin:4px 0 2px}
   .addbtn:hover{color:var(--accent);border-color:var(--accent)}
   .panelnote{color:var(--muted);font-size:.76rem;margin:10px 2px 2px;line-height:1.45}
@@ -328,8 +333,17 @@ async function renderAccounts() {
         note.querySelector('a').addEventListener('click', () => sb.openExternal('https://chatgpt.com/codex/settings/usage'));
         card.appendChild(note);
       }
-      const signRow = el('div', 'qnote', '<a>Sign in / re-authenticate&hellip;</a> <small style="color:var(--muted)">opens a terminal preset to this account</small>');
-      signRow.querySelector('a').addEventListener('click', () => sb.signin(a.id));
+      // Lead with the login state so the link has a reason. Offered identically in every
+      // state, it reads as something you might always need to do.
+      const login = a.login || { signedIn: true, level: 'ok', detail: 'Signed in' };
+      const needed = login.level !== 'ok';
+      const signRow = el('div', 'qnote' + (needed ? ' needsauth' : ''));
+      signRow.appendChild(el('b', 'loginstate', esc(login.detail)));
+      signRow.appendChild(document.createTextNode(' '));
+      const link = el('a', null, needed || !login.signedIn ? 'Sign in&hellip;' : 'Re-authenticate&hellip;');
+      link.addEventListener('click', () => sb.signin(a.id));
+      signRow.appendChild(link);
+      signRow.appendChild(el('small', null, 'opens a terminal preset to this account'));
       card.appendChild(signRow);
       panel.appendChild(card);
     }
