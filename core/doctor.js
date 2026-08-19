@@ -14,6 +14,55 @@ function scopesWith(name, env) {
 }
 
 /**
+ * Whether a Claude login still works, from the two expiry stamps the vendor writes.
+ *
+ * These are very different things and reading the wrong one is useless. `expiresAt` is the
+ * access token: hours long by design, refreshed silently on the next CLI use, and never
+ * something to act on. `refreshTokenExpiresAt` is the login itself, and only that running
+ * out means signing in again.
+ *
+ * This check used to read `expiresAt` and warn under thirty days, so it warned on every
+ * account permanently and could not go green: an access token is always hours away. Signing
+ * in again appeared to change nothing, because the fresh access token was hours away too.
+ *
+ * Exported so the distinction stays pinned by tests.
+ */
+export function claudeLoginState(oauth = {}, now = Date.now()) {
+  const refresh = toEpochMs(oauth.refreshTokenExpiresAt);
+  const access = toEpochMs(oauth.expiresAt);
+
+  if (typeof refresh === 'number') {
+    const left = refresh - now;
+    if (left <= 0) {
+      return { level: 'warn', detail: `Login expired ${fmtDate(refresh)}. Sign in again.` };
+    }
+    if (left < 7 * DAY) {
+      return { level: 'warn', detail: `Login expires ${inWords(left)}, on ${fmtDate(refresh)}. Sign in again before then.` };
+    }
+    return { level: 'ok', detail: `Signed in, login valid until ${fmtDate(refresh)}` };
+  }
+
+  // Older credential files carry only the access token stamp. It says nothing about whether
+  // the login survives, so report being signed in rather than inventing a warning.
+  if (typeof access === 'number' && access - now <= 0) {
+    return { level: 'ok', detail: 'Signed in. Access token has lapsed and refreshes on next use.' };
+  }
+  return { level: 'ok', detail: 'Signed in' };
+}
+
+function fmtDate(ms) {
+  return new Date(ms).toLocaleDateString();
+}
+
+/** "in 3 days" / "in about 5 hours", so a sub-day figure never rounds up to "1 days". */
+function inWords(ms) {
+  const hours = Math.floor(ms / (60 * 60 * 1000));
+  if (hours < 1) return 'within the hour';
+  if (hours < 48) return `in about ${hours} hour${hours === 1 ? '' : 's'}`;
+  return `in ${Math.floor(ms / DAY)} days`;
+}
+
+/**
  * Health checks. Levels: ok, info, warn, bad. Checks report; fixes stay with the human
  * (removing an env var or a proxy entry is an explicit choice, not a side effect).
  */
@@ -70,16 +119,8 @@ export async function runChecks({
     let level = 'ok';
     if (a.provider === 'claude') {
       try {
-        // The vendor writes this as epoch seconds or ms depending on version; normalize.
-        const expiresAt = toEpochMs(JSON.parse(fs.readFileSync(credPath, 'utf8'))?.claudeAiOauth?.expiresAt);
-        if (typeof expiresAt === 'number') {
-          const left = expiresAt - now;
-          // An expired access token normally refreshes itself on the next CLI use,
-          // so expiry is a caution, not an outage.
-          if (left <= 0) { level = 'warn'; detail = 'Access token expired; it usually refreshes on next CLI use. If runs fail, sign in again.'; }
-          else if (left < 30 * DAY) { level = 'warn'; detail = `Access token expires in ${Math.ceil(left / DAY)} days`; }
-          else detail = `Login valid, expires ${new Date(expiresAt).toLocaleDateString()}`;
-        }
+        const oauth = JSON.parse(fs.readFileSync(credPath, 'utf8'))?.claudeAiOauth ?? {};
+        ({ level, detail } = claudeLoginState(oauth, now));
       } catch { /* unreadable credential file: presence already counts as signed in */ }
     }
     checks.push({ id: `cred-${a.id}`, level, title: `${def.name} "${a.label}" signed in`, detail });
