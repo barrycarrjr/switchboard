@@ -1,0 +1,801 @@
+[
+  {
+    "name": "ais-fleet",
+    "title": "AIS Fleet",
+    "description": "The AIS Fleet MCP Server provides a unified interface for discovering, querying, and analyzing vessel activity from AIS data. It enables MCP-based agents and tools to answer complex maritime questions such as vessel movements between regions, port activity trends, or traffic patterns over time, empowering developers, researchers, and fleet operators to build intelligent, location-aware marine applications powered by AIS insights.",
+    "url": "https://mcp.aisfleet.com/sse",
+    "transport": "sse",
+    "category": "boating",
+    "tags": [
+      "boating"
+    ]
+  },
+  {
+    "name": "asana",
+    "title": "Asana",
+    "description": "Interact with your Asana workspace.",
+    "url": "https://mcp.asana.com/sse",
+    "transport": "sse",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "project-management",
+      "collaboration"
+    ]
+  },
+  {
+    "name": "astro-docs",
+    "title": "Astro Docs",
+    "description": "Access the latest Astro web framework documentation, guides, and API references.",
+    "url": "https://mcp.docs.astro.build/mcp",
+    "transport": "http",
+    "category": "documentation",
+    "tags": [
+      "documentation",
+      "astro",
+      "web-framework"
+    ]
+  },
+  {
+    "name": "atlassian-remote",
+    "title": "Atlassian",
+    "description": "Interact with Jira, Confluence, and Compass to manage projects, create documentation, and track services.",
+    "url": "https://mcp.atlassian.com/v1/mcp",
+    "transport": "http",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "project-management",
+      "documentation",
+      "collaboration"
+    ]
+  },
+  {
+    "name": "audioscrape",
+    "title": "Audioscrape",
+    "description": "Search and analyze audio content from a massive database of podcasts, interviews, and other talks.",
+    "url": "https://mcp.audioscrape.com",
+    "transport": "http",
+    "category": "ai",
+    "tags": [
+      "ai",
+      "rag",
+      "audio"
+    ]
+  },
+  {
+    "name": "carbon-voice",
+    "title": "Carbon Voice",
+    "description": "Communicate asynchronously with voice messages featuring AI transcription, summaries, and automated action item extraction.",
+    "url": "https://mcp.carbonvoice.app",
+    "transport": "http",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "voice",
+      "automation"
+    ]
+  },
+  {
+    "name": "cloudflare-ai-gateway",
+    "title": "Cloudflare AI Gateway",
+    "description": "Search your logs, get details about the prompts and responses.",
+    "url": "https://ai-gateway.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "ai",
+    "tags": [
+      "ai",
+      "gateway",
+      "logs",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-audit-logs",
+    "title": "Cloudflare Audit Logs",
+    "description": "Query audit logs and generate reports for review.",
+    "url": "https://auditlogs.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "security",
+    "tags": [
+      "security",
+      "audit",
+      "logs",
+      "compliance",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-autorag",
+    "title": "Cloudflare AutoRAG",
+    "description": "List and search documents on your AutoRAGs.",
+    "url": "https://autorag.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "ai",
+    "tags": [
+      "ai",
+      "rag",
+      "documents",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-browser-rendering",
+    "title": "Cloudflare Browser Rendering",
+    "description": "Fetch web pages, convert them to markdown and take screenshots.",
+    "url": "https://browser.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "tools",
+    "tags": [
+      "tools",
+      "browser",
+      "rendering",
+      "screenshots",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-container",
+    "title": "Cloudflare Container",
+    "description": "Spin up a sandbox development environment.",
+    "url": "https://containers.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "devops",
+    "tags": [
+      "devops",
+      "containers",
+      "development",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-digital-experience-monitoring",
+    "title": "Cloudflare Digital Experience Monitoring",
+    "description": "Get quick insight on critical applications for your organization.",
+    "url": "https://dex.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "monitoring",
+    "tags": [
+      "monitoring",
+      "digital-experience",
+      "applications",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-dns-analytics",
+    "title": "Cloudflare DNS Analytics",
+    "description": "Optimize DNS performance and debug issues based on current set up.",
+    "url": "https://dns-analytics.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "analytics",
+    "tags": [
+      "analytics",
+      "dns",
+      "performance",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-docs",
+    "title": "Cloudflare Docs",
+    "description": "Access the latest documentation on Cloudflare products such as Workers, Pages, R2, D1, KV.",
+    "url": "https://docs.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "documentation",
+    "tags": [
+      "documentation",
+      "cloudflare",
+      "cloud"
+    ]
+  },
+  {
+    "name": "cloudflare-graphql",
+    "title": "Cloudflare GraphQL",
+    "description": "Get analytics data using Cloudflare's GraphQL API.",
+    "url": "https://graphql.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "analytics",
+    "tags": [
+      "analytics",
+      "graphql",
+      "api",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-logpush",
+    "title": "Cloudflare Logpush",
+    "description": "Get quick summaries for Logpush job health.",
+    "url": "https://logs.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "monitoring",
+    "tags": [
+      "monitoring",
+      "logs",
+      "logpush",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-observability",
+    "title": "Cloudflare Observability",
+    "description": "Monitor application performance, analyze logs, and gain insights with comprehensive observability tools and real-time analytics.",
+    "url": "https://observability.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "monitoring",
+    "tags": [
+      "monitoring",
+      "observability",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-one-casb",
+    "title": "Cloudflare One CASB",
+    "description": "Quickly identify any security misconfigurations for SaaS applications to safeguard users & data.",
+    "url": "https://casb.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "security",
+    "tags": [
+      "security",
+      "casb",
+      "saas",
+      "cloudflare-one"
+    ]
+  },
+  {
+    "name": "cloudflare-radar",
+    "title": "Cloudflare Radar",
+    "description": "Get global Internet traffic insights, trends, URL scans, and other utilities.",
+    "url": "https://radar.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "analytics",
+    "tags": [
+      "analytics",
+      "internet-traffic",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-workers-bindings",
+    "title": "Cloudflare Workers Bindings",
+    "description": "Build Workers applications with storage, AI, and compute primitives.",
+    "url": "https://bindings.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "devops",
+    "tags": [
+      "devops",
+      "serverless",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "cloudflare-workers-builds",
+    "title": "Cloudflare Workers Builds",
+    "description": "Get insights and manage your Cloudflare Workers Builds.",
+    "url": "https://builds.mcp.cloudflare.com/sse",
+    "transport": "sse",
+    "category": "devops",
+    "tags": [
+      "devops",
+      "builds",
+      "cloudflare"
+    ]
+  },
+  {
+    "name": "deepwiki",
+    "title": "DeepWiki",
+    "description": "Tools for fetching and asking questions about GitHub repositories.",
+    "url": "https://mcp.deepwiki.com/sse",
+    "transport": "sse",
+    "category": "knowledge",
+    "tags": [
+      "knowledge",
+      "wiki",
+      "documentation"
+    ]
+  },
+  {
+    "name": "dialer",
+    "title": "Dialer",
+    "description": "Enable AI agents to conduct professional outbound calls for research, interviews, and market validation using your phone number.",
+    "url": "https://getdialer.app/sse",
+    "transport": "sse",
+    "category": "communication",
+    "tags": [
+      "communication",
+      "telephony",
+      "outbound"
+    ]
+  },
+  {
+    "name": "docker-docs",
+    "title": "Docker Docs",
+    "description": "Search and retrieve Docker documentation to help with containerization, Docker Compose, Docker Hub, and related topics.",
+    "url": "https://mcp-docs.docker.com/mcp",
+    "transport": "http",
+    "category": "documentation",
+    "tags": [
+      "documentation",
+      "docker",
+      "containers"
+    ]
+  },
+  {
+    "name": "excalidraw-remote",
+    "title": "Excalidraw",
+    "description": "Create hand-drawn style diagrams and sketches with streaming animations. Renders interactive Excalidraw diagrams directly in chat with smooth draw-on effects.",
+    "url": "https://excalidraw-mcp-app.vercel.app/mcp",
+    "transport": "http",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "collaboration",
+      "diagramming"
+    ]
+  },
+  {
+    "name": "find-a-domain",
+    "title": "Find-A-Domain",
+    "description": "Tools for finding domain names.",
+    "url": "https://api.findadomain.dev/mcp",
+    "transport": "http",
+    "category": "tools",
+    "tags": [
+      "tools",
+      "domain",
+      "productivity"
+    ]
+  },
+  {
+    "name": "firefly",
+    "title": "Firefly",
+    "description": "Transcribe, summarize, and analyze meetings with AI-powered note-taking across video conferencing platforms.",
+    "url": "https://api.fireflies.ai/mcp",
+    "transport": "http",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "meetings",
+      "transcription"
+    ]
+  },
+  {
+    "name": "gitmcp",
+    "title": "GitMCP",
+    "description": "Tools for interacting with Git repositories.",
+    "url": "https://gitmcp.io/docs",
+    "transport": "http",
+    "category": "development",
+    "tags": [
+      "git",
+      "version-control",
+      "development"
+    ]
+  },
+  {
+    "name": "globalping",
+    "title": "Globalping",
+    "description": "Run network tests like ping, traceroute, and DNS queries from hundreds of global probes for monitoring and debugging.",
+    "url": "https://mcp.globalping.dev/sse",
+    "transport": "sse",
+    "category": "devops",
+    "tags": [
+      "devops",
+      "monitoring",
+      "network"
+    ]
+  },
+  {
+    "name": "grafbase",
+    "title": "Grafbase",
+    "description": "Build and deploy high-performance GraphQL APIs with federation, edge computing, and enterprise-grade governance.",
+    "url": "https://api.grafbase.com/mcp",
+    "transport": "http",
+    "category": "devops",
+    "tags": [
+      "devops",
+      "graphql",
+      "database"
+    ]
+  },
+  {
+    "name": "granola-remote",
+    "title": "Granola",
+    "description": "Access meeting notes and conversations from Granola to use as context for tasks like creating tickets, drafting summaries, and scaffolding features.",
+    "url": "https://mcp.granola.ai/mcp",
+    "transport": "http",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "meetings",
+      "notes"
+    ]
+  },
+  {
+    "name": "hugging-face",
+    "title": "Hugging Face",
+    "description": "Tools for interacting with Hugging Face models, datasets, research papers, and more.",
+    "url": "https://huggingface.co/mcp",
+    "transport": "http",
+    "category": "ai",
+    "tags": [
+      "ai",
+      "machine-learning",
+      "models"
+    ]
+  },
+  {
+    "name": "incident-io",
+    "title": "Incident.io",
+    "description": "Manage incidents, analyze alerts, check on-call schedules, and run operational analysis directly from your AI assistant.",
+    "url": "https://mcp.incident.io/mcp",
+    "transport": "http",
+    "category": "monitoring",
+    "tags": [
+      "monitoring",
+      "incident-management",
+      "on-call"
+    ]
+  },
+  {
+    "name": "instant",
+    "title": "Instant",
+    "description": "Build real-time, offline-first applications with a modern Firebase-like database and instant synchronization.",
+    "url": "https://mcp.instantdb.com/mcp",
+    "transport": "http",
+    "category": "database",
+    "tags": [
+      "database",
+      "realtime",
+      "backend"
+    ]
+  },
+  {
+    "name": "invideo",
+    "title": "InVideo",
+    "description": "Create professional marketing videos with AI-powered generation, templates, and automated voiceovers.",
+    "url": "https://mcp.invideo.io/sse",
+    "transport": "sse",
+    "category": "media",
+    "tags": [
+      "media",
+      "video",
+      "content-creation"
+    ]
+  },
+  {
+    "name": "javadocs",
+    "title": "Javadocs",
+    "description": "Access to Java, Kotlin, and Scala library documentation.",
+    "url": "https://www.javadocs.dev/mcp",
+    "transport": "http",
+    "category": "documentation",
+    "tags": [
+      "documentation",
+      "java",
+      "api"
+    ]
+  },
+  {
+    "name": "linear",
+    "title": "Linear",
+    "description": "Track issues, plan sprints, and manage product development with a fast, keyboard-first interface designed for software teams.",
+    "url": "https://mcp.linear.app/mcp",
+    "transport": "http",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "project-management",
+      "issue-tracking"
+    ]
+  },
+  {
+    "name": "llmtxt",
+    "title": "LLM Text",
+    "description": "Discovers and retrieves llms.txt from websites.",
+    "url": "https://mcp.llmtxt.dev/sse",
+    "transport": "sse",
+    "category": "ai",
+    "tags": [
+      "ai",
+      "llm",
+      "text-processing"
+    ]
+  },
+  {
+    "name": "manifold",
+    "title": "Manifold",
+    "description": "Tools for accessing the Manifold Markets online prediction market platform.",
+    "url": "https://api.manifold.markets/v0/mcp",
+    "transport": "http",
+    "category": "analytics",
+    "tags": [
+      "analytics",
+      "forecasting",
+      "prediction-markets"
+    ]
+  },
+  {
+    "name": "microsoft-learn",
+    "title": "Microsoft Learn",
+    "description": "Add trusted and up-to-date content from Microsoft Learn to your AI agent.",
+    "url": "https://learn.microsoft.com/api/mcp",
+    "transport": "http",
+    "category": "documentation",
+    "tags": [
+      "microsoft-learn",
+      "documentation"
+    ]
+  },
+  {
+    "name": "miro-remote",
+    "title": "Miro",
+    "description": "Create diagrams, manage documents, and explore board content in collaborative visual workspaces.",
+    "url": "https://mcp.miro.com/mcp",
+    "transport": "http",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "collaboration",
+      "diagramming"
+    ]
+  },
+  {
+    "name": "monday",
+    "title": "Monday.com",
+    "description": "Manage projects, workflows, and team collaboration with AI-powered automation and customizable boards.",
+    "url": "https://mcp.monday.com/sse",
+    "transport": "sse",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "project-management",
+      "workflow"
+    ]
+  },
+  {
+    "name": "morningstar-mcp-server",
+    "title": "Morningstar",
+    "description": "The Morningstar MCP Server makes it simple to power your AI apps and tools with Morningstars trusted content. It provides access to a growing library of AI-ready capabilities, including global analyst research, market analysis, and key investment data.",
+    "url": "https://mcp.morningstar.com/mcp",
+    "transport": "http",
+    "category": "fintech",
+    "tags": [
+      "fintech"
+    ]
+  },
+  {
+    "name": "notion-remote",
+    "title": "Notion",
+    "description": "Manage projects, create documentation, and organize information in collaborative workspaces.",
+    "url": "https://mcp.notion.com/mcp",
+    "transport": "http",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "documentation",
+      "collaboration"
+    ]
+  },
+  {
+    "name": "octagon",
+    "title": "Octagon",
+    "description": "Access comprehensive market intelligence, analyze SEC filings, earnings transcripts, and financial data to uncover investment opportunities.",
+    "url": "https://mcp.octagonagents.com/mcp",
+    "transport": "http",
+    "category": "analytics",
+    "tags": [
+      "analytics",
+      "market-intelligence",
+      "data"
+    ]
+  },
+  {
+    "name": "openmesh",
+    "title": "OpenMesh",
+    "description": "Discover and connect to a curated marketplace of MCP servers for extending AI agent capabilities.",
+    "url": "https://api.openmesh.dev/mcp",
+    "transport": "http",
+    "category": "infrastructure",
+    "tags": [
+      "infrastructure",
+      "discovery",
+      "mesh"
+    ]
+  },
+  {
+    "name": "openzeppelin-cairo",
+    "title": "OpenZeppelin Cairo Contracts",
+    "description": "Access to OpenZeppelin Cairo Contracts.",
+    "url": "https://mcp.openzeppelin.com/contracts/cairo/mcp",
+    "transport": "http",
+    "category": "blockchain",
+    "tags": [
+      "blockchain",
+      "cairo",
+      "smart-contracts"
+    ]
+  },
+  {
+    "name": "openzeppelin-solidity",
+    "title": "OpenZeppelin Solidity Contracts",
+    "description": "Access to OpenZeppelin Solidity Contracts.",
+    "url": "https://mcp.openzeppelin.com/contracts/solidity/mcp",
+    "transport": "http",
+    "category": "blockchain",
+    "tags": [
+      "blockchain",
+      "solidity",
+      "smart-contracts"
+    ]
+  },
+  {
+    "name": "openzeppelin-stellar",
+    "title": "OpenZeppelin Stellar Contracts",
+    "description": "Access to OpenZeppelin Stellar Contracts.",
+    "url": "https://mcp.openzeppelin.com/contracts/stellar/mcp",
+    "transport": "http",
+    "category": "blockchain",
+    "tags": [
+      "blockchain",
+      "stellar",
+      "smart-contracts"
+    ]
+  },
+  {
+    "name": "openzeppelin-stylus",
+    "title": "OpenZeppelin Stylus Contracts",
+    "description": "Access to OpenZeppelin Stylus Contracts.",
+    "url": "https://mcp.openzeppelin.com/contracts/stylus/mcp",
+    "transport": "http",
+    "category": "blockchain",
+    "tags": [
+      "blockchain",
+      "stylus",
+      "smart-contracts"
+    ]
+  },
+  {
+    "name": "paypal",
+    "title": "PayPal",
+    "description": "Process online payments, manage transactions, and integrate PayPal's payment solutions into applications.",
+    "url": "https://mcp.paypal.com/sse",
+    "transport": "sse",
+    "category": "payments",
+    "tags": [
+      "payments",
+      "finance",
+      "transactions"
+    ]
+  },
+  {
+    "name": "prisma-postgres",
+    "title": "Prisma Postgres",
+    "description": "Access PostgreSQL databases through Prisma's type-safe ORM with automated migrations and intuitive query building.",
+    "url": "https://mcp.prisma.io/mcp",
+    "transport": "http",
+    "category": "database",
+    "tags": [
+      "database",
+      "postgres",
+      "orm"
+    ]
+  },
+  {
+    "name": "pulumi-remote",
+    "title": "Pulumi",
+    "description": "Create, deploy, and manage cloud infrastructure using your favorite language.",
+    "url": "https://mcp.ai.pulumi.com/mcp",
+    "transport": "http",
+    "category": "devops",
+    "tags": [
+      "devops"
+    ]
+  },
+  {
+    "name": "remote-mcp",
+    "title": "Remote MCP",
+    "description": "Tools for finding remote MCP servers.",
+    "url": "https://mcp.remote-mcp.com",
+    "transport": "http",
+    "category": "tools",
+    "tags": [
+      "tools",
+      "mcp",
+      "directory"
+    ]
+  },
+  {
+    "name": "scorecard",
+    "title": "Scorecard",
+    "description": "Test and evaluate LLM applications with structured testing, continuous monitoring, and performance benchmarking.",
+    "url": "https://scorecard-mcp.dare-d5b.workers.dev/sse",
+    "transport": "sse",
+    "category": "ai",
+    "tags": [
+      "ai",
+      "evaluation",
+      "testing"
+    ]
+  },
+  {
+    "name": "semgrep",
+    "title": "Semgrep",
+    "description": "MCP server for using Semgrep to scan code for security vulnerabilities.",
+    "url": "https://mcp.semgrep.ai/mcp",
+    "transport": "http",
+    "category": "security",
+    "tags": [
+      "security",
+      "code-analysis",
+      "sast"
+    ]
+  },
+  {
+    "name": "sentry-remote",
+    "title": "Sentry",
+    "description": "Track application errors, monitor performance, and debug issues in real-time across your entire development stack.",
+    "url": "https://mcp.sentry.dev/sse",
+    "transport": "sse",
+    "category": "monitoring",
+    "tags": [
+      "monitoring",
+      "error-tracking",
+      "debugging"
+    ]
+  },
+  {
+    "name": "stripe-remote",
+    "title": "Stripe",
+    "description": "Interact with Stripe services over the Stripe API.",
+    "url": "https://mcp.stripe.com",
+    "transport": "http",
+    "category": "payments",
+    "tags": [
+      "payments",
+      "finance",
+      "billing"
+    ]
+  },
+  {
+    "name": "waystation",
+    "title": "WayStation",
+    "description": "Connect AI to your productivity ecosystem with integrations across Notion, Slack, Asana, Monday.com, and 50+ other business tools.",
+    "url": "https://waystation.ai/mcp",
+    "transport": "http",
+    "category": "productivity",
+    "tags": [
+      "productivity",
+      "workflow",
+      "automation"
+    ]
+  },
+  {
+    "name": "webflow-remote",
+    "title": "Webflow",
+    "description": "Design and build professional websites visually with no-code tools, advanced CMS, and responsive layouts.",
+    "url": "https://mcp.webflow.com/sse",
+    "transport": "sse",
+    "category": "web",
+    "tags": [
+      "web",
+      "cms",
+      "design"
+    ]
+  },
+  {
+    "name": "wix",
+    "title": "Wix",
+    "description": "Build and manage websites with drag-and-drop tools, content management, and dynamic pages.",
+    "url": "https://mcp.wix.com/sse",
+    "transport": "sse",
+    "category": "web",
+    "tags": [
+      "web",
+      "cms",
+      "website-builder"
+    ]
+  }
+]

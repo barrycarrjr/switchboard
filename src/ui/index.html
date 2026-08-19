@@ -47,6 +47,15 @@
   .btn[disabled]{opacity:.6;cursor:default}
   .btn.ghost{border:none;background:none;color:var(--muted);padding:3px 6px}
   .btn.ghost:hover{color:var(--bad)}
+  /* Registered, but the client says it has no sign-in for it yet. */
+  .btn.pending{border-color:var(--warn,#c98a00);color:var(--warn,#c98a00);background:#fff8e8}
+  .subtabs{display:flex;gap:6px;margin:2px 0 10px}
+  .subtab{font:inherit;font-size:.82rem;border:1px solid transparent;border-radius:6px;background:none;color:var(--muted);padding:4px 10px;cursor:pointer}
+  .subtab.on{background:#eef2f7;color:var(--fg,#22303f);font-weight:600}
+  .mcpfilters{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+  .mcpfilters input,.mcpfilters select{font:inherit;font-size:.82rem;padding:5px 8px;border:1px solid var(--line);border-radius:6px}
+  .mcpfilters input{flex:1;min-width:180px}
+  .mcpcount{font-size:.74rem;color:var(--muted);padding:2px 2px 8px}
   .bars{margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px 14px}
   .q label{display:flex;justify-content:space-between;font-size:.74rem;color:var(--muted)}
   .q label em{font-style:normal;color:var(--ink);font-weight:600}
@@ -138,12 +147,14 @@
     <button class="tab on" data-tab="accounts">Accounts</button>
     <button class="tab" data-tab="providers">Providers</button>
     <button class="tab" data-tab="apps">Apps</button>
+    <button class="tab" data-tab="mcp">MCP</button>
     <button class="tab" data-tab="health">Health</button>
     <button class="tab" data-tab="about">About</button>
   </div>
   <div class="panel on" id="tab-accounts"><div class="empty">Loading&hellip;</div></div>
   <div class="panel" id="tab-providers"><div class="empty">Detecting installed tools&hellip;</div></div>
   <div class="panel" id="tab-apps"><div class="empty">Detecting installed apps&hellip;</div></div>
+  <div class="panel" id="tab-mcp"><div class="empty">Loading servers&hellip;</div></div>
   <div class="panel" id="tab-health"><div class="empty">Run checks to see the state of this machine.</div></div>
   <div class="panel" id="tab-about"></div>
   <div id="picker" style="display:none;position:fixed;inset:0;background:rgba(20,25,35,.45);z-index:5">
@@ -176,6 +187,7 @@ function openTab(name) {
   document.querySelectorAll('.panel').forEach((x) => x.classList.toggle('on', x.id === 'tab-' + name));
   if (name === 'providers') renderProviders();
   if (name === 'apps') renderApps();
+  if (name === 'mcp') renderMcp();
   if (name === 'health') renderHealth();
   if (name === 'about') renderAbout();
 }
@@ -908,6 +920,204 @@ async function renderHealth() {
   foot.appendChild(el('span', 'last', 'Last run: just now'));
   panel.appendChild(foot);
   realPanel.replaceChildren(...panel.childNodes);
+}
+
+/**
+ * MCP servers. A server is a name and an https address; the client it is registered with
+ * does its own sign-in afterwards. Switchboard stores no token and proxies nothing.
+ *
+ * Two views, because the numbers do not fit on one screen: "Your servers" is the handful
+ * you use, with a chip per client, and "Browse" is the whole catalogue, one action a row.
+ */
+let mcpView = 'yours';
+let mcpQuery = '';
+let mcpCategory = '';
+let mcpSearchTimer = null;
+
+// A tick that means "signed out and broken" is worse than no tick, so registered and
+// working are shown differently wherever the client can tell us which it is.
+const MCP_CHIP = {
+  off: { cls: 'btn', mark: '+', verb: 'Add' },
+  on: { cls: 'btn primary', mark: '&#10003;', verb: 'Registered' },
+  ready: { cls: 'btn primary', mark: '&#10003;', verb: 'Registered and signed in' },
+  'needs-auth': { cls: 'btn pending', mark: '!', verb: 'Registered, not signed in yet' },
+};
+
+function mcpSubtabs(onPick) {
+  const bar = el('div', 'subtabs');
+  for (const [id, label] of [['yours', 'Your servers'], ['browse', 'Browse']]) {
+    const b = el('button', 'subtab' + (mcpView === id ? ' on' : ''), label);
+    b.addEventListener('click', () => { mcpView = id; onPick(); });
+    bar.appendChild(b);
+  }
+  return bar;
+}
+
+/** One client chip. Clicking toggles registration, then re-reads the client afterwards. */
+function mcpChip(server, client, onDone) {
+  const state = (server.state && server.state[client.id]) || 'off';
+  const look = MCP_CHIP[state] || MCP_CHIP.off;
+  const btn = el('button', look.cls, look.mark + ' ' + esc(client.name));
+  const on = state !== 'off';
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.title = on
+    ? look.verb + '. ' + (client.canRemove ? 'Click to remove.' : 'Remove it from inside ' + client.name + '.')
+    : 'Add ' + server.name + ' to ' + client.name;
+  btn.addEventListener('click', async () => {
+    if (on && !client.canRemove) {
+      toast(client.name + ' has no remove command. Take it out from inside ' + client.name + '.');
+      return;
+    }
+    if (on && !confirm('Remove "' + server.name + '" from ' + client.name + '?')) return;
+    btn.disabled = true;
+    btn.textContent = on ? 'Removing...' : 'Adding...';
+    try {
+      if (on) {
+        await sb.mcpUnregister(client.id, server.name);
+        toast((server.label || server.title || server.name) + ' removed from ' + client.name + '.');
+      } else {
+        await sb.mcpRegister(client.id, server.name);
+        toast('Added to ' + client.name + '. Sign in from ' + client.name + ' itself when it first connects.');
+      }
+    } catch (e) {
+      toast(client.name + ' refused: ' + (e.message || e));
+    } finally {
+      onDone();
+    }
+  });
+  return btn;
+}
+
+function mcpRow(server, clients, onDone, opts) {
+  opts = opts || {};
+  const anyOn = clients.some((c) => ((server.state && server.state[c.id]) || 'off') !== 'off');
+  const pending = clients.some((c) => server.state && server.state[c.id] === 'needs-auth');
+  const level = (server.caveat || pending) ? 'warn' : anyOn ? 'ok' : 'info';
+  const row = el('div', 'hc ' + level);
+  row.appendChild(el('div', 'hi', MARK[level] || 'i'));
+  const bits = [];
+  bits.push(esc(server.description ? server.description.slice(0, 150) : server.url));
+  if (server.note) bits.push(esc(server.note));
+  if (server.caveat) bits.push(esc(server.caveat));
+  if (opts.showCategory && server.category) bits.push(esc(server.category));
+  const title = esc(server.label || server.title || server.name);
+  row.appendChild(el('div', 'hm', title + '<span>' + bits.join(' &middot; ') + '</span>'));
+  for (const c of clients) row.appendChild(mcpChip(server, c, onDone));
+  if (opts.forgettable) {
+    const del = el('button', 'btn ghost', 'Forget');
+    del.title = 'Remove from Switchboard. Clients already told about it keep their own entry.';
+    del.addEventListener('click', async () => {
+      if (!confirm('Forget "' + server.name + '"? Clients you already told about it keep it.')) return;
+      try { await sb.mcpRemove(server.name); onDone(); } catch (e) { toast(e.message || String(e)); }
+    });
+    row.appendChild(del);
+  }
+  return row;
+}
+
+async function renderMcp() {
+  const seq = beginRender('mcp');
+  const realPanel = $('#tab-mcp');
+  realPanel.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  const state = await sb.mcpState();
+  if (!isCurrentRender('mcp', seq)) return;
+  const servers = state.servers;
+  const clients = state.clients;
+  const local = state.local || [];
+
+  const panel = el('div');
+  panel.appendChild(mcpSubtabs(renderMcp));
+  const usable = clients.filter((c) => c.available);
+  const missing = clients.filter((c) => !c.available);
+
+  if (mcpView === 'browse') {
+    realPanel.replaceChildren(...panel.childNodes);
+    await renderMcpBrowse(realPanel, usable);
+    return;
+  }
+
+  if (!usable.length) panel.appendChild(el('div', 'empty', 'No supported client found on this machine.'));
+
+  const localNames = new Set(local.map((s) => s.name));
+  for (const s of servers) {
+    panel.appendChild(mcpRow(s, usable, renderMcp, { forgettable: localNames.has(s.name) }));
+  }
+
+  // Clients you do not have are listed rather than hidden: it shows what is possible.
+  for (const c of missing) {
+    const row = el('div', 'hc info');
+    row.appendChild(el('div', 'hi', 'i'));
+    row.appendChild(el('div', 'hm', esc(c.name) + '<span>Not installed on this machine.</span>'));
+    if (c.site) {
+      const get = el('button', 'btn', 'Get it');
+      get.addEventListener('click', () => sb.openExternal(c.site));
+      row.appendChild(get);
+    }
+    panel.appendChild(row);
+  }
+
+  const foot = el('div', 'healthfoot');
+  foot.style.flexWrap = 'wrap';
+  foot.style.gap = '6px';
+  const nameIn = el('input');
+  nameIn.placeholder = 'name (e.g. my-tracker)';
+  nameIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;width:170px';
+  const urlIn = el('input');
+  urlIn.placeholder = 'https://.../mcp';
+  urlIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1;min-width:200px';
+  const add = el('button', 'btn primary', 'Add server');
+  add.addEventListener('click', async () => {
+    try {
+      await sb.mcpAdd({ name: nameIn.value.trim(), url: urlIn.value.trim(), label: nameIn.value.trim() });
+      renderMcp();
+    } catch (e) {
+      toast(e.message || String(e));
+    }
+  });
+  foot.appendChild(nameIn);
+  foot.appendChild(urlIn);
+  foot.appendChild(add);
+  panel.appendChild(foot);
+  realPanel.replaceChildren(...panel.childNodes);
+}
+
+async function renderMcpBrowse(panel, clients) {
+  const filters = el('div', 'mcpfilters');
+  const q = el('input');
+  q.placeholder = 'Search servers...';
+  q.value = mcpQuery;
+  const cat = el('select');
+  filters.appendChild(q);
+  filters.appendChild(cat);
+  panel.appendChild(filters);
+  const count = el('div', 'mcpcount', 'Loading...');
+  panel.appendChild(count);
+  const list = el('div');
+  panel.appendChild(list);
+
+  const paint = async () => {
+    const seq = beginRender('mcpbrowse');
+    const data = await sb.mcpBrowse({ query: mcpQuery, category: mcpCategory });
+    if (!isCurrentRender('mcpbrowse', seq)) return;
+    if (!cat.options.length) {
+      cat.appendChild(new Option('All categories', ''));
+      for (const c of data.categories) cat.appendChild(new Option(c.name + ' (' + c.count + ')', c.name));
+      cat.value = mcpCategory;
+    }
+    const shown = data.servers.length;
+    count.textContent = shown < data.matched
+      ? 'Showing ' + shown + ' of ' + data.matched + ' matches (' + data.total + ' in total). Narrow the search to see the rest.'
+      : data.matched + ' of ' + data.total + ' servers';
+    list.replaceChildren(...data.servers.map((s) => mcpRow(s, clients, paint, { showCategory: true })));
+  };
+
+  q.addEventListener('input', () => {
+    mcpQuery = q.value;
+    clearTimeout(mcpSearchTimer);
+    mcpSearchTimer = setTimeout(paint, 180);
+  });
+  cat.addEventListener('change', () => { mcpCategory = cat.value; paint(); });
+  await paint();
 }
 
 // ---- Self-update surface: the version number is the button. ----

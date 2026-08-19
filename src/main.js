@@ -12,6 +12,7 @@ import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, AP
 import { detectPresence } from '../core/presence.js';
 import { terminalRows, terminalChips } from '../core/terminals.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
+import { CLIENTS as MCP_CLIENTS, allServers, yourServers, browseServers, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix } from '../core/mcp.js';
 import { createRequire } from 'node:module';
 
 // CI stamps updateRepo into the packaged package.json (extraMetadata); the committed
@@ -384,6 +385,77 @@ ipcMain.handle('sb:install', (_e, toolId, mode = 'install') => {
 });
 
 ipcMain.handle('sb:doctor', () => runChecks({ accounts: registry().accounts }));
+
+/**
+ * MCP servers. Switchboard keeps the definition (a name and an https url) and asks each
+ * client's own CLI to register it. No token passes through here and nothing is proxied:
+ * every client still signs in for itself and keeps its own credentials.
+ */
+ipcMain.handle('sb:mcpState', async () => {
+  const reg = loadServers();
+  const clients = await Promise.all(
+    Object.values(MCP_CLIENTS).map(async (c) => ({
+      id: c.id,
+      name: c.name,
+      available: await clientAvailable(c.id),
+      // File-edited clients can always undo; CLI-driven ones only if they ship a remove verb.
+      canRemove: c.via === 'file' || Boolean(c.removeArgs),
+      canList: Boolean(c.listArgs),
+      // Whether this client can say if a server is actually signed in, or only registered.
+      reportsAuth: Boolean(c.authFile && c.parseAuth),
+      site: c.site ?? null,
+    })),
+  );
+  // Only ask about clients that are actually here; reading a config for a tool that is
+  // not installed would report nothing anyway and just muddies the panel.
+  const usable = clients.filter((c) => c.available).map((c) => c.id);
+  return { servers: registrationMatrix(yourServers(reg, usable), usable), local: reg.servers, clients };
+});
+
+/** The browse screen: the whole catalogue, filtered, with the categories to filter by. */
+ipcMain.handle('sb:mcpBrowse', async (_e, { query = '', category = '' } = {}) => {
+  const reg = loadServers();
+  const all = browseServers(reg);
+  const usable = (await Promise.all(
+    Object.values(MCP_CLIENTS).map(async (c) => ((await clientAvailable(c.id)) ? c.id : null)),
+  )).filter(Boolean);
+  const matched = searchCatalog(all, { query, category });
+  return {
+    total: all.length,
+    matched: matched.length,
+    categories: categoriesOf(all),
+    // Cap what crosses the wire; nobody scrolls past this, and the search box is right there.
+    servers: registrationMatrix(matched.slice(0, 60), usable),
+  };
+});
+
+ipcMain.handle('sb:mcpAdd', (_e, { name, url, label }) => {
+  const reg = loadServers();
+  const server = addServer(reg, { name, url, label });
+  saveServers(reg);
+  return { ok: true, server };
+});
+
+ipcMain.handle('sb:mcpRemove', (_e, name) => {
+  const reg = loadServers();
+  removeServer(reg, name);
+  saveServers(reg);
+  return { ok: true };
+});
+
+// The renderer sends a server name, never a command or a url. The definition is resolved
+// here from the catalogue or the local registry, so a renderer cannot invent one.
+function resolveServer(name) {
+  const found = allServers(loadServers()).find((s) => s.name === name);
+  if (!found) throw new Error(`no such server: ${name}`);
+  return found;
+}
+
+ipcMain.handle('sb:mcpRegister', (_e, clientId, name) => registerServer(clientId, resolveServer(name)));
+
+ipcMain.handle('sb:mcpUnregister', (_e, clientId, name) => unregisterServer(clientId, resolveServer(name)));
+
+ipcMain.handle('sb:mcpList', (_e, clientId) => listRegistered(clientId));
 
 ipcMain.handle('sb:apps', async () => {
   const startApps = await getStartApps();

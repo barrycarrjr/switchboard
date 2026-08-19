@@ -9,21 +9,13 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Switchboard is generic by construction: no person, company, or machine specifics
 // may appear in the shipped source. This is a ratchet, not a suggestion.
 //
-// Committed patterns are generic (credential prefixes, key headers, user-profile
-// paths, literal email addresses). Add private patterns (your name, your company,
-// internal hostnames) to an untracked `.forbidden-local.json` beside package.json:
+// The committed patterns live in `scripts/forbidden-patterns.js` so that this ratchet and
+// any generator writing third-party text into the tree check the same list rather than two
+// copies that drift. Add private patterns (your name, your company, internal hostnames) to
+// an untracked `.forbidden-local.json` beside package.json:
 //   [{ "pattern": "somename", "flags": "i" }, ...]
 // That file is gitignored on purpose: the guard list itself must not leak what it guards.
-const FORBIDDEN = [
-  { rx: /sk-ant-/, why: 'Anthropic credential prefix' },
-  { rx: /ghp_[A-Za-z0-9]{20,}/, why: 'GitHub token' },
-  { rx: /github_pat_/, why: 'GitHub fine-grained token' },
-  { rx: /xox[baprs]-/, why: 'Slack token' },
-  { rx: /AKIA[0-9A-Z]{16}/, why: 'AWS access key' },
-  { rx: /BEGIN [A-Z ]*PRIVATE KEY/, why: 'private key material' },
-  { rx: /C:\\+Users\\+[a-z]/i, why: 'a real user-profile path' },
-  { rx: /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.(com|net|org|io)/, why: 'a literal email address' },
-];
+import { FORBIDDEN } from '../scripts/forbidden-patterns.js';
 
 function loadLocalPatterns() {
   try {
@@ -47,7 +39,8 @@ test('no personal, company, or machine-specific strings in the source tree', () 
   const patterns = [...FORBIDDEN, ...loadLocalPatterns()];
   const offenders = [];
   for (const file of sourceFiles(root)) {
-    if (file.endsWith(path.join('test', 'generic.test.js'))) continue;
+    // The guard list necessarily spells out what it forbids, so it cannot check itself.
+    if (file.endsWith(path.join('scripts', 'forbidden-patterns.js'))) continue;
     if (file.endsWith('.forbidden-local.json')) continue;
     const text = fs.readFileSync(file, 'utf8');
     for (const { rx, why } of patterns) {

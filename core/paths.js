@@ -19,6 +19,11 @@ export function accountsFile() {
   return path.join(dataDir(), 'accounts.json');
 }
 
+/** Servers a person added by hand. The built-in catalogue lives in code, not here. */
+export function mcpFile() {
+  return path.join(dataDir(), 'mcp.json');
+}
+
 /**
  * Write-then-rename so a process killed mid-write (the installer force-closes the
  * running app during an upgrade) can never leave a torn file behind: either the old
