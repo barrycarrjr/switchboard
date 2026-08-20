@@ -5,8 +5,9 @@ update the AI CLIs, register multiple subscription accounts per tool, switch the
 account in two clicks, see each account's usage against its available limits, register MCP servers across every
 AI client at once, and run health checks for broken setups and billing traps.
 
-It manages tools, accounts and connections only. It never runs tasks, never holds sessions,
-and never touches a running application or any GUI application's login.
+It also acts as an execution broker (`switchboard run`), routing tasks to the healthiest available AI account via ordered "execution lanes," tracking quota limits, and securely handing off context when an account hits its limit mid-task.
+
+For deep-dives into architecture, guides, and full command references, see the **[`docs/`](./docs/)** directory.
 
 ## How it works
 
@@ -24,7 +25,7 @@ and never touches a running application or any GUI application's login.
   a second account and quietly share the first one's identity. Tools like that appear on
   the Accounts page as a single machine-wide login instead.
 - Switching sets the user-scope default for those variables, so new terminals and newly
-  launched tools inherit it. Running processes are untouched.
+  launched tools inherit it. Running processes are untouched, unless launched via `switchboard run`.
 - No secrets are stored. Quota display reads each account's own credentials file
   transiently and calls the vendor usage endpoint; tokens are never persisted or logged.
 - Usage is shown wherever the vendor gives an honest source. Claude reads the account's
@@ -33,6 +34,7 @@ and never touches a running application or any GUI application's login.
   the snapshot was taken rather than passing it off as live. Gemini and Qwen publish
   nothing, and the card says so instead of showing an empty bar.
 - Installs and updates delegate to vendor mechanisms (winget, npm). Nothing is bundled.
+- Execution Lanes enable intelligent failover. By running tasks through `switchboard run`, the CLI automatically routes your task to an account with available quota. If a provider limit is hit mid-session, Switchboard securely transfers the context to the next available lane without leaking secrets.
 
 ## MCP servers
 
@@ -112,3 +114,8 @@ machine from somewhere else: per tool, the variable and its value, every registe
 account, which one new terminals will use, whether it is signed in, and how much of its
 allowance is left with the reset times. `switchboard status --json` prints the same thing
 for scripts.
+
+`switchboard run` is the intelligent execution broker: it evaluates the current status of all
+configured execution lanes, securely sets up the environment variables for the healthiest 
+account, and launches the native CLI. If the task is interrupted by an exhaustion limit, 
+Switchboard intercepts the error and securely hands off the session context to the next available lane.
