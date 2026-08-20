@@ -275,7 +275,7 @@ async function renderAccounts() {
       }
       card.appendChild(top);
 
-      if (a.provider === 'claude') {
+      if (p.hasQuota) {
         const bars = el('div', 'bars', '<div class="resets">Loading quota&hellip;</div>');
         card.appendChild(bars);
         const fillQuota = (attempt = 0) => sb.quota(a.id).then((q) => {
@@ -287,12 +287,23 @@ async function renderAccounts() {
           if (q.error) {
             if (q.error === 'no-credentials') {
               bars.innerHTML = '<div class="resets">No readable token (the credentials live in the system store).</div>';
-              const link = el('div', 'qnote', '<a>Use Claude Desktop usage data for this account&hellip;</a>');
-              link.querySelector('a').addEventListener('click', async () => {
-                const r = await sb.setUsageSource(a.id);
-                if (r.ok) renderAccounts();
-              });
-              bars.appendChild(link);
+              if (p.id === 'claude') {
+                const link = el('div', 'qnote', '<a>Use Claude Desktop usage data for this account&hellip;</a>');
+                link.querySelector('a').addEventListener('click', async () => {
+                  const r = await sb.setUsageSource(a.id);
+                  if (r.ok) renderAccounts();
+                });
+                bars.appendChild(link);
+              }
+            } else if (q.error === 'no-usage-data') {
+              // Nothing was read wrong: this account simply has not run yet, and the
+              // figures appear on their own once it has.
+              bars.innerHTML = '<div class="resets">No usage recorded yet. Run this account once and the figures appear here.</div>';
+              if (p.usageUrl) {
+                const link = el('div', 'qnote', '<a>View usage on the official page</a>');
+                link.querySelector('a').addEventListener('click', () => sb.openExternal(p.usageUrl));
+                bars.appendChild(link);
+              }
             } else if (q.error === 'auth') {
               bars.innerHTML = '<div class="resets">The stored token needs a refresh: use "Sign in / re-authenticate" below, run one prompt in that terminal, then retry.</div>';
             } else if (q.error === 'rate-limited') {
@@ -318,6 +329,11 @@ async function renderAccounts() {
             bars.appendChild(q1);
             if (w.resetsAt && resets.length < 2) resets.push(`${esc(w.label.toLowerCase())} resets ${esc(fmtReset(w.resetsAt))}`);
           }
+          if (q.source === 'session-log') {
+            // A local snapshot, not a live reading: say when it was taken, always.
+            resets.push(`from this account's last session, ${esc(fmtReset(q.sampledAt))}${q.stale ? ' (stale)' : ''}`);
+            if (q.plan) resets.push(`plan ${esc(q.plan)}`);
+          }
           if (q.source === 'desktop') {
             const when = new Date(q.sampledAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
             resets.push(`via Claude Desktop, sampled ${esc(when)}${q.stale ? ' (stale; open the desktop app to refresh)' : ''}`);
@@ -328,10 +344,8 @@ async function renderAccounts() {
           if (resets.length) bars.appendChild(el('div', 'resets', resets.join(' &middot; ')));
         });
         fillQuota();
-      } else if (a.provider === 'codex') {
-        const note = el('div', 'qnote', 'No usage API for Codex subscriptions. <a>View usage on the official page</a>');
-        note.querySelector('a').addEventListener('click', () => sb.openExternal('https://chatgpt.com/codex/settings/usage'));
-        card.appendChild(note);
+      } else if (p.quotaNote) {
+        card.appendChild(el('div', 'qnote', esc(p.quotaNote)));
       }
       // Lead with the login state so the link has a reason. Offered identically in every
       // state, it reads as something you might always need to do.

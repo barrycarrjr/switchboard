@@ -136,3 +136,170 @@ export async function accountQuota(home, fetchImpl = fetch, usageSource = null, 
   }
   return { error: 'no-credentials' };
 }
+
+/* ------------------------------------------------------------------------- *
+ * Codex
+ *
+ * OpenAI publishes no usage endpoint for Codex subscriptions, but the CLI writes
+ * every rate-limit reply it receives into that account's own session log. Reading
+ * the newest one is a real answer with a real timestamp, which is worth more than
+ * a blank card, as long as the timestamp is shown rather than passed off as live.
+ * ------------------------------------------------------------------------- */
+
+/** How old a session snapshot may be before it is called stale rather than current. */
+export const CODEX_STALE_MS = 24 * 60 * 60 * 1000;
+
+const CODEX_TAIL_BYTES = 256 * 1024;
+const CODEX_FILES_SCANNED = 8;
+
+/** Percent-only conversion: Codex reports 6.0 meaning six percent, never a fraction. */
+export function toExactPercent(value) {
+  if (value == null || Number.isNaN(Number(value))) return null;
+  return Math.max(0, Math.min(100, Math.round(Number(value))));
+}
+
+export function codexWindowLabel(minutes) {
+  const n = Number(minutes);
+  if (!Number.isFinite(n) || n <= 0) return 'Usage';
+  if (n === 300) return 'Session (5h)';
+  if (n === 10080) return 'Week';
+  if (n < 60) return `Last ${n}m`;
+  if (n < 1440) return `Last ${Math.round(n / 60)}h`;
+  if (n % 1440 === 0) return `Last ${n / 1440}d`;
+  return `Last ${Math.round(n / 60)}h`;
+}
+
+/** Map one rate_limits record into the same window shape the Claude cards use. */
+export function mapCodexRateLimits(limits) {
+  if (!limits || typeof limits !== 'object') return [];
+  const windows = [];
+  const used = new Set();
+  const push = (w) => {
+    if (!w || w.used_percent == null) return;
+    const minutes = Number(w.window_minutes);
+    let key = Number.isFinite(minutes) && minutes <= 1440 ? 'session' : 'week';
+    while (used.has(key)) key += '2';
+    used.add(key);
+    windows.push({
+      key,
+      label: codexWindowLabel(minutes),
+      usedPercent: toExactPercent(w.used_percent),
+      resetsAt: toEpochMs(w.resets_at),
+    });
+  };
+  push(limits.primary);
+  push(limits.secondary);
+  const credits = limits.credits;
+  if (credits && (credits.unlimited || credits.has_credits)) {
+    windows.push({
+      key: 'credits',
+      label: 'Credits',
+      usedPercent: null,
+      resetsAt: null,
+      valueLabel: credits.unlimited ? 'Unlimited' : String(credits.balance ?? ''),
+    });
+  }
+  return windows;
+}
+
+/** Read the last whole lines of a file without pulling a long session into memory. */
+function tailLines(file, bytes = CODEX_TAIL_BYTES) {
+  let fd;
+  try {
+    const size = fs.statSync(file).size;
+    const length = Math.min(size, bytes);
+    const buffer = Buffer.alloc(length);
+    fd = fs.openSync(file, 'r');
+    fs.readSync(fd, buffer, 0, length, size - length);
+    const lines = buffer.toString('utf8').split(/\r?\n/);
+    // The first line is cut in half whenever the file is longer than the window.
+    if (length < size) lines.shift();
+    return lines;
+  } catch {
+    return [];
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* already gone */ }
+  }
+}
+
+/**
+ * Session logs are filed as sessions/YYYY/MM/DD/rollout-*.jsonl. Walking newest-first
+ * by that structure keeps the scan to a handful of files however long the account has
+ * been in use.
+ */
+export function findCodexSessionFiles(home, limit = CODEX_FILES_SCANNED) {
+  const root = path.join(home, 'sessions');
+  const found = [];
+  const descend = (dir, depth) => {
+    if (found.length >= limit) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (depth === 3) {
+      const files = entries.filter((e) => e.isFile() && e.name.endsWith('.jsonl')).map((e) => e.name).sort().reverse();
+      for (const name of files) {
+        if (found.length >= limit) return;
+        found.push(path.join(dir, name));
+      }
+      return;
+    }
+    const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse();
+    for (const name of dirs) descend(path.join(dir, name), depth + 1);
+  };
+  descend(root, 0);
+  return found;
+}
+
+/** Pull the newest rate_limits record out of one session log, or null. */
+export function lastRateLimitsIn(file) {
+  const lines = tailLines(file);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes('"rate_limits"')) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue; // a torn or oversized line is skipped, never guessed at
+    }
+    const limits = parsed?.payload?.rate_limits ?? parsed?.rate_limits;
+    if (!limits) continue;
+    return { limits, sampledAt: toEpochMs(parsed.timestamp) };
+  }
+  return null;
+}
+
+/**
+ * Quota for one registered Codex account, from that account's own session logs.
+ * Never throws; an account that has not run yet reports that, rather than zero.
+ */
+export function codexQuota(home, now = Date.now()) {
+  for (const file of findCodexSessionFiles(home)) {
+    const hit = lastRateLimitsIn(file);
+    if (!hit) continue;
+    const windows = mapCodexRateLimits(hit.limits);
+    if (windows.length === 0) continue;
+    const sampledAt = hit.sampledAt ?? null;
+    return {
+      windows,
+      source: 'session-log',
+      sampledAt,
+      stale: sampledAt == null || now - sampledAt > CODEX_STALE_MS,
+      plan: hit.limits.plan_type ?? null,
+    };
+  }
+  return { error: 'no-usage-data' };
+}
+
+/**
+ * Usage for any account, routed by what its vendor actually exposes. A provider with
+ * no usable source says so once, here, instead of every caller inventing an answer.
+ */
+export async function providerQuota(provider, home, { fetchImpl = fetch, usageSource = null, now = Date.now() } = {}) {
+  if (provider === 'claude') return accountQuota(home, fetchImpl, usageSource, now);
+  if (provider === 'codex') return codexQuota(home, now);
+  return { error: 'unsupported' };
+}

@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, PROVIDERS } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, envValueForHome, PROVIDERS } from '../core/accounts.js';
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, TOOLS } from '../core/providers.js';
 import { runChecks, accountLoginState } from '../core/doctor.js';
-import { accountQuota } from '../core/quota.js';
+import { providerQuota } from '../core/quota.js';
 import { applyFix } from '../core/fixes.js';
+import { signinTerminal } from '../core/signin.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, APPS } from '../core/apps.js';
 import { detectPresence } from '../core/presence.js';
@@ -79,6 +80,9 @@ function stateSnapshot() {
       envVar: p.envVar,
       activeAccountId: activeAccount(reg, p.id)?.id ?? null,
       activeHome: activeHome(p.id),
+      hasQuota: Boolean(p.quota),
+      quotaNote: p.quotaNote ?? null,
+      usageUrl: p.usageUrl ?? null,
     };
   }
   // Login state travels with each account so the Accounts page can say why its
@@ -416,9 +420,11 @@ ipcMain.handle('sb:addAccount', async (_e, provider) => {
     properties: ['openDirectory', 'createDirectory'],
   });
   if (picked.canceled || !picked.filePaths[0]) return { ok: false };
-  const home = picked.filePaths[0];
+  const label = path.basename(picked.filePaths[0]);
+  const home = normalizeHome(provider, picked.filePaths[0]);
+  fs.mkdirSync(home, { recursive: true });
   const reg = registry();
-  const account = addAccount(reg, { provider, label: path.basename(home), home });
+  const account = addAccount(reg, { provider, label, home });
   saveRegistry(reg);
   refresh();
   return { ok: true, account, loginHint: def.loginHint };
@@ -465,13 +471,16 @@ ipcMain.handle('sb:fix', (_e, action, args) => {
 ipcMain.handle('sb:signin', (_e, accountId) => {
   const account = registry().accounts.find((a) => a.id === accountId);
   if (!account) throw new Error(`no such account: ${accountId}`);
-  const def = PROVIDERS[account.provider];
   // A visible terminal with the account's folder preselected, so the vendor's own
-  // login flow lands in the right home.
-  const inner = account.provider === 'codex'
-    ? `$env:${def.envVar}='${account.home}'; Write-Host 'Codex login for account: ${account.label}' -ForegroundColor Cyan; codex login`
-    : `$env:${def.envVar}='${account.home}'; Write-Host 'Claude sign-in for account: ${account.label}. Use /login for interactive use, or run: claude setup-token (for automation tokens).' -ForegroundColor Cyan; claude`;
-  spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', inner], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+  // login flow lands in the right home. The folder travels in the child's environment,
+  // never in the command text: see core/signin.js for why.
+  const { command, env } = signinTerminal(account);
+  spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', command], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+    env: { ...process.env, ...env },
+  }).unref();
   return { ok: true };
 });
 
@@ -639,7 +648,8 @@ ipcMain.handle('sb:openTerminal', (_e, bin, accountId = null) => {
     const account = registry().accounts.find((a) => a.id === accountId);
     if (!account) throw new Error(`no such account: ${accountId}`);
     if (account.provider !== tool.id) throw new Error(`${account.label} is not a ${tool.name} account`);
-    env[PROVIDERS[account.provider].envVar] = account.home;
+    const def = PROVIDERS[account.provider];
+    env[def.envVar] = envValueForHome(def, account.home);
   }
   spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', bin], { detached: true, stdio: 'ignore', windowsHide: false, env }).unref();
   return { ok: true };
@@ -658,7 +668,9 @@ async function cachedQuota(account) {
   const now = Date.now();
   if (hit && now - hit.at < QUOTA_TTL_MS) return { ...hit.result, staleAt: hit.at };
   const settings = loadSettings();
-  const result = await accountQuota(account.home, fetch, settings.usageSources[account.id] ?? null);
+  const result = await providerQuota(account.provider, account.home, {
+    usageSource: settings.usageSources[account.id] ?? null,
+  });
   if (!result.error) {
     quotaCache.set(account.id, { at: now, result });
     return result;
@@ -671,7 +683,7 @@ async function cachedQuota(account) {
 ipcMain.handle('sb:quota', (_e, accountId) => {
   const account = registry().accounts.find((a) => a.id === accountId);
   if (!account) throw new Error(`no such account: ${accountId}`);
-  if (account.provider !== 'claude') return { error: 'unsupported' };
+  if (!PROVIDERS[account.provider]?.quota) return { error: 'unsupported' };
   return cachedQuota(account);
 });
 

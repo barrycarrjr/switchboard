@@ -4,10 +4,10 @@ import { samePath } from './paths.js';
 /**
  * Every installed CLI, and every account it can open on.
  *
- * The CLIs that keep their sign-in in a config folder (Claude Code, Codex) get one
- * entry per registered account, so a terminal can open on a specific account without
- * changing the machine default for everything else. CLIs that hold a single sign-in
- * per machine get one entry that inherits whatever is current.
+ * The CLIs that keep their sign-in in a config folder get one entry per registered
+ * account, so a terminal can open on a specific account without changing the machine
+ * default for everything else. CLIs that hold a single sign-in per machine get one
+ * entry that inherits whatever is current.
  *
  * Pure: hand it detected tools, the account registry, and the active home per
  * provider, and it returns what the panel draws. `terminalChips` folds these into

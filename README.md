@@ -10,13 +10,28 @@ and never touches a running application or any GUI application's login.
 
 ## How it works
 
-- An account is a vendor config folder. Claude Code accounts are folders selected via
-  `CLAUDE_CONFIG_DIR`; Codex accounts are folders selected via `CODEX_HOME`. Switchboard
-  registers labels and folder paths, nothing else.
+- An account is a vendor config folder. Switchboard registers labels and folder paths,
+  nothing else. Four tools qualify, because each has a variable that moves its whole
+  sign-in to another folder: Claude Code (`CLAUDE_CONFIG_DIR`), Codex (`CODEX_HOME`),
+  Gemini CLI (`GEMINI_CLI_HOME`) and Qwen Code (`QWEN_HOME`).
+- Two of those variables name the folder itself and two name the folder above it, so
+  `GEMINI_CLI_HOME=C:\profiles\work` means the account lives in
+  `C:\profiles\work\.gemini`. Switchboard appends the vendor's folder name for you and
+  refuses to register a folder the vendor could never read.
+- A tool is deliberately absent when its sign-in lives outside the config folder. GitHub
+  Copilot CLI is the case in point: `COPILOT_HOME` moves its settings, but the token sits
+  in Windows Credential Manager keyed by GitHub login, so a second folder would look like
+  a second account and quietly share the first one's identity. Tools like that appear on
+  the Accounts page as a single machine-wide login instead.
 - Switching sets the user-scope default for those variables, so new terminals and newly
   launched tools inherit it. Running processes are untouched.
 - No secrets are stored. Quota display reads each account's own credentials file
   transiently and calls the vendor usage endpoint; tokens are never persisted or logged.
+- Usage is shown wherever the vendor gives an honest source. Claude reads the account's
+  own usage endpoint. Codex has no such endpoint, so Switchboard reads the rate-limit
+  reply the CLI already recorded in that account's session log, and always shows when
+  the snapshot was taken rather than passing it off as live. Gemini and Qwen publish
+  nothing, and the card says so instead of showing an empty bar.
 - Installs and updates delegate to vendor mechanisms (winget, npm). Nothing is bundled.
 
 ## MCP servers
@@ -91,3 +106,9 @@ address and drops any that need an API key.
 The core (`core/`, `bin/cli.js`) is plain Node with no Electron dependency; the tray shell
 is a thin skin over it. `switchboard` is also a CLI: `status`, `accounts`, `use`, `doctor`,
 `providers`, `quota`.
+
+`switchboard status` is the whole picture in one screen, and the only way to read the
+machine from somewhere else: per tool, the variable and its value, every registered
+account, which one new terminals will use, whether it is signed in, and how much of its
+allowance is left with the reset times. `switchboard status --json` prints the same thing
+for scripts.

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, setActive, PROVIDERS } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, envValueForHome, homeFromEnvValue, PROVIDERS } from '../core/accounts.js';
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'sb-test-'));
@@ -131,4 +131,77 @@ test('detectDefaults skips homes that are already registered', () => {
     if (fs.existsSync(p.defaultHome())) addAccount(reg, { provider: p.id, label: 'Default', home: p.defaultHome() });
   }
   assert.deepEqual(detectDefaults(reg), []);
+});
+
+/* Tools whose variable names the folder ABOVE the config folder (Gemini CLI). */
+
+test('a parent-shaped variable resolves through the vendor folder in both directions', () => {
+  const dir = tmp();
+  const parent = path.join(dir, 'work');
+  const home = path.join(parent, '.gemini');
+  const reg = { accounts: [] };
+  const a = addAccount(reg, { provider: 'gemini', label: 'Work', home });
+
+  // Reading: the variable names the parent, the config folder is inside it.
+  assert.equal(activeHome('gemini', () => parent), home);
+  assert.equal(activeAccount(reg, 'gemini', () => parent)?.id, a.id);
+  // Unset falls back to the vendor default, not to the parent.
+  assert.equal(activeHome('gemini', () => null), PROVIDERS.gemini.defaultHome());
+
+  // Writing: the variable gets the parent, never the config folder itself.
+  const writes = [];
+  setActive(reg, a.id, (name, value) => writes.push([name, value]));
+  assert.deepEqual(writes, [['GEMINI_CLI_HOME', parent]]);
+});
+
+test('a parent-shaped account folder must carry the vendor name, or it would never activate', () => {
+  const dir = tmp();
+  assert.throws(
+    () => addAccount({ accounts: [] }, { provider: 'gemini', label: 'Work', home: path.join(dir, 'gemini-work') }),
+    /must be named \.gemini/,
+  );
+  // normalizeHome is what makes a picked folder usable, so the person never meets that error.
+  assert.equal(normalizeHome('gemini', path.join(dir, 'work')), path.join(dir, 'work', '.gemini'));
+  assert.equal(normalizeHome('gemini', path.join(dir, 'work', '.gemini')), path.join(dir, 'work', '.gemini'));
+  // A home-shaped tool takes the folder exactly as given.
+  assert.equal(normalizeHome('claude', path.join(dir, 'anything')), path.join(dir, 'anything'));
+});
+
+test('candidates are looked for where each shape can actually keep them', () => {
+  const homeDir = tmp();
+  // Gemini: a second account lives one level down, because GEMINI_CLI_HOME names a home.
+  fs.mkdirSync(path.join(homeDir, 'work', '.gemini'), { recursive: true });
+  fs.writeFileSync(path.join(homeDir, 'work', '.gemini', 'oauth_creds.json'), '{}');
+  // A sibling dot-folder can never be selected for Gemini, so it is not offered.
+  fs.mkdirSync(path.join(homeDir, '.gemini-work'));
+  fs.writeFileSync(path.join(homeDir, '.gemini-work', 'oauth_creds.json'), '{}');
+  // Qwen names the folder itself, so a sibling IS a real account.
+  fs.mkdirSync(path.join(homeDir, '.qwen-alt'));
+  fs.writeFileSync(path.join(homeDir, '.qwen-alt', 'oauth_creds.json'), '{}');
+
+  const found = detectCandidates({ accounts: [] }, homeDir);
+  assert.deepEqual(
+    found.map((f) => [f.provider, f.home]).sort(),
+    [['gemini', path.join(homeDir, 'work', '.gemini')], ['qwen', path.join(homeDir, '.qwen-alt')]].sort(),
+  );
+});
+
+test('every provider declares a shape that its own helpers agree on', () => {
+  for (const def of Object.values(PROVIDERS)) {
+    assert.ok(['home', 'parent'].includes(def.envShape), `${def.id} has no shape`);
+    const home = def.defaultHome();
+    assert.equal(path.basename(home), def.dirName);
+    assert.equal(homeFromEnvValue(def, envValueForHome(def, home)), home);
+  }
+});
+
+test('a vendor folder another product also writes to is not claimed on sight', () => {
+  const homeDir = tmp();
+  // Antigravity creates ~/.gemini without ever signing Gemini CLI in.
+  fs.mkdirSync(path.join(homeDir, '.gemini', 'antigravity'), { recursive: true });
+  fs.mkdirSync(path.join(homeDir, '.codex'));
+  assert.deepEqual(detectDefaults({ accounts: [] }, homeDir).map((f) => f.provider), ['codex']);
+
+  fs.writeFileSync(path.join(homeDir, '.gemini', 'oauth_creds.json'), '{}');
+  assert.deepEqual(detectDefaults({ accounts: [] }, homeDir).map((f) => f.provider).sort(), ['codex', 'gemini']);
 });
