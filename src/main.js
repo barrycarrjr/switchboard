@@ -938,4 +938,53 @@ ipcMain.handle('sb:setUpdateRepo', (_e, slug) => {
   return { ok: true };
 });
 
+ipcMain.handle('sb:getLanes', () => {
+  const settings = loadSettings();
+  return { lanes: settings.lanes, spendPolicies: settings.spendPolicies };
+});
+
+ipcMain.handle('sb:addLane', (_e, lane) => {
+  const settings = loadSettings();
+  if (!lane.id) lane.id = `lane-${Date.now()}`;
+  settings.lanes.push(lane);
+  saveSettings(settings);
+  return { ok: true, lane };
+});
+
+ipcMain.handle('sb:removeLane', (_e, laneId) => {
+  const settings = loadSettings();
+  settings.lanes = settings.lanes.filter(l => l.id !== laneId);
+  delete settings.spendPolicies[laneId];
+  delete settings.cooldowns[laneId];
+  saveSettings(settings);
+  return { ok: true };
+});
+
+ipcMain.handle('sb:updateLaneOrder', (_e, laneIds) => {
+  const settings = loadSettings();
+  const newLanes = [];
+  for (const id of laneIds) {
+    const found = settings.lanes.find(l => l.id === id);
+    if (found) newLanes.push(found);
+  }
+  // Append any missing ones that were somehow omitted
+  for (const l of settings.lanes) {
+    if (!newLanes.some(n => n.id === l.id)) newLanes.push(l);
+  }
+  settings.lanes = newLanes;
+  saveSettings(settings);
+  return { ok: true };
+});
+
+ipcMain.handle('sb:setLaneBudget', (_e, laneId, budget) => {
+  const settings = loadSettings();
+  if (budget === null || budget === undefined) {
+    delete settings.spendPolicies[laneId];
+  } else {
+    settings.spendPolicies[laneId] = { budget: Number(budget) };
+  }
+  saveSettings(settings);
+  return { ok: true };
+});
+
 ipcMain.handle('sb:openPath', (_e, p) => shell.openPath(p));
