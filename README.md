@@ -57,6 +57,14 @@ It installs per-user to `%LOCALAPPDATA%\Programs\Switchboard`, registers an unin
 Apps & Features, and running a newer setup upgrades in place. App data lives in
 `%APPDATA%\Switchboard` and is kept on uninstall.
 
+The About panel can export all Switchboard-owned configuration to a versioned JSON file and
+import it later. This includes account registrations and active choices, preferences, custom
+app launchers, and custom MCP server definitions. It does not contain tokens, vendor
+credential files, or MCP client sign-ins. Import validates the complete file and writes a
+pre-import recovery backup under `%APPDATA%\Switchboard\backups` before replacing anything.
+An in-app upgrade writes the same kind of importable backup immediately before its setup
+program is launched; if that backup cannot be written, the upgrade does not start.
+
 After installing, updates come from inside the app: it checks the [Releases](../../releases)
 automatically, and the version number in the header becomes an Update button when a newer
 version exists.

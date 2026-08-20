@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('sb', {
   state: () => ipcRenderer.invoke('sb:state'),
+  configExport: () => ipcRenderer.invoke('sb:configExport'),
+  configImport: () => ipcRenderer.invoke('sb:configImport'),
   setActive: (id) => ipcRenderer.invoke('sb:setActive', id),
   addAccount: (provider) => ipcRenderer.invoke('sb:addAccount', provider),
   removeAccount: (id) => ipcRenderer.invoke('sb:removeAccount', id),

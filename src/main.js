@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, Notification, screen } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +24,8 @@ function effectiveUpdateRepo() {
 }
 import { decideDefaultSwitch } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
+import { dataDir, writeJsonAtomic } from '../core/paths.js';
+import { configSummary, createSwitchboardConfig, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let win = null;
@@ -40,6 +43,30 @@ app.setAppUserModelId('io.switchboard.app');
 
 function registry() {
   return loadRegistry();
+}
+
+function currentConfig() {
+  const reg = registry();
+  const activeAccounts = {};
+  for (const provider of Object.keys(PROVIDERS)) {
+    const active = activeAccount(reg, provider);
+    if (active) activeAccounts[provider] = active.id;
+  }
+  return createSwitchboardConfig({
+    registry: reg,
+    settings: loadSettings(),
+    mcp: loadServers(),
+    activeAccounts,
+  });
+}
+
+/** Write an importable snapshot before an operation that can replace app state/code. */
+function saveRecoveryConfig(kind) {
+  if (!['before-import', 'before-upgrade'].includes(kind)) throw new Error('unknown recovery backup kind');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(dataDir(), 'backups', `${kind}-${stamp}.json`);
+  writeJsonAtomic(backupPath, currentConfig());
+  return backupPath;
 }
 
 function stateSnapshot() {
@@ -297,6 +324,81 @@ app.on('before-quit', () => { quitting = true; });
 // ---- IPC: the renderer only ever talks to the core through these. ----
 
 ipcMain.handle('sb:state', () => stateSnapshot());
+
+ipcMain.handle('sb:configExport', async () => {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const picked = await dialog.showSaveDialog(win, {
+    title: 'Export Switchboard configuration',
+    defaultPath: path.join(app.getPath('documents'), `switchboard-config-${stamp}.json`),
+    filters: [{ name: 'Switchboard configuration', extensions: ['json'] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false };
+  const config = currentConfig();
+  fs.writeFileSync(picked.filePath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  return { ok: true, filePath: picked.filePath, summary: configSummary(config) };
+});
+
+ipcMain.handle('sb:configImport', async () => {
+  const picked = await dialog.showOpenDialog(win, {
+    title: 'Import Switchboard configuration',
+    defaultPath: app.getPath('documents'),
+    properties: ['openFile'],
+    filters: [{ name: 'Switchboard configuration', extensions: ['json'] }],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return { ok: false };
+  const filePath = picked.filePaths[0];
+  if (fs.statSync(filePath).size > 2 * 1024 * 1024) throw new Error('the selected config is too large');
+  const imported = parseSwitchboardConfig(fs.readFileSync(filePath, 'utf8'));
+  const summary = configSummary(imported);
+  const answer = await dialog.showMessageBox(win, {
+    type: 'warning',
+    title: 'Import Switchboard configuration?',
+    message: `Replace this machine's Switchboard configuration with ${path.basename(filePath)}?`,
+    detail: `${summary.accounts} account registration(s), ${summary.customApps} custom app(s), and ${summary.mcpServers} custom MCP server(s) will be imported.\n\nThis does not copy, delete, or change vendor credential folders. MCP client registrations and sign-ins also remain untouched.`,
+    buttons: ['Import', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (answer.response !== 0) return { ok: false };
+
+  // Keep a known-good, importable snapshot before changing any of the three data files.
+  const backupPath = saveRecoveryConfig('before-import');
+
+  const oldRegistry = registry();
+  const oldSettings = loadSettings();
+  const oldMcp = loadServers();
+  const nextRegistry = { accounts: imported.accounts };
+  const nextSettings = settingsFromConfig(imported, oldSettings);
+  const nextMcp = { servers: imported.mcpServers };
+  try {
+    saveRegistry(nextRegistry);
+    saveSettings(nextSettings);
+    saveServers(nextMcp);
+  } catch (error) {
+    // Each file write is atomic; restoring all three puts the set back together if a
+    // later write failed (disk full, permissions, or an external lock).
+    try {
+      saveRegistry(oldRegistry);
+      saveSettings(oldSettings);
+      saveServers(oldMcp);
+    } catch { /* the combined backup above remains available for manual recovery */ }
+    throw error;
+  }
+
+  const warnings = [];
+  for (const [provider, id] of Object.entries(imported.activeAccounts)) {
+    try {
+      setActive(nextRegistry, id);
+    } catch (error) {
+      warnings.push(`Could not make ${provider} account ${id} active: ${error.message || error}`);
+    }
+  }
+  quotaCache.clear();
+  refresh();
+  if (nextSettings.quotaWatch !== 'off') runQuotaWatch();
+  return { ok: true, filePath, backupPath, summary, warnings };
+});
 
 ipcMain.handle('sb:setActive', (_e, id) => {
   const reg = registry();
@@ -613,13 +715,16 @@ ipcMain.handle('sb:updateRun', async (_e, tag, assetUrl) => {
       win?.webContents.send('sb:updateProgress', { received, total });
     },
   });
+  // The installer is not allowed to start unless the current configuration has
+  // landed safely on disk in the same importable format as a manual export.
+  const backupPath = saveRecoveryConfig('before-upgrade');
   // A short hold so the "restarting" state is legible even on a connection fast
   // enough to finish the download in a blink; then the installer closes the app,
   // upgrades in place, and relaunches.
   win?.webContents.send('sb:updateProgress', { received: 1, total: 1 });
   await new Promise((resolve) => setTimeout(resolve, 1000));
   spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
-  return { ok: true };
+  return { ok: true, backupPath };
 });
 
 ipcMain.handle('sb:getUpdateRepo', () => effectiveUpdateRepo());

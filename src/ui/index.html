@@ -858,6 +858,45 @@ async function renderAbout() {
     panel.appendChild(links);
   }
 
+  panel.appendChild(el('div', 'grouphead', 'Backup and restore'));
+  const config = el('div', 'acct');
+  const configTop = el('div', 'top');
+  configTop.appendChild(el('div', 'who', '<b>Switchboard configuration</b><span>Accounts, preferences, custom launchers, and custom MCP servers</span>'));
+  configTop.appendChild(el('div', 'sp'));
+  const exportBtn = el('button', 'btn', 'Export...');
+  exportBtn.addEventListener('click', async () => {
+    exportBtn.disabled = true;
+    try {
+      const r = await sb.configExport();
+      if (r.ok) toast(`Exported ${r.summary.accounts} account registration(s) to ${r.filePath.split(/[\\/]/).pop()}.`);
+    } catch (e) {
+      toast('Export failed: ' + (e.message || e));
+    } finally {
+      exportBtn.disabled = false;
+    }
+  });
+  const importBtn = el('button', 'btn', 'Import...');
+  importBtn.addEventListener('click', async () => {
+    importBtn.disabled = true;
+    try {
+      const r = await sb.configImport();
+      if (r.ok) {
+        const warning = r.warnings?.length ? ` ${r.warnings.join(' ')}` : '';
+        toast(`Imported ${r.summary.accounts} account registration(s). A pre-import backup was saved.${warning}`);
+        renderAbout();
+      }
+    } catch (e) {
+      toast('Import failed: ' + (e.message || e));
+    } finally {
+      importBtn.disabled = false;
+    }
+  });
+  configTop.appendChild(exportBtn);
+  configTop.appendChild(importBtn);
+  config.appendChild(configTop);
+  config.appendChild(el('div', 'qnote', 'Exports contain folder paths, but no tokens or vendor credential files. On another machine, those folders and sign-ins must be set up separately. Import replaces Switchboard\'s current records after validation and saves a recovery backup first.'));
+  panel.appendChild(config);
+
   panel.appendChild(el('div', 'grouphead', 'This install'));
   const ver = el('div', 'acct');
   const verTop = el('div', 'top');
