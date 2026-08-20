@@ -52,7 +52,7 @@ async function prepareLanesContext(settings, registry, overrides = {}) {
 }
 
 function parseRunArgs(rawArgs) {
-  const parsed = { provider: null, account: null, noFallback: false, commandArgs: [] };
+  const parsed = { provider: null, account: null, noFallback: false, yes: false, commandArgs: [] };
   let i = 0;
   while (i < rawArgs.length) {
     const arg = rawArgs[i];
@@ -66,6 +66,8 @@ function parseRunArgs(rawArgs) {
       parsed.account = rawArgs[++i];
     } else if (arg === '--no-fallback') {
       parsed.noFallback = true;
+    } else if (arg === '--yes' || arg === '-y') {
+      parsed.yes = true;
     } else {
       parsed.commandArgs.push(arg);
     }
@@ -237,19 +239,25 @@ async function main() {
             
             if (!handoffExists) {
               out(`[switchboard] Warning: Cross-provider failover to ${selected.lane.harness} (${selected.lane.provider}) requires a handoff document, but none was found for this workspace.`);
-              out(`[switchboard] Please provide the missing objective manually or start a fresh session.`);
-              const proceed = await promptUser(`Start a fresh session in ${selected.lane.id}? (y/N): `);
-              if (proceed !== 'y' && proceed !== 'yes') {
-                process.exitCode = result.code;
-                return;
+              if (!parsed.yes) {
+                out(`[switchboard] Please provide the missing objective manually or start a fresh session.`);
+                const proceed = await promptUser(`Start a fresh session in ${selected.lane.id}? (y/N): `);
+                if (proceed !== 'y' && proceed !== 'yes') {
+                  process.exitCode = result.code;
+                  return;
+                }
+              } else {
+                out(`[switchboard] Proceeding without handoff due to --yes flag.`);
               }
               // If proceeding without a handoff, we just pass the original args (or none if it was interactive)
             } else {
               out(`[switchboard] Valid task handoff found for workspace.`);
-              const proceed = await promptUser(`Cross-provider failover to ${selected.lane.id}. Start new session? (y/N): `);
-              if (proceed !== 'y' && proceed !== 'yes') {
-                process.exitCode = result.code;
-                return;
+              if (!parsed.yes) {
+                const proceed = await promptUser(`Cross-provider failover to ${selected.lane.id}. Start new session? (y/N): `);
+                if (proceed !== 'y' && proceed !== 'yes') {
+                  process.exitCode = result.code;
+                  return;
+                }
               }
               // Inject the single-sentence handoff prompt into the args
               const prompt = generateHandoffPrompt(process.cwd());
@@ -365,7 +373,7 @@ async function main() {
       out('  doctor                      health checks');
       out('  quota                       per-account usage');
       out('  dry-run [--provider <p>] [--account <id>]   explain which lane would be selected');
-      out('  run [--provider <p>] [--account <id>] [--no-fallback] <args...>   launch in the selected lane');
+      out('  run [--provider <p>] [--account <id>] [--no-fallback] [--yes] <args...>   launch in the selected lane');
   }
 }
 
