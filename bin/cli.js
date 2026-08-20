@@ -8,6 +8,8 @@ import { providerQuota } from '../core/quota.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings } from '../core/settings.js';
 import { selectLane } from '../core/lanes.js';
+import { readHandoff, generateHandoffPrompt } from '../core/handoff.js';
+import readline from 'node:readline/promises';
 
 const [cmd, ...args] = process.argv.slice(2);
 const out = (s) => process.stdout.write(s + '\n');
@@ -72,6 +74,16 @@ function parseRunArgs(rawArgs) {
   return parsed;
 }
 
+async function promptUser(query) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(query);
+    return answer.trim().toLowerCase();
+  } finally {
+    rl.close();
+  }
+}
+
 async function main() {
   const registry = loadRegistry();
 
@@ -130,7 +142,7 @@ async function main() {
 
       const { isLimitError } = await import('../core/errors.js');
 
-      async function runInLane(lane) {
+      async function runInLane(lane, executionArgs) {
         const account = registry.accounts.find(a => a.id === lane.accountId);
         if (!account) {
           out(`Account ${lane.accountId} not found in registry.`);
@@ -147,7 +159,7 @@ async function main() {
         out(`[switchboard] Running via lane ${lane.id} (${account.label})`);
 
         let spawnFile = executable;
-        let spawnArgs = parsed.commandArgs;
+        let spawnArgs = executionArgs;
         let spawnOptions = {
           stdio: ['inherit', 'inherit', 'pipe'],
           env: childEnv,
@@ -160,7 +172,7 @@ async function main() {
             return { code: 1, limitHit: false };
           }
           spawnFile = 'cmd.exe';
-          spawnArgs = ['/d', '/s', '/v:off', '/c', executable, ...parsed.commandArgs];
+          spawnArgs = ['/d', '/s', '/v:off', '/c', executable, ...executionArgs];
         }
         
         return new Promise((resolve) => {
@@ -198,28 +210,53 @@ async function main() {
         });
       }
 
+      let currentArgs = parsed.commandArgs;
+
       while (selected) {
-        const result = await runInLane(selected.lane);
+        const result = await runInLane(selected.lane, currentArgs);
         
         if (result.limitHit && !parsed.noFallback) {
-          // Remove the exhausted lane from the pool
+          const previousLane = selected.lane;
           currentPool = currentPool.filter(l => l.id !== selected.lane.id);
           
-          // Re-evaluate context in case quotas updated or cooldowns triggered
           const nextContext = (await prepareLanesContext(loadSettings(), registry, {
             provider: parsed.provider,
           })).context;
           
-          // Phase 2 constraint: only auto-resume in same harness
-          nextContext.requirements.harness = selected.lane.harness;
-
           selected = selectLane(currentPool, nextContext);
-          if (selected) {
-            out(`[switchboard] Falling back to next available lane for harness ${selected.lane.harness}: ${selected.lane.id}`);
-          } else {
-            out(`[switchboard] No more available lanes for harness ${nextContext.requirements.harness} to fall back to.`);
+          
+          if (!selected) {
+            out(`[switchboard] No more available lanes to fall back to.`);
             process.exitCode = result.code;
             return;
+          }
+
+          // Cross-provider/cross-harness transition handling
+          if (previousLane.harness !== selected.lane.harness || previousLane.provider !== selected.lane.provider) {
+            const handoffExists = !!readHandoff(process.cwd());
+            
+            if (!handoffExists) {
+              out(`[switchboard] Warning: Cross-provider failover to ${selected.lane.harness} (${selected.lane.provider}) requires a handoff document, but none was found for this workspace.`);
+              out(`[switchboard] Please provide the missing objective manually or start a fresh session.`);
+              const proceed = await promptUser(`Start a fresh session in ${selected.lane.id}? (y/N): `);
+              if (proceed !== 'y' && proceed !== 'yes') {
+                process.exitCode = result.code;
+                return;
+              }
+              // If proceeding without a handoff, we just pass the original args (or none if it was interactive)
+            } else {
+              out(`[switchboard] Valid task handoff found for workspace.`);
+              const proceed = await promptUser(`Cross-provider failover to ${selected.lane.id}. Start new session? (y/N): `);
+              if (proceed !== 'y' && proceed !== 'yes') {
+                process.exitCode = result.code;
+                return;
+              }
+              // Inject the single-sentence handoff prompt into the args
+              const prompt = generateHandoffPrompt(process.cwd());
+              currentArgs = [prompt];
+            }
+          } else {
+            out(`[switchboard] Falling back to next available lane for harness ${selected.lane.harness}: ${selected.lane.id}`);
           }
         } else {
           process.exitCode = result.code;
