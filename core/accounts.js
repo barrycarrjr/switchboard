@@ -30,9 +30,9 @@ export const PROVIDERS = {
     envShape: 'home',
     dirName: '.claude',
     credFile: '.credentials.json',
-    loginHint: 'claude setup-token (run inside a terminal after switching to this account)',
-    loginCmd: 'claude',
-    loginNote: 'Use /login for interactive use, or run: claude setup-token (for automation tokens).',
+    loginHint: 'claude auth login --claudeai',
+    loginCmd: 'claude auth login --claudeai',
+    loginNote: 'Complete the browser sign-in; this terminal is scoped to this account.',
     quota: 'claude',
   },
   codex: {
@@ -104,6 +104,53 @@ export function homeFromEnvValue(def, value) {
 /** The value the provider's variable needs in order to select this config folder. */
 export function envValueForHome(def, home) {
   return def.envShape === 'parent' ? path.dirname(path.resolve(home)) : path.resolve(home);
+}
+
+// These credentials outrank a Claude config-folder login. Account-scoped terminals
+// must not inherit them or a sign-in/use action can silently target the wrong account.
+export const CLAUDE_CREDENTIAL_ENV_VARS = [
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
+  'CLAUDE_CODE_OAUTH_SCOPES',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CCR_OAUTH_TOKEN_FILE',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_SECURESTORAGE_CONFIG_DIR',
+];
+
+/** Persistent/current inputs that can make changing CLAUDE_CONFIG_DIR ineffective. */
+export function configuredClaudeCredentialOverrides({
+  user = () => null,
+  machine = () => null,
+  processEnv = process.env,
+} = {}) {
+  const current = new Set(Object.entries(processEnv ?? {})
+    .filter(([, value]) => Boolean(value))
+    .map(([name]) => name.toUpperCase()));
+  return CLAUDE_CREDENTIAL_ENV_VARS
+    .filter((name) => name !== 'CLAUDE_CODE_OAUTH_SCOPES')
+    .filter((name) => Boolean(user(name) || machine(name) || current.has(name.toUpperCase())));
+}
+
+/** Build a child environment that resolves to exactly one registered account. */
+export function accountScopedEnv(account, baseEnv = process.env) {
+  const def = providerDef(account?.provider);
+  const rejected = new Set([def.envVar.toUpperCase()]);
+  if (account.provider === 'claude') {
+    for (const name of CLAUDE_CREDENTIAL_ENV_VARS) rejected.add(name.toUpperCase());
+  }
+  const env = {};
+  for (const [name, value] of Object.entries(baseEnv ?? {})) {
+    // Windows treats environment names case-insensitively even though a JS object does not.
+    if (!rejected.has(name.toUpperCase())) env[name] = value;
+  }
+  env[def.envVar] = envValueForHome(def, account.home);
+  return env;
 }
 
 /**

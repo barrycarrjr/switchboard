@@ -7,7 +7,7 @@ import { readUserEnv } from './env.js';
 /**
  * One reading of everything Switchboard knows about accounts: which folder each tool
  * will use next, which registered account that is, whether it is signed in, and how
- * much of its allowance is left.
+ * how much of each available limit it has used.
  *
  * It exists so the whole picture is available without the tray: away from the machine,
  * `switchboard status` is the only way to see it, and a person reading it remotely
@@ -67,7 +67,7 @@ function ago(ms, now) {
 }
 
 const QUOTA_REASONS = {
-  'no-credentials': 'usage unavailable: no readable token (sign in, or the credentials live in the system store)',
+  'no-credentials': 'usage unavailable: no access credential or matching Claude Desktop sample',
   auth: 'usage unavailable: the stored token needs a refresh (run the CLI once on this account)',
   'rate-limited': 'usage unavailable: the endpoint is rate-limiting checks; it returns on its own shortly',
   'no-usage-data': 'no usage recorded yet: run this account once and the figures appear',

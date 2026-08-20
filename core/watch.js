@@ -56,7 +56,7 @@ function earliestReset(snapshot, now) {
  *   {kind:'switch'|'suggest', to, from, reason}   auto mode switches; notify mode suggests
  *   {kind:'exhausted', resetsAt}         everything readable is spent
  */
-export function decideDefaultSwitch({ mode, accounts, activeId, snapshots, now = Date.now(), lastSwitchAt = 0, pinPresent = false }) {
+export function decideDefaultSwitch({ mode, accounts, activeId, snapshots, loginStates = null, now = Date.now(), lastSwitchAt = 0, pinPresent = false }) {
   if (mode !== 'notify' && mode !== 'auto') return { kind: 'none' };
   const claude = accounts.filter((a) => a.provider === 'claude');
   const active = claude.find((a) => a.id === activeId);
@@ -69,7 +69,13 @@ export function decideDefaultSwitch({ mode, accounts, activeId, snapshots, now =
   if (now - lastSwitchAt < SWITCH_COOLDOWN_MS) return { kind: 'none' };
 
   const target = claude
-    .filter((a) => a.id !== active.id && hasRoom(snapshots[a.id]))
+    .filter((a) => (
+      a.id !== active.id
+      && hasRoom(snapshots[a.id])
+      // Desktop can supply a truthful usage snapshot for an account whose CLI is
+      // signed out. That is useful for display, but never enough to switch into it.
+      && (!loginStates || loginStates[a.id]?.signedIn === true)
+    ))
     .sort((x, y) => (pct(snapshots[x.id], 'week') ?? 0) - (pct(snapshots[y.id], 'week') ?? 0))[0];
 
   if (!target) {

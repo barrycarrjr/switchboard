@@ -93,7 +93,7 @@ async function main() {
         if (!def.quota) continue;
         out(`${a.label} (${a.home})`);
         const q = await providerQuota(a.provider, a.home, { usageSource: settings.usageSources[a.id] ?? null });
-        if (q.error === 'no-credentials') out('  quota unavailable: no readable token (sign in, or the credentials live in the system store)');
+        if (q.error === 'no-credentials') out('  usage unavailable: no access credential or matching Claude Desktop sample');
         else if (q.error === 'auth') out('  quota unavailable: stored token needs a refresh (run the CLI once on this account)');
         else if (q.error === 'no-usage-data') out('  no usage recorded yet: run this account once and the figures appear');
         else if (q.error) out('  quota unavailable right now');

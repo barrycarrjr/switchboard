@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { stripCustomBaseUrls, applyFix } from '../core/fixes.js';
+import { stripCustomBaseUrls, applyFix, REMOVABLE_USER_ENV_VARS } from '../core/fixes.js';
 
 test('stripCustomBaseUrls comments out custom endpoints and keeps vendor ones', () => {
   const toml = [
@@ -38,6 +38,18 @@ test('applyFix codex-remove-baseurl writes a backup then the transformed file', 
 test('applyFix remove-user-env only accepts the allowlisted variables', () => {
   assert.throws(() => applyFix('remove-user-env', { name: 'PATH' }));
   assert.throws(() => applyFix('remove-user-env', { name: 'ANTHROPIC_API_KEY; rm x' }));
+});
+
+test('provider-routing overrides offered by Health are actually removable', () => {
+  assert.equal(REMOVABLE_USER_ENV_VARS.includes('CLAUDE_CODE_USE_BEDROCK'), true);
+  let removed = null;
+  const result = applyFix(
+    'remove-user-env',
+    { name: 'CLAUDE_CODE_USE_BEDROCK' },
+    { deleteEnv: (name) => { removed = name; } },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(removed, 'CLAUDE_CODE_USE_BEDROCK');
 });
 
 test('applyFix rejects unknown actions', () => {

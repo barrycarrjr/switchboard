@@ -88,24 +88,72 @@ export async function fetchClaudeQuota(token, fetchImpl = fetch) {
 
 export const DESKTOP_STALE_MS = 15 * 60 * 1000;
 
+/** The standard Claude Desktop profile on Windows, when one is available. */
+export function defaultClaudeDesktopProfile(env = process.env) {
+  return typeof env.APPDATA === 'string' && env.APPDATA.length > 0
+    ? path.join(env.APPDATA, 'Claude')
+    : null;
+}
+
 /**
- * Fallback source: the usage history the Claude Desktop app maintains for its own
- * account (plan-usage-history.json). Percentages only; no credentials involved.
- * Only useful when the person has associated a desktop profile folder with an account.
+ * Read only the stable, non-secret identity used to match this Claude account to
+ * Claude Desktop's usage samples. Never infer identity from folder order or recency.
  */
-export function readDesktopUsage(profileDir, now = Date.now()) {
+export function readClaudeAccountIdentity(home) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
+    const oauth = parsed?.oauthAccount;
+    const organizationUuid = typeof oauth?.organizationUuid === 'string' && oauth.organizationUuid.length > 0
+      ? oauth.organizationUuid
+      : null;
+    const accountUuid = typeof oauth?.accountUuid === 'string' && oauth.accountUuid.length > 0
+      ? oauth.accountUuid
+      : null;
+    return organizationUuid ? { organizationUuid, accountUuid } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fallback source: the usage history the Claude Desktop app maintains for its accounts
+ * (plan-usage-history.json). Percentages only; no credentials involved. Callers pass the
+ * expected organization so a recent sample from another Desktop login is never borrowed.
+ */
+export function readDesktopUsage(profileDir, now = Date.now(), expectedOrganizationUuid = null) {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(profileDir, 'plan-usage-history.json'), 'utf8'));
-    const last = parsed?.samples?.[parsed.samples.length - 1];
-    if (!last || typeof last.t !== 'number' || !last.u) return { error: 'unreadable' };
+    const samples = Array.isArray(parsed?.samples) ? parsed.samples : [];
+    const matching = samples.filter((sample) => (
+      sample
+      && typeof sample.t === 'number'
+      && sample.u
+      && (!expectedOrganizationUuid || sample.org === expectedOrganizationUuid)
+    ));
+    const last = matching.reduce((newest, sample) => (!newest || sample.t > newest.t ? sample : newest), null);
+    if (!last) return { error: expectedOrganizationUuid ? 'no-matching-account' : 'unreadable' };
+    const sessionUsed = toExactPercent(last.u.fh);
+    const weekUsed = toExactPercent(last.u.sd);
+    // A matching row with an unrecognized payload is not a reading. Treating it as
+    // success would let an old/malformed profile hide a newer valid Desktop source.
+    if (sessionUsed == null && weekUsed == null) return { error: 'unreadable' };
     const windows = [
-      { key: 'session', label: 'Session (5h)', usedPercent: toPercent(last.u.fh), resetsAt: null },
-      { key: 'week', label: 'Week (all models)', usedPercent: toPercent(last.u.sd), resetsAt: null },
+      // Desktop history already stores percentages (including the value 1 for one
+      // percent), unlike the usage endpoint's fractional schema.
+      { key: 'session', label: 'Session (5h)', usedPercent: sessionUsed, resetsAt: null },
+      { key: 'week', label: 'Week (all models)', usedPercent: weekUsed, resetsAt: null },
     ];
-    if (last.u.xu != null) {
-      windows.push({ key: 'extra', label: 'Extra usage', usedPercent: null, resetsAt: null, valueLabel: `$${Number(last.u.xu).toFixed(2)}` });
+    const extraUsed = Number(last.u.xu);
+    if (last.u.xu != null && Number.isFinite(extraUsed)) {
+      windows.push({ key: 'extra', label: 'Extra usage', usedPercent: null, resetsAt: null, valueLabel: `$${extraUsed.toFixed(2)}` });
     }
-    return { windows, source: 'desktop', sampledAt: last.t, stale: now - last.t > DESKTOP_STALE_MS };
+    return {
+      windows,
+      source: 'desktop',
+      sampledAt: last.t,
+      stale: now - last.t > DESKTOP_STALE_MS,
+      organizationUuid: typeof last.org === 'string' ? last.org : null,
+    };
   } catch {
     return { error: 'unreadable' };
   }
@@ -114,10 +162,18 @@ export function readDesktopUsage(profileDir, now = Date.now()) {
 /**
  * Quota for one registered Claude account. Never throws; unknown is reported, not
  * guessed. Ladder: the account's own token, then an associated Claude Desktop
- * profile's usage history, then honest unavailability.
+ * profile's identity-matched usage history, then honest unavailability.
  */
-export async function accountQuota(home, fetchImpl = fetch, usageSource = null, now = Date.now()) {
+export async function accountQuota(
+  home,
+  fetchImpl = fetch,
+  usageSource = null,
+  now = Date.now(),
+  desktopProfile = defaultClaudeDesktopProfile(),
+  allowDesktopFallback = true,
+) {
   const token = readAccessToken(home);
+  let tokenError = null;
   if (token) {
     try {
       return { windows: await fetchClaudeQuota(token, fetchImpl), source: 'token' };
@@ -125,16 +181,29 @@ export async function accountQuota(home, fetchImpl = fetch, usageSource = null, 
       // 401/403 means the stored access token is stale; the vendor CLI refreshes it
       // on its next real use. 429 means we asked too often; callers should serve
       // their cached numbers rather than an error.
-      if (e.status === 401 || e.status === 403) return { error: 'auth' };
-      if (e.status === 429) return { error: 'rate-limited' };
-      return { error: 'unavailable' };
+      if (e.status === 401 || e.status === 403) tokenError = { error: 'auth' };
+      else if (e.status === 429) tokenError = { error: 'rate-limited' };
+      else tokenError = { error: 'unavailable' };
     }
   }
-  if (usageSource) {
-    const desktop = readDesktopUsage(usageSource, now);
-    if (!desktop.error) return desktop;
+
+  const identity = readClaudeAccountIdentity(home);
+  if (allowDesktopFallback && identity?.organizationUuid) {
+    const sources = [...new Set(
+      [usageSource, desktopProfile]
+        .filter((p) => typeof p === 'string' && p.length > 0)
+        .map((p) => path.resolve(p)),
+    )];
+    const readings = sources
+      .map((source) => readDesktopUsage(source, now, identity.organizationUuid))
+      .filter((desktop) => !desktop.error)
+      .sort((a, b) => (b.sampledAt ?? 0) - (a.sampledAt ?? 0));
+    if (readings.length > 0) {
+      const desktop = readings[0];
+      return tokenError ? { ...desktop, fallbackReason: tokenError.error } : desktop;
+    }
   }
-  return { error: 'no-credentials' };
+  return tokenError ?? { error: 'no-credentials' };
 }
 
 /* ------------------------------------------------------------------------- *
@@ -298,8 +367,14 @@ export function codexQuota(home, now = Date.now()) {
  * Usage for any account, routed by what its vendor actually exposes. A provider with
  * no usable source says so once, here, instead of every caller inventing an answer.
  */
-export async function providerQuota(provider, home, { fetchImpl = fetch, usageSource = null, now = Date.now() } = {}) {
-  if (provider === 'claude') return accountQuota(home, fetchImpl, usageSource, now);
+export async function providerQuota(provider, home, {
+  fetchImpl = fetch,
+  usageSource = null,
+  desktopProfile = defaultClaudeDesktopProfile(),
+  now = Date.now(),
+  allowDesktopFallback = true,
+} = {}) {
+  if (provider === 'claude') return accountQuota(home, fetchImpl, usageSource, now, desktopProfile, allowDesktopFallback);
   if (provider === 'codex') return codexQuota(home, now);
   return { error: 'unsupported' };
 }

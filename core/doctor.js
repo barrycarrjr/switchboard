@@ -1,16 +1,70 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readUserEnv, readMachineEnv } from './env.js';
-import { PROVIDERS } from './accounts.js';
+import { accountScopedEnv, CLAUDE_CREDENTIAL_ENV_VARS, PROVIDERS } from './accounts.js';
 import { toEpochMs } from './quota.js';
 
+const runFile = promisify(execFile);
+
 const DAY = 24 * 60 * 60 * 1000;
+const CLAUDE_AUTH_STATUS_ARGS = Object.freeze(['auth', 'status', '--json']);
+const WINDOWS_BATCH_SHIM = /\.(?:cmd|bat)$/i;
+
+/**
+ * Build the deliberately fixed Claude status command without asking Node for a shell.
+ *
+ * Native executables can be passed straight to `execFile`, including absolute paths with
+ * spaces. Windows npm shims are batch files, though, so CreateProcess cannot run them
+ * directly. For those only, invoke cmd.exe explicitly with AutoRun and delayed expansion
+ * disabled. The executable is the sole interpolated value; it stays inside quotes, and
+ * characters that cmd expands even inside quotes are rejected. The status arguments are
+ * constants rather than command input.
+ */
+export function claudeAuthStatusLaunch(executable = 'claude') {
+  const file = String(executable ?? '').trim();
+  if (!file) throw new Error('Claude executable is required');
+
+  if (!WINDOWS_BATCH_SHIM.test(file)) {
+    return {
+      file,
+      args: [...CLAUDE_AUTH_STATUS_ARGS],
+      options: { shell: false },
+    };
+  }
+
+  // Quotes and control characters cannot occur in a normal Windows filename. Percent is
+  // legal but would trigger cmd.exe environment expansion even inside a quoted token, so
+  // decline that pathological path rather than risk executing a different command.
+  if (/[\u0000-\u001f"%]/.test(file)) {
+    throw new Error('Unsafe Claude batch-shim path');
+  }
+
+  return {
+    file: 'cmd.exe',
+    args: ['/d', '/s', '/v:off', '/c', `""${file}" auth status --json"`],
+    options: {
+      shell: false,
+      // Preserve the canonical cmd.exe /s /c outer-quote form above. Node must not apply
+      // a second Windows argv quoting pass to the command string.
+      windowsVerbatimArguments: true,
+    },
+  };
+}
 
 function scopesWith(name, env) {
   const hits = [];
   if (env.user(name)) hits.push('user');
   if (env.machine(name)) hits.push('machine');
+  if (typeof env.process === 'function' && env.process(name)) hits.push('current process');
   return hits;
+}
+
+function readProcessEnv(name) {
+  const wanted = String(name).toUpperCase();
+  const hit = Object.entries(process.env).find(([key]) => key.toUpperCase() === wanted);
+  return hit?.[1] ?? null;
 }
 
 /**
@@ -71,10 +125,111 @@ export function accountLoginState(account, now = Date.now(), readFile = fs.readF
   if (account.provider !== 'claude') return { signedIn: true, level: 'ok', detail: 'Signed in' };
   try {
     const oauth = JSON.parse(readFile(credPath, 'utf8'))?.claudeAiOauth ?? {};
+    // Claude leaves a metadata tombstone behind when a refresh token is rejected:
+    // empty credentials plus the old plan and refresh-expiry stamps. File existence and
+    // that stale date are not proof of a usable login.
+    const hasAccess = typeof oauth.accessToken === 'string' && oauth.accessToken.length > 0;
+    const hasRefresh = typeof oauth.refreshToken === 'string' && oauth.refreshToken.length > 0;
+    if (!hasAccess && !hasRefresh) {
+      return { signedIn: false, level: 'warn', detail: 'Not signed in' };
+    }
     return { signedIn: true, ...claudeLoginState(oauth, now) };
   } catch {
-    return { signedIn: true, level: 'ok', detail: 'Signed in' };
+    return { signedIn: null, level: 'info', detail: 'Sign-in status unavailable' };
   }
+}
+
+/**
+ * Parse the deliberately small, non-secret result of `claude auth status --json`.
+ * Raw command output never leaves this module.
+ */
+export function parseClaudeAuthStatus(raw) {
+  try {
+    const parsed = JSON.parse(String(raw ?? '').trim());
+    if (!parsed || typeof parsed.loggedIn !== 'boolean') return null;
+    return {
+      loggedIn: parsed.loggedIn,
+      authMethod: typeof parsed.authMethod === 'string' ? parsed.authMethod : null,
+      apiProvider: typeof parsed.apiProvider === 'string' ? parsed.apiProvider : null,
+      email: typeof parsed.email === 'string' ? parsed.email : null,
+      organizationUuid: typeof parsed.orgId === 'string' ? parsed.orgId : null,
+      organizationName: typeof parsed.orgName === 'string' ? parsed.orgName : null,
+      plan: typeof parsed.subscriptionType === 'string' ? parsed.subscriptionType : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ask Claude itself whether this account home is signed in. This is authoritative
+ * across credential-format changes and never reads or returns the credential itself.
+ */
+export async function verifiedAccountLoginState(account, {
+  runImpl = runFile,
+  executable = 'claude',
+  now = Date.now(),
+} = {}) {
+  const fallback = accountLoginState(account, now);
+  if (account?.provider !== 'claude') return fallback;
+
+  const env = accountScopedEnv(account, process.env);
+
+  let raw = null;
+  try {
+    const launch = claudeAuthStatusLaunch(executable);
+    const result = await runImpl(launch.file, launch.args, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 5000,
+      maxBuffer: 64 * 1024,
+      ...launch.options,
+      env,
+    });
+    raw = result?.stdout;
+  } catch (error) {
+    // Logged out is an expected exit-1 with valid JSON on stdout.
+    raw = error?.stdout;
+  }
+
+  const status = parseClaudeAuthStatus(raw);
+  if (!status) {
+    // A failed/missing probe cannot disprove a secure-store login. Only valid vendor
+    // JSON may establish a verified result in either direction.
+    return { signedIn: null, level: 'info', detail: 'Sign-in status unavailable', verified: false };
+  }
+  if (!status.loggedIn) {
+    return { signedIn: false, level: 'warn', detail: 'Not signed in', verified: true };
+  }
+  const isSubscription = status.authMethod === 'claude.ai'
+    && (status.apiProvider == null || status.apiProvider === 'firstParty');
+  if (!isSubscription) {
+    const method = status.authMethod === 'api_key'
+      ? 'API-key authentication'
+      : status.authMethod ? `${status.authMethod} authentication` : 'non-subscription authentication';
+    return {
+      signedIn: false,
+      level: 'warn',
+      detail: `Claude is using ${method}, not this Claude subscription login`,
+      verified: true,
+      authMethod: status.authMethod,
+      apiProvider: status.apiProvider,
+    };
+  }
+  const localDetail = fallback.signedIn === true
+    ? { level: fallback.level, detail: fallback.detail }
+    : { level: 'ok', detail: 'Signed in' };
+  return {
+    signedIn: true,
+    ...localDetail,
+    verified: true,
+    authMethod: status.authMethod,
+    apiProvider: status.apiProvider,
+    email: status.email,
+    organizationUuid: status.organizationUuid,
+    organizationName: status.organizationName,
+    plan: status.plan,
+  };
 }
 
 function fmtDate(ms) {
@@ -95,7 +250,8 @@ function inWords(ms) {
  */
 export async function runChecks({
   accounts = [],
-  env = { user: readUserEnv, machine: readMachineEnv },
+  loginStates = {},
+  env = { user: readUserEnv, machine: readMachineEnv, process: readProcessEnv },
   fetchImpl = fetch,
   now = Date.now(),
 } = {}) {
@@ -120,6 +276,23 @@ export async function runChecks({
     }
   }
 
+  // Other persistent credential/routing inputs can bypass CLAUDE_CONFIG_DIR just as
+  // completely as an API key. Keep API keys and the common OAuth pin in their more
+  // specific checks below; name every remaining override here.
+  const routeOverrides = CLAUDE_CREDENTIAL_ENV_VARS
+    .filter((name) => !['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_SCOPES'].includes(name))
+    .map((name) => ({ name, scopes: scopesWith(name, env) }))
+    .filter((hit) => hit.scopes.length > 0);
+  for (const hit of routeOverrides) {
+    checks.push({
+      id: `routing-override-${hit.name}`,
+      level: 'warn',
+      title: `${hit.name} overrides per-account Claude routing`,
+      detail: `Set at ${hit.scopes.join(' and ')} scope. New default Claude sessions may ignore the account folder selected in Switchboard.` + (hit.scopes.includes('machine') ? ' Machine scope must be removed from an admin terminal.' : ''),
+      fix: hit.scopes.includes('user') ? { action: 'remove-user-env', args: { name: hit.name }, label: 'Remove (user scope)', confirm: `Remove ${hit.name} from your user environment? New Claude sessions will use the selected account folder; running processes are unchanged.` } : undefined,
+    });
+  }
+
   // 2. A persistent OAuth token outranks the config-folder login, so switching folders
   //    would change nothing for CLI runs until the token is removed.
   const pinScopes = scopesWith('CLAUDE_CODE_OAUTH_TOKEN', env);
@@ -137,20 +310,17 @@ export async function runChecks({
   for (const a of accounts) {
     const def = PROVIDERS[a.provider];
     if (!def) continue;
-    const credPath = path.join(a.home, def.credFile);
-    if (!fs.existsSync(credPath)) {
-      checks.push({ id: `cred-${a.id}`, level: 'warn', title: `${def.name} "${a.label}" is not signed in`, detail: `No ${def.credFile} in ${a.home}. Sign in with: ${def.loginHint}` });
-      continue;
-    }
-    let detail = 'Signed in';
-    let level = 'ok';
-    if (a.provider === 'claude') {
-      try {
-        const oauth = JSON.parse(fs.readFileSync(credPath, 'utf8'))?.claudeAiOauth ?? {};
-        ({ level, detail } = claudeLoginState(oauth, now));
-      } catch { /* unreadable credential file: presence already counts as signed in */ }
-    }
-    checks.push({ id: `cred-${a.id}`, level, title: `${def.name} "${a.label}" signed in`, detail });
+    const login = Object.prototype.hasOwnProperty.call(loginStates, a.id)
+      ? loginStates[a.id]
+      : accountLoginState(a, now);
+    const state = login.signedIn === true ? 'signed in' : login.signedIn === false ? 'is not signed in' : 'sign-in is unknown';
+    const hint = login.signedIn === false ? ` Sign in with: ${def.loginHint}` : '';
+    checks.push({
+      id: `cred-${a.id}`,
+      level: login.level,
+      title: `${def.name} "${a.label}" ${state}`,
+      detail: `${login.detail}.${hint}`.replace('..', '.'),
+    });
   }
 
   // 4. A Codex config that routes through a custom endpoint fails opaquely when that

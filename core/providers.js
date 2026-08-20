@@ -82,12 +82,22 @@ export function installCmdFor(tool, mode = 'install') {
   }
 }
 
+/** Choose a Windows-launchable result when `where` also reports an extensionless npm shim. */
+export function preferredExecutablePath(stdout, platform = process.platform) {
+  const paths = String(stdout ?? '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+  if (platform !== 'win32' || paths.length < 2) return paths[0] ?? null;
+  // `where` already expresses PATH precedence. Skip only entries CreateProcess cannot
+  // launch; choosing a later .exe over an earlier .cmd would disagree with the bare
+  // `claude` command used by the sign-in terminal.
+  return paths.find((file) => ['.exe', '.cmd', '.bat'].includes(path.extname(file).toLowerCase()))
+    ?? paths[0];
+}
+
 async function whichPath(bin) {
   const finder = process.platform === 'win32' ? 'where' : 'which';
   try {
     const { stdout } = await run(finder, [bin], { windowsHide: true, timeout: 4000 });
-    const first = stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
-    return first || null;
+    return preferredExecutablePath(stdout);
   } catch {
     return null;
   }
@@ -114,6 +124,13 @@ async function locate(tool) {
   }
   const app = tool.appPaths?.().find((p) => p && fs.existsSync(p));
   return { path: app ?? null, onPath: false };
+}
+
+/** Resolve one known tool to an executable without running it. */
+export async function toolExecutable(id) {
+  const tool = TOOLS.find((entry) => entry.id === id);
+  if (!tool) return null;
+  return (await locate(tool)).path;
 }
 
 export async function detectTool(tool) {

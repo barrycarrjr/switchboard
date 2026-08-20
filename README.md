@@ -2,7 +2,7 @@
 
 A small Windows tray app that manages the AI tooling on a developer's machine: install and
 update the AI CLIs, register multiple subscription accounts per tool, switch the active
-account in two clicks, see each account's remaining quota, register MCP servers across every
+account in two clicks, see each account's usage against its available limits, register MCP servers across every
 AI client at once, and run health checks for broken setups and billing traps.
 
 It manages tools, accounts and connections only. It never runs tasks, never holds sessions,

@@ -51,6 +51,27 @@ test('a stale desktop sample is never acted on, in either direction', () => {
   assert.equal(d.kind, 'exhausted'); // b is unreadable-for-action, so nothing has room
 });
 
+test('a signed-out account is never an auto-switch target even when Desktop shows room', () => {
+  const d = decideDefaultSwitch({
+    ...base,
+    mode: 'auto',
+    snapshots: { a: snap(100, 62), b: snap(5, 10, { source: 'desktop' }) },
+    loginStates: { a: { signedIn: true }, b: { signedIn: false } },
+  });
+  assert.equal(d.kind, 'exhausted');
+});
+
+test('a verified signed-in target remains eligible for auto-switching', () => {
+  const d = decideDefaultSwitch({
+    ...base,
+    mode: 'auto',
+    snapshots: { a: snap(100, 62), b: snap(5, 10) },
+    loginStates: { a: { signedIn: true }, b: { signedIn: true } },
+  });
+  assert.equal(d.kind, 'switch');
+  assert.equal(d.to, 'b');
+});
+
 test('a nearly-spent target is not worth switching to', () => {
   const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(100, 62), b: snap(10, 97) } });
   assert.equal(d.kind, 'exhausted');

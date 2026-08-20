@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { deleteUserEnv } from './env.js';
+import { CLAUDE_CREDENTIAL_ENV_VARS } from './accounts.js';
 
 /**
  * The safe, automatable fixes the Health panel may offer. Every fix states exactly
@@ -22,12 +23,13 @@ export function stripCustomBaseUrls(toml) {
   return { changed, out };
 }
 
-export function applyFix(action, args = {}) {
+export const REMOVABLE_USER_ENV_VARS = Object.freeze([...CLAUDE_CREDENTIAL_ENV_VARS]);
+
+export function applyFix(action, args = {}, { deleteEnv = deleteUserEnv } = {}) {
   switch (action) {
     case 'remove-user-env': {
-      const allowed = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
-      if (!allowed.includes(args.name)) throw new Error(`not a removable variable: ${args.name}`);
-      deleteUserEnv(args.name);
+      if (!REMOVABLE_USER_ENV_VARS.includes(args.name)) throw new Error(`not a removable variable: ${args.name}`);
+      deleteEnv(args.name);
       return { ok: true, did: `Removed ${args.name} from the user environment. New processes will use each folder's own login; running processes are unchanged.` };
     }
     case 'codex-remove-baseurl': {

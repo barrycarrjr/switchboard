@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { TOOLS, detectTool, uninstallCmdFor } from '../core/providers.js';
+import { TOOLS, detectTool, uninstallCmdFor, preferredExecutablePath } from '../core/providers.js';
 
 test('tool table invariants: unique ids, vendor sites, vendor install commands or honest notes', () => {
   const ids = TOOLS.map((t) => t.id);
@@ -57,6 +57,22 @@ test('findBinIn finds windows launchers by extension and skips unreadable dirs',
   const { findBinIn } = await import('../core/providers.js');
   assert.equal(findBinIn(['C:/no/such/dir', dir], 'mytool'), path.join(dir, 'mytool.cmd'));
   assert.equal(findBinIn([dir], 'other'), null);
+});
+
+test('Windows lookup prefers a launchable npm shim over the extensionless companion', () => {
+  const stdout = [
+    'C:\\profiles\\person\\npm\\claude',
+    'C:\\profiles\\person\\npm\\claude.cmd',
+  ].join('\r\n');
+  assert.equal(
+    preferredExecutablePath(stdout, 'win32'),
+    'C:\\profiles\\person\\npm\\claude.cmd',
+  );
+  assert.equal(
+    preferredExecutablePath('C:\\first-on-path\\claude.cmd\r\nC:\\later\\claude.exe', 'win32'),
+    'C:\\first-on-path\\claude.cmd',
+  );
+  assert.equal(preferredExecutablePath('/usr/local/bin/claude\n/usr/bin/claude', 'linux'), '/usr/local/bin/claude');
 });
 
 test('detectTool reports a missing binary as not installed, without throwing', async () => {

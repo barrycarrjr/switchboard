@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, envValueForHome, PROVIDERS } from '../core/accounts.js';
-import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, TOOLS } from '../core/providers.js';
-import { runChecks, accountLoginState } from '../core/doctor.js';
-import { providerQuota } from '../core/quota.js';
+import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, accountScopedEnv, configuredClaudeCredentialOverrides, PROVIDERS } from '../core/accounts.js';
+import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
+import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
+import { providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
@@ -61,6 +61,95 @@ function currentConfig() {
   });
 }
 
+// Claude's own status command is the authority when credential files contain only
+// stale metadata. It performs normal CLI bookkeeping, so cache it and invalidate
+// immediately when the credential file itself changes.
+const AUTH_TTL_MS = 2 * 60 * 1000;
+const authCache = new Map(); // accountId -> { at, stamp, result, pending? }
+let claudeExecutablePromise = null;
+
+function accountCacheKey(account) {
+  return `${account?.provider ?? ''}:${path.resolve(account?.home ?? '').toLowerCase()}`;
+}
+
+function credentialStamp(account) {
+  const def = PROVIDERS[account.provider];
+  if (!def) return 'unknown';
+  try {
+    const stat = fs.statSync(path.join(account.home, def.credFile));
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+function loginIdentitySignature(login) {
+  return JSON.stringify([
+    login?.signedIn ?? null,
+    login?.authMethod ?? null,
+    login?.apiProvider ?? null,
+    login?.email ?? null,
+    login?.organizationUuid ?? null,
+  ]);
+}
+
+async function cachedLoginState(account, force = false) {
+  if (account.provider !== 'claude') return accountLoginState(account);
+  const now = Date.now();
+  const stamp = credentialStamp(account);
+  const key = accountCacheKey(account);
+  let hit = authCache.get(account.id);
+  if (hit?.key === key && hit.pending && hit.stamp === stamp) return hit.pending;
+  if (!force && hit?.key === key && hit.stamp === stamp && now - hit.at < AUTH_TTL_MS) {
+    return hit.result;
+  }
+
+  if (!claudeExecutablePromise) claudeExecutablePromise = toolExecutable('claude');
+  const executable = await claudeExecutablePromise;
+  // Resolving the executable yields to the event loop. Another render/watch may have
+  // installed a request while we were waiting, so coalesce again before spawning.
+  const latest = authCache.get(account.id);
+  if (latest?.key === key && latest.pending && latest.stamp === stamp) return latest.pending;
+  if (!force && latest?.key === key && latest.stamp === stamp && Date.now() - latest.at < AUTH_TTL_MS) {
+    return latest.result;
+  }
+  if (latest?.key === key) hit = latest;
+
+  let pending;
+  pending = verifiedAccountLoginState(account, { executable: executable ?? 'claude' }).then((result) => {
+    const currentStamp = credentialStamp(account);
+    const stampedResult = { ...result, credentialRevision: currentStamp };
+    const loginChanged = hit?.key === key && hit.result && (
+      hit.result.credentialRevision !== currentStamp
+      || loginIdentitySignature(hit.result) !== loginIdentitySignature(stampedResult)
+    );
+    if (stampedResult.signedIn === true && loginChanged) {
+      quotaCache.delete(account.id);
+      quotaInflight.delete(account.id);
+    }
+    // A credential change can start a newer probe while this one is finishing. Only
+    // the request still registered as current may update the cache.
+    const current = authCache.get(account.id);
+    if (current?.key === key && current.pending === pending) {
+      authCache.set(account.id, { key, at: Date.now(), stamp: currentStamp, result: stampedResult });
+    }
+    return stampedResult;
+  });
+  authCache.set(account.id, { key, at: now, stamp, pending });
+  return pending;
+}
+
+function desktopFallbackIsUnambiguous(account, accounts = registry().accounts) {
+  if (account.provider !== 'claude') return true;
+  const organizationUuid = readClaudeAccountIdentity(account.home)?.organizationUuid;
+  if (!organizationUuid) return false;
+  const matches = accounts.filter((candidate) => (
+    candidate.provider === 'claude'
+    && readClaudeAccountIdentity(candidate.home)?.organizationUuid === organizationUuid
+  ));
+  return matches.length === 1;
+}
+
 /** Write an importable snapshot before an operation that can replace app state/code. */
 function saveRecoveryConfig(kind) {
   if (!['before-import', 'before-upgrade'].includes(kind)) throw new Error('unknown recovery backup kind');
@@ -70,7 +159,7 @@ function saveRecoveryConfig(kind) {
   return backupPath;
 }
 
-function stateSnapshot() {
+async function stateSnapshot(forceAuthAccountId = null) {
   const reg = registry();
   const providers = {};
   for (const p of Object.values(PROVIDERS)) {
@@ -87,7 +176,10 @@ function stateSnapshot() {
   }
   // Login state travels with each account so the Accounts page can say why its
   // sign-in link is there, rather than offering it identically in every state.
-  const accounts = reg.accounts.map((a) => ({ ...a, login: accountLoginState(a) }));
+  const accounts = await Promise.all(reg.accounts.map(async (a) => ({
+    ...a,
+    login: await cachedLoginState(a, a.id === forceAuthAccountId),
+  })));
   return { accounts, providers, version: app.getVersion() };
 }
 
@@ -227,6 +319,14 @@ function setWatchMode(mode) {
 
 let pinNotified = false;
 
+function configuredClaudeOverrides() {
+  return configuredClaudeCredentialOverrides({
+    user: readUserEnv,
+    machine: readMachineEnv,
+    processEnv: process.env,
+  });
+}
+
 /**
  * The quota watch. Reads every registered Claude account's usage, and when the
  * ACTIVE one is spent, suggests (or performs) a switch of the machine default for
@@ -240,15 +340,20 @@ async function runQuotaWatch() {
     const active = activeAccount(reg, 'claude');
     // The watch shares the render cache, so it never burns the rate-limit allowance.
     const snapshots = {};
-    for (const a of reg.accounts.filter((x) => x.provider === 'claude')) {
-      snapshots[a.id] = await cachedQuota(a);
-    }
-    const pinPresent = Boolean(readUserEnv('CLAUDE_CODE_OAUTH_TOKEN') || readMachineEnv('CLAUDE_CODE_OAUTH_TOKEN'));
+    const loginStates = {};
+    await Promise.all(reg.accounts.filter((x) => x.provider === 'claude').map(async (a) => {
+      [snapshots[a.id], loginStates[a.id]] = await Promise.all([
+        cachedQuota(a),
+        cachedLoginState(a),
+      ]);
+    }));
+    const pinPresent = configuredClaudeOverrides().length > 0;
     const decision = decideDefaultSwitch({
       mode: settings.quotaWatch,
       accounts: reg.accounts,
       activeId: active?.id ?? null,
       snapshots,
+      loginStates,
       lastSwitchAt: settings.lastAutoSwitchAt,
       pinPresent,
     });
@@ -256,17 +361,23 @@ async function runQuotaWatch() {
     if (decision.kind === 'pin-blocked') {
       if (!pinNotified) {
         pinNotified = true;
-        new Notification({ title: 'Switchboard', body: 'The default account is out of quota, but a machine-wide Claude token pins billing to one account. Open Health to remove it; switching has no effect until then.' })
+        new Notification({ title: 'Switchboard', body: 'The default account is out of quota, but a machine-wide Claude authentication or routing override makes folder switching unreliable. Open Health to inspect it.' })
           .on('click', () => showWindow('health')).show();
       }
       return;
     }
     if (decision.kind === 'exhausted') {
       const when = decision.resetsAt ? ` Earliest reset: ${new Date(decision.resetsAt).toLocaleString()}.` : '';
-      new Notification({ title: 'Switchboard', body: `Every readable Claude account is out of quota.${when}` }).show();
+      new Notification({ title: 'Switchboard', body: `No signed-in Claude account with readable quota has room.${when}` }).show();
       return;
     }
     if (decision.kind === 'switch') {
+      const target = reg.accounts.find((a) => a.id === decision.to);
+      const login = target ? await cachedLoginState(target, true) : null;
+      if (login?.signedIn !== true) {
+        new Notification({ title: 'Switchboard did not switch', body: 'The suggested Claude account is no longer signed in.' }).show();
+        return;
+      }
       setActive(reg, decision.to);
       settings.lastAutoSwitchAt = Date.now();
       saveSettings(settings);
@@ -277,8 +388,14 @@ async function runQuotaWatch() {
     if (decision.kind === 'suggest') {
       const target = reg.accounts.find((a) => a.id === decision.to);
       new Notification({ title: 'Switchboard', body: `${decision.reason}. Click to switch new terminals to ${target?.label}.` })
-        .on('click', () => {
+        .on('click', async () => {
           const fresh = registry();
+          const freshTarget = fresh.accounts.find((a) => a.id === decision.to);
+          const login = freshTarget ? await cachedLoginState(freshTarget, true) : null;
+          if (login?.signedIn !== true) {
+            new Notification({ title: 'Switchboard did not switch', body: 'That Claude account is no longer signed in.' }).show();
+            return;
+          }
           setActive(fresh, decision.to);
           const s = loadSettings();
           s.lastAutoSwitchAt = Date.now();
@@ -327,7 +444,13 @@ app.on('before-quit', () => { quitting = true; });
 
 // ---- IPC: the renderer only ever talks to the core through these. ----
 
-ipcMain.handle('sb:state', () => stateSnapshot());
+ipcMain.handle('sb:state', (_e, forceAuthAccountId = null) => {
+  const force = typeof forceAuthAccountId === 'string'
+    && registry().accounts.some((account) => account.id === forceAuthAccountId)
+    ? forceAuthAccountId
+    : null;
+  return stateSnapshot(force);
+});
 
 ipcMain.handle('sb:configExport', async () => {
   const stamp = new Date().toISOString().slice(0, 10);
@@ -398,7 +521,9 @@ ipcMain.handle('sb:configImport', async () => {
       warnings.push(`Could not make ${provider} account ${id} active: ${error.message || error}`);
     }
   }
+  authCache.clear();
   quotaCache.clear();
+  quotaInflight.clear();
   refresh();
   if (nextSettings.quotaWatch !== 'off') runQuotaWatch();
   return { ok: true, filePath, backupPath, summary, warnings };
@@ -426,6 +551,10 @@ ipcMain.handle('sb:addAccount', async (_e, provider) => {
   const reg = registry();
   const account = addAccount(reg, { provider, label, home });
   saveRegistry(reg);
+  // Claude Desktop attribution depends on organization IDs being unique across the
+  // whole registry, so membership changes invalidate every cached attribution.
+  quotaCache.clear();
+  quotaInflight.clear();
   refresh();
   return { ok: true, account, loginHint: def.loginHint };
 });
@@ -442,6 +571,9 @@ ipcMain.handle('sb:removeAccount', (_e, id) => {
   const reg = registry();
   const removed = removeAccount(reg, id);
   saveRegistry(reg);
+  authCache.delete(id);
+  quotaCache.clear();
+  quotaInflight.clear();
   refresh();
   return { ok: true, removed };
 });
@@ -458,6 +590,8 @@ ipcMain.handle('sb:register', (_e, candidate) => {
   const reg = registry();
   const account = addAccount(reg, candidate);
   saveRegistry(reg);
+  quotaCache.clear();
+  quotaInflight.clear();
   refresh();
   return { ok: true, account };
 });
@@ -471,15 +605,18 @@ ipcMain.handle('sb:fix', (_e, action, args) => {
 ipcMain.handle('sb:signin', (_e, accountId) => {
   const account = registry().accounts.find((a) => a.id === accountId);
   if (!account) throw new Error(`no such account: ${accountId}`);
+  // Preserve the last known usage while the interactive login runs, but invalidate
+  // an old-token request so it cannot repopulate the cache after authentication.
+  quotaInflight.delete(accountId);
   // A visible terminal with the account's folder preselected, so the vendor's own
   // login flow lands in the right home. The folder travels in the child's environment,
   // never in the command text: see core/signin.js for why.
-  const { command, env } = signinTerminal(account);
+  const { command, env: signinEnv } = signinTerminal(account);
   spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', command], {
     detached: true,
     stdio: 'ignore',
     windowsHide: false,
-    env: { ...process.env, ...env },
+    env: { ...accountScopedEnv(account, process.env), ...signinEnv },
   }).unref();
   return { ok: true };
 });
@@ -498,7 +635,14 @@ ipcMain.handle('sb:install', (_e, toolId, mode = 'install') => {
   return { ok: true, cmd };
 });
 
-ipcMain.handle('sb:doctor', () => runChecks({ accounts: registry().accounts }));
+ipcMain.handle('sb:doctor', async () => {
+  const accounts = registry().accounts;
+  const loginStates = {};
+  await Promise.all(accounts.map(async (account) => {
+    loginStates[account.id] = await cachedLoginState(account);
+  }));
+  return runChecks({ accounts, loginStates });
+});
 
 /**
  * MCP servers. Switchboard keeps the definition (a name and an https url) and asks each
@@ -643,13 +787,12 @@ ipcMain.handle('sb:openTerminal', (_e, bin, accountId = null) => {
   // No account named: inherit the machine defaults, so the terminal opens on whatever
   // account is currently active. Named: point THIS terminal at that account's folder
   // through its own environment, leaving the machine default alone.
-  const env = { ...process.env };
+  let env = { ...process.env };
   if (accountId) {
     const account = registry().accounts.find((a) => a.id === accountId);
     if (!account) throw new Error(`no such account: ${accountId}`);
     if (account.provider !== tool.id) throw new Error(`${account.label} is not a ${tool.name} account`);
-    const def = PROVIDERS[account.provider];
-    env[def.envVar] = envValueForHome(def, account.home);
+    env = accountScopedEnv(account, process.env);
   }
   spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', bin], { detached: true, stdio: 'ignore', windowsHide: false, env }).unref();
   return { ok: true };
@@ -661,30 +804,63 @@ ipcMain.handle('sb:openTerminal', (_e, bin, accountId = null) => {
  * answer (marked stale) rather than burning the allowance on every render.
  */
 const QUOTA_TTL_MS = 90 * 1000;
-const quotaCache = new Map(); // accountId -> { at, result }
+const quotaCache = new Map(); // accountId -> { key, at, lastAttemptAt, result }
+const quotaInflight = new Map(); // accountId -> { key, pending }
 
-async function cachedQuota(account) {
-  const hit = quotaCache.get(account.id);
+async function cachedQuota(account, force = false) {
+  const key = accountCacheKey(account);
+  const cached = quotaCache.get(account.id);
+  const hit = cached?.key === key ? cached : null;
   const now = Date.now();
-  if (hit && now - hit.at < QUOTA_TTL_MS) return { ...hit.result, staleAt: hit.at };
-  const settings = loadSettings();
-  const result = await providerQuota(account.provider, account.home, {
-    usageSource: settings.usageSources[account.id] ?? null,
-  });
-  if (!result.error) {
-    quotaCache.set(account.id, { at: now, result });
-    return result;
+  const lastAttemptAt = hit?.lastAttemptAt ?? hit?.at ?? 0;
+  if (!force && hit && now - lastAttemptAt < QUOTA_TTL_MS) {
+    if (!hit.result) return { error: hit.lastError, cached: true, checkedAt: lastAttemptAt };
+    return {
+      ...hit.result,
+      observedAt: hit.at,
+      cached: true,
+      ...(hit.lastError ? { refreshError: hit.lastError } : {}),
+    };
   }
-  // Old truth labeled as such beats a fresh shrug.
-  if (hit) return { ...hit.result, staleAt: hit.at };
-  return result;
+  const inFlight = quotaInflight.get(account.id);
+  if (inFlight?.key === key) return inFlight.pending;
+
+  let flight;
+  const pending = (async () => {
+    const settings = loadSettings();
+    const reg = registry();
+    const result = await providerQuota(account.provider, account.home, {
+      usageSource: settings.usageSources[account.id] ?? null,
+      allowDesktopFallback: desktopFallbackIsUnambiguous(account, reg.accounts),
+    });
+    const completedAt = Date.now();
+    const isCurrent = quotaInflight.get(account.id) === flight;
+    if (!result.error) {
+      if (isCurrent) quotaCache.set(account.id, { key, at: completedAt, lastAttemptAt: completedAt, lastError: null, result });
+      return { ...result, observedAt: completedAt, cached: false };
+    }
+    // A failed forced refresh must not erase the last known good reading.
+    if (hit?.result) {
+      if (isCurrent) quotaCache.set(account.id, { ...hit, key, lastAttemptAt: completedAt, lastError: result.error });
+      return { ...hit.result, observedAt: hit.at, cached: true, refreshError: result.error };
+    }
+    if (isCurrent) quotaCache.set(account.id, { key, at: null, lastAttemptAt: completedAt, lastError: result.error, result: null });
+    return result;
+  })();
+  flight = { key, pending };
+  quotaInflight.set(account.id, flight);
+  try {
+    return await pending;
+  } finally {
+    if (quotaInflight.get(account.id) === flight) quotaInflight.delete(account.id);
+  }
 }
 
-ipcMain.handle('sb:quota', (_e, accountId) => {
+ipcMain.handle('sb:quota', (_e, accountId, force = false) => {
   const account = registry().accounts.find((a) => a.id === accountId);
   if (!account) throw new Error(`no such account: ${accountId}`);
   if (!PROVIDERS[account.provider]?.quota) return { error: 'unsupported' };
-  return cachedQuota(account);
+  return cachedQuota(account, force === true);
 });
 
 ipcMain.handle('sb:setUsageSource', async (_e, accountId) => {
@@ -696,9 +872,22 @@ ipcMain.handle('sb:setUsageSource', async (_e, accountId) => {
     properties: ['openDirectory'],
   });
   if (picked.canceled || !picked.filePaths[0]) return { ok: false };
+  const identity = readClaudeAccountIdentity(account.home);
+  if (!identity?.organizationUuid) {
+    return { ok: false, error: 'Switchboard cannot identify this Claude account well enough to match Desktop usage safely.' };
+  }
+  if (!desktopFallbackIsUnambiguous(account)) {
+    return { ok: false, error: 'More than one registered Claude account belongs to this organization, so Desktop usage cannot be assigned to one card safely.' };
+  }
+  const usage = readDesktopUsage(picked.filePaths[0], Date.now(), identity.organizationUuid);
+  if (usage.error) {
+    return { ok: false, error: 'That folder has no Claude Desktop usage for this account.' };
+  }
   const settings = loadSettings();
   settings.usageSources[accountId] = picked.filePaths[0];
   saveSettings(settings);
+  quotaCache.delete(accountId);
+  quotaInflight.delete(accountId);
   return { ok: true };
 });
 

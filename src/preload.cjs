@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('sb', {
-  state: () => ipcRenderer.invoke('sb:state'),
+  state: (forceAuthAccountId = null) => ipcRenderer.invoke('sb:state', forceAuthAccountId),
   configExport: () => ipcRenderer.invoke('sb:configExport'),
   configImport: () => ipcRenderer.invoke('sb:configImport'),
   setActive: (id) => ipcRenderer.invoke('sb:setActive', id),
@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('sb', {
   register: (candidate) => ipcRenderer.invoke('sb:register', candidate),
   fix: (action, args) => ipcRenderer.invoke('sb:fix', action, args),
   signin: (accountId) => ipcRenderer.invoke('sb:signin', accountId),
-  quota: (accountId) => ipcRenderer.invoke('sb:quota', accountId),
+  quota: (accountId, force = false) => ipcRenderer.invoke('sb:quota', accountId, force),
   setUsageSource: (accountId) => ipcRenderer.invoke('sb:setUsageSource', accountId),
   openExternal: (url) => ipcRenderer.invoke('sb:openExternal', url),
   openPath: (p) => ipcRenderer.invoke('sb:openPath', p),

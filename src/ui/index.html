@@ -21,8 +21,8 @@
   .appicon{width:24px;height:24px;border-radius:6px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
   .titlebar .name{font-weight:600;font-size:.98rem}
   .titlebar .ver{color:var(--muted);font-size:.75rem;margin-left:auto}
-  .tabs{display:flex;gap:4px;padding:0 12px;border-bottom:1px solid var(--line)}
-  .tab{border:none;background:none;font:inherit;font-size:.9rem;padding:8px 12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent}
+  .tabs{display:flex;gap:4px;padding:0 12px;border-bottom:1px solid var(--line);overflow-x:auto;flex:0 0 auto}
+  .tab{border:none;background:none;font:inherit;font-size:.9rem;padding:8px 12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;flex:0 0 auto}
   .tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
   .panel{display:none;padding:12px;overflow-y:auto;flex:1}
   .panel.on{display:block}
@@ -42,6 +42,7 @@
   .badge{font-size:.72rem;font-weight:700;border-radius:99px;padding:2px 9px;background:var(--ok-bg);color:var(--ok)}
   .btn{font:inherit;font-size:.8rem;border:1px solid #c9ced6;border-radius:6px;background:#fff;padding:3px 10px;cursor:pointer;white-space:nowrap}
   .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn:focus-visible,.account-path:focus-visible,.usage-content:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
   .btn.primary:hover{color:#fff;filter:brightness(1.08)}
   .btn[disabled]{opacity:.6;cursor:default}
@@ -56,14 +57,10 @@
   .mcpfilters input,.mcpfilters select{font:inherit;font-size:.82rem;padding:5px 8px;border:1px solid var(--line);border-radius:6px}
   .mcpfilters input{flex:1;min-width:180px}
   .mcpcount{font-size:.74rem;color:var(--muted);padding:2px 2px 8px}
-  .bars{margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px 14px}
-  .q label{display:flex;justify-content:space-between;font-size:.74rem;color:var(--muted)}
-  .q label em{font-style:normal;color:var(--ink);font-weight:600}
   .bar{height:6px;border-radius:4px;background:#e8eaee;margin-top:3px;overflow:hidden}
   .bar i{display:block;height:100%;border-radius:4px;background:var(--accent)}
   .bar.warn i{background:#d99a00}
   .bar.hot i{background:#d13438}
-  .resets{grid-column:1 / -1;color:var(--muted);font-size:.72rem;margin-top:1px}
   .qnote{color:var(--muted);font-size:.78rem;margin-top:7px}
   .qnote a{color:var(--accent);cursor:pointer;text-decoration:underline}
   /* The login state leads the row; the action follows it and stays quiet when nothing is wrong. */
@@ -71,6 +68,66 @@
   .qnote small{margin-left:6px}
   .qnote.needsauth{color:var(--warn);background:var(--warn-bg);border-radius:6px;padding:5px 8px;margin-top:8px}
   .qnote.needsauth .loginstate{color:var(--warn)}
+  .provider-section{margin:0 0 12px}
+  .provider-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:10px 2px 6px}
+  .provider-section:first-child .provider-head{margin-top:2px}
+  .provider-head .grouphead{margin:0}
+  .provider-summary{color:var(--muted);font-size:.74rem;text-align:right}
+  .account-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
+  .account-card{display:flex;flex-direction:column;min-width:0;height:100%;padding:0;margin:0;overflow:hidden}
+  .account-card.is-default{border-color:#92bfe5;box-shadow:inset 3px 0 0 var(--accent)}
+  .account-head{display:flex;align-items:flex-start;gap:10px;padding:10px 12px 9px;flex-wrap:wrap}
+  .account-identity{flex:1 1 150px;min-width:0}
+  .account-title{display:flex;align-items:center;gap:7px;min-width:0}
+  .account-name{font-size:.94rem;line-height:1.3;margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .account-name-input{font:inherit;font-size:.9rem;font-weight:600;border:1px solid var(--accent);border-radius:5px;padding:3px 6px;width:min(14em,100%)}
+  .default-badge{flex:0 0 auto;background:var(--accent-soft);color:var(--accent)}
+  .account-path{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:0;background:none;color:var(--muted);font:inherit;font-size:.74rem;text-align:left;padding:0;margin:2px 0 0;cursor:pointer}
+  .account-path:hover{color:var(--accent);text-decoration:underline}
+  .account-person{color:var(--ink);font-size:.74rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+  .account-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;flex:0 1 auto;flex-wrap:wrap;margin-left:auto}
+  .account-actions .btn{min-height:32px;padding:4px 9px}
+  .account-actions .btn.ghost{padding:4px 7px}
+  .account-area{border-top:1px solid var(--line);padding:8px 12px}
+  .account-area.signin-area{margin-top:auto;background:#fbfbfc}
+  .account-area.signin-area.warn{background:var(--warn-bg)}
+  .account-area.signin-area.unknown{background:var(--info-bg)}
+  .area-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:5px}
+  .area-title{font-size:.7rem;line-height:1.2;letter-spacing:.055em;text-transform:uppercase;color:var(--muted);margin:0}
+  .usage-summary{font-size:.74rem;font-weight:600;color:var(--muted);text-align:right}
+  .usage-summary.warn{color:var(--warn)}
+  .usage-summary.hot{color:var(--bad)}
+  .usage-content[aria-busy="true"]{opacity:.8}
+  .usage-state{border-radius:6px;background:#f2f4f7;padding:7px 9px;color:var(--muted);font-size:.76rem;line-height:1.4}
+  .usage-state strong{display:block;color:var(--ink);font-size:.8rem;margin-bottom:1px}
+  .usage-state.warn{background:var(--warn-bg)}
+  .usage-state.warn strong{color:var(--warn)}
+  .usage-state.bad{background:var(--bad-bg)}
+  .usage-state.bad strong{color:var(--bad)}
+  .usage-state-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .usage-state-actions .btn{min-height:32px;padding:4px 9px;background:rgba(255,255,255,.8)}
+  .usage-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px}
+  .usage-metric{min-width:0}
+  .quota-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;color:var(--muted);font-size:.74rem}
+  .quota-head strong{color:var(--ink);font-size:.78rem;white-space:nowrap}
+  .quota-bar{height:7px;margin-top:3px}
+  .quota-detail,.quota-reset,.quota-value-note{color:var(--muted);font-size:.7rem;line-height:1.35;margin-top:2px}
+  .quota-reset.past{color:var(--warn)}
+  .quota-value{border-left:3px solid #c5cad1;padding-left:7px;margin-top:3px}
+  .quota-value strong{display:block;font-size:.82rem;color:var(--ink)}
+  .quota-source{display:flex;align-items:baseline;gap:6px;border:1px solid var(--line);border-radius:6px;background:#f7f9fb;color:var(--muted);font-size:.74rem;line-height:1.4;margin-top:7px;padding:5px 7px}
+  .quota-source strong{flex:0 0 auto;color:var(--info)}
+  .quota-source.warn{background:var(--warn-bg);border-color:#ead69e}
+  .quota-source.warn strong{color:var(--warn)}
+  .signin-status{display:flex;align-items:center;gap:7px;min-width:0;color:var(--muted);font-size:.76rem;line-height:1.4;flex-wrap:wrap}
+  .signin-status .status-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .signin-status.warn .status-dot{background:var(--warn)}
+  .signin-status.unknown .status-dot{background:var(--info)}
+  .signin-status strong{color:var(--ink);font-size:.78rem}
+  .signin-status.warn strong{color:var(--warn)}
+  .signin-status.unknown strong{color:var(--info)}
+  .signin-verified{color:var(--muted);font-size:.7rem}
+  .signin-status .btn{min-height:32px;margin-left:auto;padding:4px 9px;flex:0 0 auto}
   .addbtn{width:100%;font:inherit;font-size:.83rem;padding:7px;border:1px dashed #b9c0c9;border-radius:8px;background:none;color:var(--muted);cursor:pointer;margin:4px 0 2px}
   .addbtn:hover{color:var(--accent);border-color:var(--accent)}
   .panelnote{color:var(--muted);font-size:.76rem;margin:10px 2px 2px;line-height:1.45}
@@ -121,6 +178,22 @@
   .toast{position:fixed;left:12px;right:12px;bottom:12px;background:#1f2937;color:#fff;border-radius:8px;padding:10px 14px;font-size:.84rem;opacity:0;transition:opacity .25s;pointer-events:none}
   .toast.show{opacity:.96}
   .empty{color:var(--muted);font-size:.85rem;padding:14px 4px}
+  @media (min-width:760px){
+    .account-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .account-grid>.account-card:only-child{grid-column:1 / -1}
+    .account-head{min-height:72px}
+  }
+  @media (max-width:600px){
+    .provider-head{align-items:flex-start;flex-direction:column;gap:1px}
+    .provider-summary{text-align:left}
+    .account-actions{width:100%;justify-content:flex-start;margin-left:0}
+    .signin-status{align-items:flex-start;flex-wrap:wrap}
+    .signin-status .btn{margin-left:15px}
+  }
+  @media (max-width:500px){
+    .tab{padding-left:8px;padding-right:8px}
+    .usage-grid{grid-template-columns:minmax(0,1fr)}
+  }
 </style>
 </head>
 <body>
@@ -170,7 +243,7 @@
       <button class="btn" id="picker-close" style="align-self:flex-end">Cancel</button>
     </div>
   </div>
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -207,8 +280,173 @@ function beginRender(key) {
 }
 function isCurrentRender(key, seq) { return renderSeqs[key] === seq; }
 
-function barClass(pct) { return pct >= 90 ? 'bar hot' : pct >= 70 ? 'bar warn' : 'bar'; }
-function fmtReset(ms) { return ms ? new Date(ms).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null; }
+function barClass(pct) { return pct >= 90 ? 'bar quota-bar hot' : pct >= 70 ? 'bar quota-bar warn' : 'bar quota-bar'; }
+function fmtAccountTime(ms) {
+  return ms ? new Date(ms).toLocaleString([], {
+    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  }) : 'time unavailable';
+}
+
+function setUsageSummary(node, text, tone = '') {
+  node.className = 'usage-summary' + (tone ? ` ${tone}` : '');
+  node.textContent = text;
+}
+
+function showUsageState(host, summary, { title, detail, tone = '', loading = false, actions = [] }) {
+  setUsageSummary(summary, title, tone === 'bad' ? 'hot' : tone);
+  if (loading) host.setAttribute('aria-busy', 'true');
+  const box = el('div', 'usage-state' + (tone ? ` ${tone}` : ''));
+  box.appendChild(el('strong', null, esc(title)));
+  if (detail) box.appendChild(document.createTextNode(detail));
+  if (actions.length) {
+    const actionRow = el('div', 'usage-state-actions');
+    for (const action of actions) {
+      const button = el('button', 'btn' + (action.primary ? ' primary' : ''), esc(action.label));
+      button.type = 'button';
+      button.addEventListener('click', action.onClick);
+      actionRow.appendChild(button);
+    }
+    box.appendChild(actionRow);
+  }
+  host.replaceChildren(box);
+  if (!loading) host.setAttribute('aria-busy', 'false');
+}
+
+function quotaProblemLabel(code) {
+  return ({
+    auth: 'authorization failed',
+    'rate-limited': 'was rate-limited',
+    unavailable: 'was unavailable',
+    'no-credentials': 'had no readable usage credential',
+    'no-usage-data': 'found no newer usage sample',
+  })[code] || 'failed';
+}
+
+function quotaSourceRow(q) {
+  const observedAt = Number(q.observedAt) || null;
+  const sampledAt = Number(q.sampledAt) || null;
+  const cached = q.cached === true;
+  const refreshError = q.refreshError || null;
+  const fallbackReason = q.fallbackReason || null;
+  let kind = 'Current';
+  let detail = 'Usage source not identified';
+  let warn = false;
+
+  if (q.source === 'token') {
+    if (refreshError) {
+      kind = 'Last known';
+      detail = `Anthropic usage · checked ${fmtAccountTime(observedAt)} · refresh ${quotaProblemLabel(refreshError)}`;
+      warn = true;
+    } else if (cached) {
+      kind = 'Cached';
+      detail = `Anthropic usage · checked ${fmtAccountTime(observedAt)}`;
+    } else {
+      kind = 'Live';
+      detail = `Anthropic usage · checked ${observedAt ? fmtAccountTime(observedAt) : 'just now'}`;
+    }
+  } else if (q.source === 'desktop') {
+    if (refreshError) kind = 'Last known snapshot';
+    else if (q.stale) kind = 'Stale snapshot';
+    else if (fallbackReason) kind = 'Snapshot fallback';
+    else if (cached) kind = 'Cached snapshot';
+    else kind = 'Snapshot';
+    detail = `Claude Desktop · sampled ${fmtAccountTime(sampledAt)}`;
+    if (q.stale) detail += ' · open Claude Desktop to refresh';
+    if (cached && observedAt) detail += ` · checked ${fmtAccountTime(observedAt)}`;
+    if (fallbackReason) detail += ` · live check ${quotaProblemLabel(fallbackReason)}`;
+    if (refreshError) detail += ` · refresh ${quotaProblemLabel(refreshError)}`;
+    warn = Boolean(q.stale || fallbackReason || refreshError);
+  } else if (q.source === 'session-log') {
+    if (refreshError) kind = 'Last known snapshot';
+    else if (q.stale) kind = 'Stale snapshot';
+    else if (cached) kind = 'Cached snapshot';
+    else kind = 'Snapshot';
+    detail = `Last session for this account · sampled ${fmtAccountTime(sampledAt)}`;
+    if (cached && observedAt) detail += ` · checked ${fmtAccountTime(observedAt)}`;
+    if (refreshError) detail += ` · refresh ${quotaProblemLabel(refreshError)}`;
+    warn = Boolean(q.stale || refreshError);
+  } else if (cached) {
+    kind = 'Cached';
+    detail = `Checked ${fmtAccountTime(observedAt)}`;
+  }
+  if (q.plan) detail += ` · ${q.plan} plan`;
+
+  const source = el('div', 'quota-source' + (warn ? ' warn' : ''));
+  source.appendChild(el('strong', null, esc(kind)));
+  source.appendChild(document.createTextNode(detail));
+  return source;
+}
+
+function renderUsageWindows(host, summary, q) {
+  const windows = Array.isArray(q.windows) ? q.windows : [];
+  if (!windows.length) {
+    showUsageState(host, summary, {
+      title: 'Usage format unavailable',
+      detail: 'The provider returned no recognized limit windows. This is unknown, not 0% used.',
+      tone: 'warn',
+    });
+    return false;
+  }
+
+  const measured = windows
+    .filter((w) => w.usedPercent != null && Number.isFinite(Number(w.usedPercent)))
+    .map((w) => ({ window: w, pct: Number(w.usedPercent) }));
+  const highest = measured.sort((a, b) => b.pct - a.pct)[0];
+  if (highest) {
+    const reached = highest.pct >= 100 ? ' · limit reached' : '';
+    setUsageSummary(
+      summary,
+      `${highest.window.label}: ${highest.pct}% used${reached}`,
+      highest.pct >= 90 ? 'hot' : highest.pct >= 70 ? 'warn' : '',
+    );
+  } else {
+    setUsageSummary(summary, 'No percentage reported');
+  }
+
+  const grid = el('div', 'usage-grid');
+  for (const w of windows) {
+    const metric = el('div', 'usage-metric');
+    const pct = Number(w.usedPercent);
+    const hasPercent = w.usedPercent != null && Number.isFinite(pct);
+    const head = el('div', 'quota-head');
+    head.appendChild(el('span', null, esc(w.label)));
+
+    if (hasPercent) {
+      head.appendChild(el('strong', null, `${pct}% used`));
+      metric.appendChild(head);
+      const meter = el('div', barClass(pct));
+      meter.setAttribute('role', 'progressbar');
+      meter.setAttribute('aria-label', `${w.label}: ${pct}% used`);
+      meter.setAttribute('aria-valuemin', '0');
+      meter.setAttribute('aria-valuemax', '100');
+      meter.setAttribute('aria-valuenow', String(pct));
+      const fill = el('i');
+      fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+      meter.appendChild(fill);
+      metric.appendChild(meter);
+      if (w.valueLabel) metric.appendChild(el('div', 'quota-detail', esc(w.valueLabel)));
+    } else {
+      metric.appendChild(head);
+      const value = el('div', 'quota-value');
+      value.appendChild(el('strong', null, esc(w.valueLabel ?? 'Not reported')));
+      if (!w.valueLabel || w.valueLabel !== 'Not enabled') {
+        value.appendChild(el('div', 'quota-value-note', 'No percentage reported — not 0% used'));
+      }
+      metric.appendChild(value);
+    }
+
+    if (w.resetsAt) {
+      const resetPassed = Number(w.resetsAt) < Date.now();
+      const reset = el('div', 'quota-reset' + (resetPassed ? ' past' : ''));
+      reset.textContent = `${resetPassed ? 'Reset time passed' : 'Resets'} ${fmtAccountTime(w.resetsAt)}${resetPassed ? ' · reading may be stale' : ''}`;
+      metric.appendChild(reset);
+    }
+    grid.appendChild(metric);
+  }
+  host.replaceChildren(grid, quotaSourceRow(q));
+  host.setAttribute('aria-busy', 'false');
+  return true;
+}
 
 async function renderAccounts() {
   const seq = beginRender('accounts');
@@ -218,22 +456,114 @@ async function renderAccounts() {
   const panel = el('div');
 
   for (const p of Object.values(state.providers)) {
-    const mine = state.accounts.filter((a) => a.provider === p.id);
-    panel.appendChild(el('div', 'grouphead', esc(p.name)));
+    const mine = state.accounts
+      .filter((a) => a.provider === p.id)
+      .sort((a, b) => Number(b.id === p.activeAccountId) - Number(a.id === p.activeAccountId));
     const active = mine.find((a) => a.id === p.activeAccountId);
+    const providerSection = el('section', 'provider-section');
+    const providerTitleId = `provider-${p.id}`;
+    providerSection.setAttribute('aria-labelledby', providerTitleId);
+    const providerHead = el('div', 'provider-head');
+    const providerTitle = el('h2', 'grouphead', esc(p.name));
+    providerTitle.id = providerTitleId;
+    providerHead.appendChild(providerTitle);
+    const providerSummary = el('div', 'provider-summary');
+    providerSummary.textContent = active
+      ? `Default for new sessions: ${active.label} · ${mine.length} account${mine.length === 1 ? '' : 's'}`
+      : mine.length ? `${mine.length} account${mine.length === 1 ? '' : 's'} · no registered default` : 'No accounts yet';
+    providerHead.appendChild(providerSummary);
+    providerSection.appendChild(providerHead);
 
+    const accountGrid = el('div', 'account-grid');
     for (const a of mine) {
-      const isActive = a.id === p.activeAccountId;
-      const card = el('div', 'acct' + (isActive ? ' active' : ''));
-      const top = el('div', 'top');
-      const who = el('div', 'who', `<b>${esc(a.label)}</b><a class="pen" title="Rename">&#9998;</a><span title="Open folder">${esc(a.home)}</span>`);
-      who.querySelector('span').addEventListener('click', () => sb.openPath(a.home));
-      who.querySelector('.pen').addEventListener('click', () => {
-        const nameEl = who.querySelector('b');
-        const input = el('input');
+      const isDefault = a.id === p.activeAccountId;
+      const login = a.login || {
+        signedIn: null, level: 'info', detail: 'Sign-in status unavailable', verified: false,
+      };
+      const loginIdentity = (value) => JSON.stringify([
+        value?.authMethod ?? null,
+        value?.apiProvider ?? null,
+        value?.email ?? null,
+        value?.organizationUuid ?? null,
+      ]);
+      const openAccountSignin = async () => {
+        try {
+          await sb.signin(a.id);
+          toast(`Opened the ${a.label} sign-in terminal.`);
+          pollUntil(
+            async () => {
+              const refreshed = await sb.state(a.id);
+              const refreshedLogin = refreshed.accounts.find((candidate) => candidate.id === a.id)?.login;
+              if (refreshedLogin?.signedIn !== true) return false;
+              if (login.signedIn !== true) return true;
+              return refreshedLogin.credentialRevision !== login.credentialRevision
+                || loginIdentity(refreshedLogin) !== loginIdentity(login);
+            },
+            () => {
+              toast(`${a.label} is signed in.`);
+              renderAccounts();
+            },
+            () => {
+              toast(`Still waiting for ${a.label} to sign in. Check the terminal, then reopen Accounts.`);
+              renderAccounts();
+            },
+          );
+        } catch (e) {
+          toast('Could not open sign-in: ' + (e.message || e));
+        }
+      };
+      const titleId = `account-${p.id}-${a.id}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+      const card = el('article', 'acct account-card' + (isDefault ? ' is-default' : ''));
+      card.setAttribute('aria-labelledby', titleId);
+
+      const header = el('header', 'account-head');
+      const identity = el('div', 'account-identity');
+      const titleRow = el('div', 'account-title');
+      const name = el('h3', 'account-name', esc(a.label));
+      name.id = titleId;
+      titleRow.appendChild(name);
+      if (isDefault) titleRow.appendChild(el('span', 'badge default-badge', 'DEFAULT'));
+      identity.appendChild(titleRow);
+      const person = [login.email, login.plan ? `${login.plan} plan` : null].filter(Boolean).join(' · ');
+      if (person) {
+        const personLine = el('div', 'account-person', esc(person));
+        personLine.title = person;
+        identity.appendChild(personLine);
+      }
+      const folder = el('button', 'account-path', esc(a.home));
+      folder.type = 'button';
+      folder.title = `Open folder: ${a.home}`;
+      folder.setAttribute('aria-label', `Open ${a.label} account folder: ${a.home}`);
+      folder.addEventListener('click', () => sb.openPath(a.home));
+      identity.appendChild(folder);
+      header.appendChild(identity);
+
+      const actions = el('div', 'account-actions');
+      if (!isDefault) {
+        const makeDefault = el('button', 'btn primary', 'Make default');
+        makeDefault.type = 'button';
+        makeDefault.title = `Use ${a.label} for new ${p.name} sessions`;
+        makeDefault.addEventListener('click', async () => {
+          try {
+            await sb.setActive(a.id);
+            toast(`New terminals and apps will use ${p.name}: ${a.label}. Running processes are unchanged.`);
+          } catch (e) {
+            toast('Switch failed: ' + (e.message || e));
+          }
+        });
+        actions.appendChild(makeDefault);
+      }
+
+      const rename = el('button', 'btn', 'Rename');
+      rename.type = 'button';
+      rename.setAttribute('aria-label', `Rename ${a.label}`);
+      rename.addEventListener('click', () => {
+        const input = el('input', 'account-name-input');
+        input.id = titleId;
         input.value = a.label;
-        nameEl.replaceWith(input);
-        who.querySelector('.pen').style.display = 'none';
+        input.setAttribute('aria-label', `New name for ${a.label}`);
+        name.replaceWith(input);
+        rename.disabled = true;
         input.focus();
         input.select();
         let done = false;
@@ -241,126 +571,196 @@ async function renderAccounts() {
           if (done) return;
           done = true;
           const value = input.value.trim();
+          let refreshExpected = false;
           if (value && value !== a.label) {
-            try { await sb.rename(a.id, value); } catch (e) { toast('Rename failed: ' + (e.message || e)); }
+            try {
+              await sb.rename(a.id, value);
+              refreshExpected = true;
+            } catch (e) {
+              toast('Rename failed: ' + (e.message || e));
+            }
           }
-          renderAccounts();
+          if (!refreshExpected) renderAccounts();
         };
         input.addEventListener('keydown', (ev) => {
           if (ev.key === 'Enter') commit();
-          if (ev.key === 'Escape') { done = true; renderAccounts(); }
+          if (ev.key === 'Escape') { ev.preventDefault(); done = true; renderAccounts(); }
         });
         input.addEventListener('blur', commit);
       });
-      top.appendChild(who);
-      top.appendChild(el('div', 'sp'));
-      if (isActive) {
-        top.appendChild(el('span', 'badge', 'ACTIVE'));
-      } else {
-        const mk = el('button', 'btn', 'Make active');
-        mk.addEventListener('click', async () => {
-          await sb.setActive(a.id);
-          toast(`New terminals and apps will use ${p.name}: ${a.label}. Running processes are unchanged.`);
-          renderAccounts();
-        });
-        top.appendChild(mk);
-        const rm = el('button', 'btn ghost', 'Remove');
-        rm.title = 'Unregister (the folder is never deleted)';
-        rm.addEventListener('click', async () => {
+      actions.appendChild(rename);
+
+      if (!isDefault) {
+        const remove = el('button', 'btn ghost', 'Remove');
+        remove.type = 'button';
+        remove.title = 'Unregister (the folder is never deleted)';
+        remove.addEventListener('click', async () => {
           if (!confirm(`Unregister "${a.label}"? The folder and its login are not touched.`)) return;
-          await sb.removeAccount(a.id);
-          renderAccounts();
+          try {
+            await sb.removeAccount(a.id);
+          } catch (e) {
+            toast('Remove failed: ' + (e.message || e));
+          }
         });
-        top.appendChild(rm);
+        actions.appendChild(remove);
       }
-      card.appendChild(top);
+      header.appendChild(actions);
+      card.appendChild(header);
+
+      const usageArea = el('section', 'account-area usage-area');
+      const usageHead = el('div', 'area-head');
+      usageHead.appendChild(el('h4', 'area-title', 'Usage'));
+      const usageSummary = el('span', 'usage-summary', 'Checking…');
+      usageHead.appendChild(usageSummary);
+      usageArea.appendChild(usageHead);
+      const usageContent = el('div', 'usage-content');
+      usageContent.setAttribute('role', 'status');
+      usageContent.setAttribute('aria-live', 'polite');
+      usageContent.tabIndex = -1;
+      usageArea.appendChild(usageContent);
+      card.appendChild(usageArea);
 
       if (p.hasQuota) {
-        const bars = el('div', 'bars', '<div class="resets">Loading quota&hellip;</div>');
-        card.appendChild(bars);
-        const fillQuota = (attempt = 0) => sb.quota(a.id).then((q) => {
+        const showLoading = () => showUsageState(usageContent, usageSummary, {
+          title: 'Checking usage…',
+          detail: 'Requesting the latest available reading.',
+          loading: true,
+        });
+        const fillQuota = async (attempt = 0, force = false) => {
+          let q;
+          try {
+            q = await sb.quota(a.id, force);
+          } catch {
+            q = { error: 'unavailable' };
+          }
           // One silent retry absorbs transient endpoint blips before anything is shown.
           if (q.error === 'unavailable' && attempt === 0) {
-            setTimeout(() => fillQuota(1), 2500);
+            // The main process backs transient errors off for normal renders. This
+            // one deliberate retry must bypass that negative cache.
+            setTimeout(() => fillQuota(1, true), 2500);
+            return;
+          }
+          const retry = {
+            label: 'Retry',
+            onClick: () => {
+              showLoading();
+              usageContent.focus();
+              fillQuota(1, true);
+            },
+          };
+          if (q.error === 'no-credentials') {
+            const stateActions = [];
+            if (p.id === 'claude') {
+              stateActions.push({
+                label: 'Choose Claude Desktop data…',
+                onClick: async () => {
+                  try {
+                    const result = await sb.setUsageSource(a.id);
+                    if (result.ok) renderAccounts();
+                    else if (result.error) toast(result.error);
+                  } catch (e) {
+                    toast('Could not select usage data: ' + (e.message || e));
+                  }
+                },
+              });
+            }
+            stateActions.push(retry);
+            showUsageState(usageContent, usageSummary, {
+              title: 'Usage unavailable',
+              detail: login.signedIn === true
+                ? 'This account is signed in, but Switchboard cannot retrieve usage from this profile.'
+                : login.signedIn === false
+                  ? 'Sign in to this account before checking usage. This is unknown, not 0% used.'
+                  : 'Switchboard could not verify sign-in or retrieve usage. This is unknown, not 0% used.',
+              actions: stateActions,
+            });
+            return;
+          }
+          if (q.error === 'no-usage-data') {
+            const stateActions = [];
+            if (p.usageUrl) stateActions.push({ label: 'View official usage', onClick: () => sb.openExternal(p.usageUrl) });
+            stateActions.push(retry);
+            showUsageState(usageContent, usageSummary, {
+              title: 'No usage sample yet',
+              detail: 'Run this account once and the figures will appear. This is unknown, not 0% used.',
+              actions: stateActions,
+            });
+            return;
+          }
+          if (q.error === 'auth') {
+            showUsageState(usageContent, usageSummary, {
+              title: 'Usage authorization failed',
+              detail: 'Re-authenticate this account, run one prompt in that terminal, then retry the usage check.',
+              tone: 'warn',
+              actions: [
+                { label: 'Re-authenticate', primary: true, onClick: openAccountSignin },
+                retry,
+              ],
+            });
+            return;
+          }
+          if (q.error === 'rate-limited') {
+            showUsageState(usageContent, usageSummary, {
+              title: 'Usage check rate-limited',
+              detail: 'No new reading is available yet. The provider should allow another check shortly.',
+              tone: 'warn',
+              actions: [retry],
+            });
             return;
           }
           if (q.error) {
-            if (q.error === 'no-credentials') {
-              bars.innerHTML = '<div class="resets">No readable token (the credentials live in the system store).</div>';
-              if (p.id === 'claude') {
-                const link = el('div', 'qnote', '<a>Use Claude Desktop usage data for this account&hellip;</a>');
-                link.querySelector('a').addEventListener('click', async () => {
-                  const r = await sb.setUsageSource(a.id);
-                  if (r.ok) renderAccounts();
-                });
-                bars.appendChild(link);
-              }
-            } else if (q.error === 'no-usage-data') {
-              // Nothing was read wrong: this account simply has not run yet, and the
-              // figures appear on their own once it has.
-              bars.innerHTML = '<div class="resets">No usage recorded yet. Run this account once and the figures appear here.</div>';
-              if (p.usageUrl) {
-                const link = el('div', 'qnote', '<a>View usage on the official page</a>');
-                link.querySelector('a').addEventListener('click', () => sb.openExternal(p.usageUrl));
-                bars.appendChild(link);
-              }
-            } else if (q.error === 'auth') {
-              bars.innerHTML = '<div class="resets">The stored token needs a refresh: use "Sign in / re-authenticate" below, run one prompt in that terminal, then retry.</div>';
-            } else if (q.error === 'rate-limited') {
-              bars.innerHTML = '<div class="resets">The usage endpoint is rate-limiting checks; numbers return on their own shortly.</div>';
-            } else {
-              bars.innerHTML = '<div class="resets">Quota unavailable right now.</div>';
-            }
-            const retry = el('div', 'qnote', '<a>Retry</a>');
-            retry.querySelector('a').addEventListener('click', () => {
-              bars.innerHTML = '<div class="resets">Loading quota&hellip;</div>';
-              fillQuota(1);
+            showUsageState(usageContent, usageSummary, {
+              title: 'Usage temporarily unavailable',
+              detail: 'Switchboard could not retrieve a current reading. This is unknown, not 0% used.',
+              actions: [retry],
             });
-            bars.appendChild(retry);
             return;
           }
-          bars.innerHTML = '';
-          const resets = [];
-          for (const w of q.windows) {
-            if (w.key === 'week_sonnet') continue; // keep the card compact
-            const pct = w.usedPercent;
-            const value = pct == null ? esc(w.valueLabel ?? 'n/a') : pct + '%' + (w.valueLabel ? ` &middot; ${esc(w.valueLabel)}` : '');
-            const q1 = el('div', 'q', `<label>${esc(w.label)} <em>${value}</em></label><div class="${barClass(pct ?? 0)}"><i style="width:${pct ?? 0}%"></i></div>`);
-            bars.appendChild(q1);
-            if (w.resetsAt && resets.length < 2) resets.push(`${esc(w.label.toLowerCase())} resets ${esc(fmtReset(w.resetsAt))}`);
+          if (!renderUsageWindows(usageContent, usageSummary, q)) {
+            const box = usageContent.querySelector('.usage-state');
+            const actionRow = el('div', 'usage-state-actions');
+            const retryButton = el('button', 'btn', 'Retry');
+            retryButton.type = 'button';
+            retryButton.addEventListener('click', retry.onClick);
+            actionRow.appendChild(retryButton);
+            box.appendChild(actionRow);
           }
-          if (q.source === 'session-log') {
-            // A local snapshot, not a live reading: say when it was taken, always.
-            resets.push(`from this account's last session, ${esc(fmtReset(q.sampledAt))}${q.stale ? ' (stale)' : ''}`);
-            if (q.plan) resets.push(`plan ${esc(q.plan)}`);
-          }
-          if (q.source === 'desktop') {
-            const when = new Date(q.sampledAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-            resets.push(`via Claude Desktop, sampled ${esc(when)}${q.stale ? ' (stale; open the desktop app to refresh)' : ''}`);
-          }
-          if (q.staleAt && Date.now() - q.staleAt > 3 * 60 * 1000) {
-            resets.push(`as of ${esc(new Date(q.staleAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}`);
-          }
-          if (resets.length) bars.appendChild(el('div', 'resets', resets.join(' &middot; ')));
-        });
+        };
+        showLoading();
         fillQuota();
-      } else if (p.quotaNote) {
-        card.appendChild(el('div', 'qnote', esc(p.quotaNote)));
+      } else {
+        showUsageState(usageContent, usageSummary, {
+          title: 'Usage not reported',
+          detail: p.quotaNote || 'This provider exposes no usage source Switchboard can read.',
+        });
       }
-      // Lead with the login state so the link has a reason. Offered identically in every
-      // state, it reads as something you might always need to do.
-      const login = a.login || { signedIn: true, level: 'ok', detail: 'Signed in' };
-      const needed = login.level !== 'ok';
-      const signRow = el('div', 'qnote' + (needed ? ' needsauth' : ''));
-      signRow.appendChild(el('b', 'loginstate', esc(login.detail)));
-      signRow.appendChild(document.createTextNode(' '));
-      const link = el('a', null, needed || !login.signedIn ? 'Sign in&hellip;' : 'Re-authenticate&hellip;');
-      link.addEventListener('click', () => sb.signin(a.id));
-      signRow.appendChild(link);
-      signRow.appendChild(el('small', null, 'opens a terminal preset to this account'));
-      card.appendChild(signRow);
-      panel.appendChild(card);
+
+      const signUnknown = login.signedIn == null;
+      const needsSignIn = login.signedIn === false || login.level === 'warn';
+      const signTone = needsSignIn ? ' warn' : signUnknown ? ' unknown' : '';
+      const signArea = el('section', 'account-area signin-area' + signTone);
+      const signHead = el('div', 'area-head');
+      signHead.appendChild(el('h4', 'area-title', 'Sign-in'));
+      signArea.appendChild(signHead);
+      const signStatus = el('div', 'signin-status' + signTone);
+      const dot = el('span', 'status-dot');
+      dot.setAttribute('aria-hidden', 'true');
+      signStatus.appendChild(dot);
+      signStatus.appendChild(el('strong', null, esc(login.detail)));
+      if (login.verified) signStatus.appendChild(el('span', 'signin-verified', 'Status checked by Claude Code'));
+      const signAction = login.signedIn === true
+        ? 'Re-authenticate'
+        : needsSignIn ? 'Sign in' : signUnknown ? 'Open account terminal' : 'Re-authenticate';
+      const signIn = el('button', 'btn', signAction);
+      signIn.type = 'button';
+      signIn.title = `Opens a terminal preset to ${a.label}`;
+      signIn.addEventListener('click', openAccountSignin);
+      signStatus.appendChild(signIn);
+      signArea.appendChild(signStatus);
+      card.appendChild(signArea);
+      accountGrid.appendChild(card);
     }
+    if (mine.length) providerSection.appendChild(accountGrid);
 
     for (const c of (state.candidates || []).filter((x) => x.provider === p.id)) {
       const card = el('div', 'acct');
@@ -371,24 +771,23 @@ async function renderAccounts() {
       reg.addEventListener('click', async () => {
         await sb.register(c);
         toast(`Registered "${c.label}".`);
-        renderAccounts();
       });
       top.appendChild(reg);
       card.appendChild(top);
       card.appendChild(el('div', 'qnote', 'This folder looks like a signed-in account that is not registered yet.'));
-      panel.appendChild(card);
+      providerSection.appendChild(card);
     }
 
     const add = el('button', 'addbtn', `+ Add ${esc(p.name)} account`);
     add.addEventListener('click', async () => {
       const r = await sb.addAccount(p.id);
       if (r.ok) toast(`Registered "${r.account.label}". Sign it in from a terminal: ${r.loginHint}`);
-      renderAccounts();
     });
-    panel.appendChild(add);
+    providerSection.appendChild(add);
+    panel.appendChild(providerSection);
   }
 
-  panel.appendChild(el('div', 'grouphead', 'Antigravity (Google)'));
+  panel.appendChild(el('h2', 'grouphead', 'Antigravity (Google)'));
   const ag = await sb.antigravity();
   const agCard = el('div', 'acct' + (ag.signedIn ? ' active' : ''));
   const agTop = el('div', 'top');
@@ -432,7 +831,7 @@ async function renderAccounts() {
 
   const presence = await sb.presence();
   if (presence.length) {
-    panel.appendChild(el('div', 'grouphead', 'Other tool accounts'));
+    panel.appendChild(el('h2', 'grouphead', 'Other tool accounts'));
     for (const t of presence) {
       const card = el('div', 'acct' + (t.signedIn ? ' active' : ''));
       const top = el('div', 'top');
@@ -797,12 +1196,24 @@ document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeMen
 /** Poll a condition every 4s for ~5 minutes; onDone when true, onTimeout (optional) after the cap. */
 function pollUntil(condition, onDone, onTimeout) {
   let ticks = 0;
+  let busy = false;
+  let finished = false;
   const timer = setInterval(async () => {
+    if (busy || finished) return;
+    busy = true;
     ticks += 1;
     let hit = false;
     try { hit = await condition(); } catch { /* try again next tick */ }
-    if (hit) { clearInterval(timer); onDone(); return; }
-    if (ticks >= 75) { clearInterval(timer); if (onTimeout) onTimeout(); }
+    if (hit) {
+      finished = true;
+      clearInterval(timer);
+      onDone();
+    } else if (ticks >= 75) {
+      finished = true;
+      clearInterval(timer);
+      if (onTimeout) onTimeout();
+    }
+    busy = false;
   }, 4000);
 }
 
@@ -842,7 +1253,7 @@ async function renderAbout() {
 
   panel.appendChild(el('div', 'grouphead', 'What is Switchboard?'));
   const what = el('div', 'acct');
-  what.appendChild(el('div', '', '<p style="margin:2px 0 8px;font-size:.9rem">A Windows tray app that answers one question: <b>which AI account is this machine using right now?</b> And lets you change it.</p><p style="margin:0;font-size:.86rem;color:var(--muted)">Register multiple subscription accounts per AI tool, switch the machine default in two clicks, see each account\'s remaining quota, install and update the tools through their vendors\' own mechanisms, and catch the setups that silently bill the wrong thing.</p>'));
+  what.appendChild(el('div', '', '<p style="margin:2px 0 8px;font-size:.9rem">A Windows tray app that answers one question: <b>which AI account is this machine using right now?</b> And lets you change it.</p><p style="margin:0;font-size:.86rem;color:var(--muted)">Register multiple subscription accounts per AI tool, switch the machine default in two clicks, see each account\'s usage against its available limits, install and update the tools through their vendors\' own mechanisms, and catch the setups that silently bill the wrong thing.</p>'));
   panel.appendChild(what);
 
   panel.appendChild(el('div', 'grouphead', 'The panels'));

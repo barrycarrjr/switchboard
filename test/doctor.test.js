@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runChecks, claudeLoginState, accountLoginState } from '../core/doctor.js';
+import {
+  runChecks,
+  claudeLoginState,
+  accountLoginState,
+  parseClaudeAuthStatus,
+  claudeAuthStatusLaunch,
+  verifiedAccountLoginState,
+} from '../core/doctor.js';
 
 const noFetch = async () => { throw new Error('offline'); };
 const envNone = { user: () => null, machine: () => null };
@@ -77,7 +84,7 @@ test('a missing credential file reads as not signed in, with the login hint', as
   const checks = await runChecks({ accounts: [account], env: envNone, fetchImpl: noFetch });
   const c = checks.find((x) => x.id === 'cred-nc');
   assert.equal(c.level, 'warn');
-  assert.match(c.detail, /setup-token/);
+  assert.match(c.detail, /claude auth login --claudeai/);
 });
 
 test('a codex custom base_url is flagged; the vendor default is not', async () => {
@@ -203,7 +210,7 @@ test('an expired claude login says so on the account card', () => {
   const now = Date.now();
   const home = tmpHome();
   fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({
-    claudeAiOauth: { refreshTokenExpiresAt: now - 24 * 3600 * 1000 },
+    claudeAiOauth: { refreshToken: 'r', refreshTokenExpiresAt: now - 24 * 3600 * 1000 },
   }));
   const s = accountLoginState({ provider: 'claude', home }, now);
   assert.equal(s.level, 'warn');
@@ -221,12 +228,221 @@ test('codex reports being signed in and claims no expiry it cannot know', () => 
   assert.equal(s.detail, 'Signed in');
 });
 
-test('an unreadable credential file still counts as signed in', () => {
+test('an unreadable credential file is never claimed as a verified sign-in', () => {
   const home = tmpHome();
   fs.writeFileSync(path.join(home, '.credentials.json'), '{not json');
   const s = accountLoginState({ provider: 'claude', home });
+  assert.notEqual(s.signedIn, true);
+  assert.notEqual(s.level, 'ok');
+});
+
+test('a secure-storage tombstone is not mistaken for a working Claude login', () => {
+  const now = Date.now();
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({
+    claudeAiOauth: {
+      accessToken: '',
+      refreshToken: '',
+      expiresAt: 0,
+      // This metadata can survive after the usable credential has moved or vanished.
+      refreshTokenExpiresAt: now + 60 * 24 * 60 * 60 * 1000,
+    },
+  }));
+  const s = accountLoginState({ provider: 'claude', home }, now);
+  assert.notEqual(s.signedIn, true);
+  assert.notEqual(s.level, 'ok');
+  assert.doesNotMatch(s.detail, /valid until/i);
+});
+
+test('parseClaudeAuthStatus allowlists the vendor status and account identity fields', () => {
+  const signedIn = parseClaudeAuthStatus(JSON.stringify({
+    loggedIn: true,
+    authMethod: 'claude.ai',
+    apiProvider: 'firstParty',
+    email: 'private@example.test',
+    orgId: 'org-work',
+    orgName: 'Private Organization',
+    subscriptionType: 'max',
+    accessToken: 'must-never-leave-the-command-parser',
+  }));
+  assert.equal(signedIn.loggedIn, true);
+  assert.equal(signedIn.organizationUuid, 'org-work');
+  assert.equal(signedIn.email, 'private@example.test');
+  assert.equal(signedIn.plan, 'max');
+  assert.equal(JSON.stringify(signedIn).includes('must-never-leave'), false, 'unexpected credential fields are dropped');
+
+  const signedOut = parseClaudeAuthStatus('{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}');
+  assert.equal(signedOut.loggedIn, false);
+  assert.equal(signedOut.authMethod, 'none');
+
+  assert.equal(parseClaudeAuthStatus('not json'), null);
+  assert.equal(parseClaudeAuthStatus('{}'), null);
+});
+
+test('the vendor auth probe launches an absolute native executable without a shell', async () => {
+  const home = tmpHome();
+  const executable = 'C:\\Program Files\\Claude Code\\claude.exe';
+  let invocation;
+  await verifiedAccountLoginState({ provider: 'claude', home }, {
+    executable,
+    runImpl: async (file, args, options) => {
+      invocation = { file, args, options };
+      return { stdout: '{"loggedIn":false}' };
+    },
+  });
+
+  assert.equal(invocation.file, executable);
+  assert.deepEqual(invocation.args, ['auth', 'status', '--json']);
+  assert.equal(invocation.options.shell, false);
+  assert.equal(invocation.options.windowsVerbatimArguments, undefined);
+});
+
+test('the vendor auth probe runs cmd and bat npm shims through a constrained cmd.exe command', async () => {
+  const home = tmpHome();
+  for (const extension of ['cmd', 'BAT']) {
+    const executable = `C:\\Program Files (x86)\\Claude & Co\\claude.${extension}`;
+    let invocation;
+    await verifiedAccountLoginState({ provider: 'claude', home }, {
+      executable,
+      runImpl: async (file, args, options) => {
+        invocation = { file, args, options };
+        return { stdout: '{"loggedIn":false}' };
+      },
+    });
+
+    assert.equal(invocation.file, 'cmd.exe');
+    assert.deepEqual(invocation.args, [
+      '/d',
+      '/s',
+      '/v:off',
+      '/c',
+      `""${executable}" auth status --json"`,
+    ]);
+    assert.equal(invocation.options.shell, false);
+    assert.equal(invocation.options.windowsVerbatimArguments, true);
+    assert.equal(invocation.options.env.CLAUDE_CONFIG_DIR, home);
+  }
+});
+
+test('a batch-shim path that cmd could expand is rejected before launch', () => {
+  assert.throws(
+    () => claudeAuthStatusLaunch('C:\\Users\\%USERNAME%\\claude.cmd'),
+    /unsafe/i,
+  );
+});
+
+test('the vendor auth probe overrides a plausible but unusable credential tombstone', async () => {
+  const now = Date.now();
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({
+    claudeAiOauth: { accessToken: '', refreshToken: '', refreshTokenExpiresAt: now + 60 * 24 * 60 * 60 * 1000 },
+  }));
+  let invocation;
+  const runImpl = async (file, args, options) => {
+    invocation = { file, args, options };
+    const error = new Error('Command failed with exit code 1');
+    error.code = 1;
+    // `claude auth status` deliberately exits nonzero when logged out, but its JSON is
+    // still the authoritative result and must not be discarded with the rejection.
+    error.stdout = '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}';
+    throw error;
+  };
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, { runImpl, now });
+  assert.equal(s.signedIn, false);
+  assert.match(s.detail, /not signed in/i);
+  assert.match(String(invocation.file), /claude/i);
+  assert.deepEqual(invocation.args, ['auth', 'status', '--json']);
+  assert.equal(invocation.options.env.CLAUDE_CONFIG_DIR, home);
+  assert.equal(invocation.options.windowsHide, true);
+});
+
+test('the vendor auth probe recognizes a system-store login even without a token file', async () => {
+  const home = tmpHome();
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, {
+    runImpl: async () => ({
+      stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', orgId: 'org-secure' }),
+    }),
+  });
   assert.equal(s.signedIn, true);
   assert.equal(s.level, 'ok');
+  assert.equal(s.organizationUuid, 'org-secure');
+});
+
+test('API-key auth is not misreported as a Claude subscription login', async () => {
+  const home = tmpHome();
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, {
+    runImpl: async () => ({
+      stdout: JSON.stringify({ loggedIn: true, authMethod: 'api_key', apiProvider: 'firstParty' }),
+    }),
+  });
+  assert.equal(s.signedIn, false);
+  assert.equal(s.level, 'warn');
+  assert.match(s.detail, /API-key authentication/i);
+  assert.equal(s.verified, true);
+});
+
+test('a verified subscription login preserves an approaching refresh-expiry warning', async () => {
+  const now = 2_000_000_000_000;
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({
+    claudeAiOauth: {
+      accessToken: 'readable',
+      refreshToken: 'refreshable',
+      refreshTokenExpiresAt: now + 2 * 24 * 60 * 60 * 1000,
+    },
+  }));
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, {
+    now,
+    runImpl: async () => ({ stdout: '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}' }),
+  });
+  assert.equal(s.signedIn, true);
+  assert.equal(s.level, 'warn');
+  assert.match(s.detail, /expires/i);
+});
+
+test('a failed vendor probe is unknown rather than a false negative for secure storage', async () => {
+  const home = tmpHome();
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, {
+    runImpl: async () => { throw new Error('unavailable'); },
+  });
+  assert.equal(s.signedIn, null);
+  assert.equal(s.level, 'info');
+  assert.equal(s.verified, false);
+});
+
+test('an unavailable vendor probe falls back without upgrading unknown metadata to signed in', async () => {
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.credentials.json'), '{not json');
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, {
+    runImpl: async () => { throw new Error('claude is unavailable'); },
+  });
+  assert.notEqual(s.signedIn, true);
+  assert.notEqual(s.level, 'ok');
+});
+
+test('Health uses an authoritative supplied login state instead of contradicting Accounts', async () => {
+  const account = { id: 'claude-secure', provider: 'claude', label: 'Secure', home: tmpHome() };
+  const checks = await runChecks({
+    accounts: [account],
+    loginStates: { [account.id]: { signedIn: true, level: 'ok', detail: 'Signed in', verified: true } },
+    env: envNone,
+    fetchImpl: noFetch,
+  });
+  const credential = checks.find((check) => check.id === `cred-${account.id}`);
+  assert.equal(credential.level, 'ok');
+  assert.match(credential.title, /signed in/i);
+});
+
+test('Health names provider-routing overrides that bypass account folders', async () => {
+  const env = {
+    user: (name) => (name === 'CLAUDE_CODE_USE_BEDROCK' ? '1' : null),
+    machine: () => null,
+  };
+  const checks = await runChecks({ env, fetchImpl: noFetch });
+  const override = checks.find((check) => check.id === 'routing-override-CLAUDE_CODE_USE_BEDROCK');
+  assert.equal(override.level, 'warn');
+  assert.match(override.detail, /ignore the account folder/i);
+  assert.equal(override.fix.args.name, 'CLAUDE_CODE_USE_BEDROCK');
 });
 
 test('an unknown provider is reported rather than assumed fine', () => {
