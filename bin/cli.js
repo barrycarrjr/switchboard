@@ -9,6 +9,7 @@ import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings } from '../core/settings.js';
 import { selectLane } from '../core/lanes.js';
 import { readHandoff, generateHandoffPrompt } from '../core/handoff.js';
+import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio } from '../core/runargs.js';
 import readline from 'node:readline/promises';
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -51,31 +52,6 @@ async function prepareLanesContext(settings, registry, overrides = {}) {
   };
 }
 
-function parseRunArgs(rawArgs) {
-  const parsed = { provider: null, account: null, noFallback: false, yes: false, commandArgs: [] };
-  let i = 0;
-  while (i < rawArgs.length) {
-    const arg = rawArgs[i];
-    if (arg === '--') {
-      parsed.commandArgs.push(...rawArgs.slice(i + 1));
-      break;
-    }
-    if (arg === '--provider' && i + 1 < rawArgs.length) {
-      parsed.provider = rawArgs[++i];
-    } else if (arg === '--account' && i + 1 < rawArgs.length) {
-      parsed.account = rawArgs[++i];
-    } else if (arg === '--no-fallback') {
-      parsed.noFallback = true;
-    } else if (arg === '--yes' || arg === '-y') {
-      parsed.yes = true;
-    } else {
-      parsed.commandArgs.push(arg);
-    }
-    i++;
-  }
-  return parsed;
-}
-
 async function promptUser(query) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -93,6 +69,9 @@ async function main() {
     case 'dry-run': {
       const settings = loadSettings();
       const parsed = parseRunArgs(args);
+      // A caller has to know which harness it will get BEFORE it builds a command line,
+      // so the same selection is available as one machine-readable line.
+      const asJson = args.includes('--json');
       const { pool, context } = await prepareLanesContext(settings, registry, {
         provider: parsed.provider,
       });
@@ -105,7 +84,8 @@ async function main() {
       const filteredPool = parsed.account ? pool.filter(l => l.accountId === parsed.account) : pool;
       
       if (filteredPool.length === 0) {
-        out('No configured lanes match the criteria.');
+        const reason = 'No configured lanes match the criteria.';
+        out(asJson ? JSON.stringify({ available: false, reason }) : reason);
         process.exitCode = 1;
         return;
       }
@@ -113,8 +93,22 @@ async function main() {
       const selected = selectLane(filteredPool, context);
       
       if (!selected) {
-        out('No lane is currently available.');
+        const reason = 'No lane is currently available.';
+        out(asJson ? JSON.stringify({ available: false, reason }) : reason);
         process.exitCode = 1;
+        return;
+      }
+
+      if (asJson) {
+        out(JSON.stringify({
+          laneId: selected.lane.id,
+          harness: selected.lane.harness,
+          provider: selected.lane.provider,
+          accountId: selected.lane.accountId,
+          billing: selected.lane.billing,
+          reason: selected.status.reason,
+          available: true
+        }));
         return;
       }
 
@@ -129,6 +123,23 @@ async function main() {
     case 'run': {
       const settings = loadSettings();
       const parsed = parseRunArgs(args);
+      // With --quiet switchboard's own lines go to stderr, so a caller parsing the child's
+      // stdout as JSON is never handed a status line it did not ask for.
+      const say = (msg) => parsed.quiet ? process.stderr.write(msg + '\n') : out(msg);
+
+      // The spec is validated before anything is spawned: a bad spec must not be discovered
+      // half way through a run, when a lane has already been consumed.
+      let spec = null;
+      if (parsed.spec) {
+        try {
+          spec = loadRunSpec(parsed.spec);
+        } catch (e) {
+          say(`[switchboard] ${e.message}`);
+          process.exitCode = 1;
+          return;
+        }
+      }
+
       let currentPool = parsed.account ? settings.lanes.filter(l => l.accountId === parsed.account) : settings.lanes;
       let { context } = await prepareLanesContext(settings, registry, {
         provider: parsed.provider,
@@ -137,40 +148,48 @@ async function main() {
       let selected = selectLane(currentPool, context);
 
       if (!selected) {
-        out('No configured lane is available to run this task.');
+        say('No configured lane is available to run this task.');
         process.exitCode = 1;
         return;
       }
 
       const { isLimitError } = await import('../core/errors.js');
 
+      // A long run must not balloon memory, and a limit notice always sits at the end of
+      // the output, so only the tail is retained for classification.
+      const STDOUT_TAIL_BYTES = 64 * 1024;
+
       async function runInLane(lane, executionArgs) {
         const account = registry.accounts.find(a => a.id === lane.accountId);
         if (!account) {
-          out(`Account ${lane.accountId} not found in registry.`);
+          say(`Account ${lane.accountId} not found in registry.`);
           return { code: 1, limitHit: false };
         }
 
         const executable = await toolExecutable(lane.harness);
         if (!executable) {
-          out(`Tool for harness '${lane.harness}' is not installed or not found on PATH.`);
+          say(`Tool for harness '${lane.harness}' is not installed or not found on PATH.`);
           return { code: 1, limitHit: false };
         }
 
         const childEnv = accountScopedEnv(account, process.env);
-        out(`[switchboard] Running via lane ${lane.id} (${account.label})`);
+        say(`[switchboard] Running via lane ${lane.id} (${account.label})`);
 
         let spawnFile = executable;
         let spawnArgs = executionArgs;
         let spawnOptions = {
-          stdio: ['inherit', 'inherit', 'pipe'],
+          // stdout is piped only when this is not a terminal, because a headless harness can
+          // report an exhausted subscription as an ordinary assistant message on stdout and
+          // never on stderr. Every chunk is forwarded on immediately and unchanged, so a
+          // streaming caller still sees the same bytes at the same time.
+          stdio: childStdio(Boolean(process.stdout.isTTY)),
           env: childEnv,
           windowsHide: false
         };
 
         if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable)) {
           if (/[\u0000-\u001f"%]/.test(executable)) {
-            out(`[switchboard] Unsafe batch-shim path: ${executable}`);
+            say(`[switchboard] Unsafe batch-shim path: ${executable}`);
             return { code: 1, limitHit: false };
           }
           spawnFile = 'cmd.exe';
@@ -193,18 +212,24 @@ async function main() {
             stderrOutput += data.toString();
           });
 
+          let stdoutTail = '';
+          child.stdout?.on('data', (data) => {
+            process.stdout.write(data);
+            stdoutTail = (stdoutTail + data.toString()).slice(-STDOUT_TAIL_BYTES);
+          });
+
           child.on('error', (err) => {
-            out(`\n[switchboard] Failed to launch ${executable}: ${err.message}`);
+            say(`\n[switchboard] Failed to launch ${executable}: ${err.message}`);
             done({ code: 1, limitHit: false });
           });
 
           child.on('close', (code) => {
-            if (code !== 0 && isLimitError(stderrOutput)) {
-              out(`\n[switchboard] Provider limit error detected in lane ${lane.id}.`);
+            if (code !== 0 && isLimitError(stderrOutput + '\n' + stdoutTail)) {
+              say(`\n[switchboard] Provider limit error detected in lane ${lane.id}.`);
               done({ code, limitHit: true });
             } else {
               if (code !== 0) {
-                out(`\n[switchboard] Process exited with code ${code}. Ambiguous failure, not falling back.`);
+                say(`\n[switchboard] Process exited with code ${code}. Ambiguous failure, not falling back.`);
               }
               done({ code, limitHit: false });
             }
@@ -212,7 +237,26 @@ async function main() {
         });
       }
 
+      // A spec argv belongs to a harness, not to the invocation, so it is looked up again
+      // for every lane. Without a spec the caller's own arguments are used, as before.
+      function argsForLane(lane, handoffPrompt = null) {
+        const argv = resolveSpecArgv(spec, lane.harness, handoffPrompt);
+        if (!argv) {
+          // Guessing here would hand one harness's flags to another harness's binary.
+          say(`[switchboard] The spec has no harnessArgs entry for harness '${lane.harness}'. Refusing to guess.`);
+          return null;
+        }
+        return argv;
+      }
+
       let currentArgs = parsed.commandArgs;
+      if (spec) {
+        currentArgs = argsForLane(selected.lane);
+        if (!currentArgs) {
+          process.exitCode = 1;
+          return;
+        }
+      }
 
       while (selected) {
         const result = await runInLane(selected.lane, currentArgs);
@@ -228,30 +272,32 @@ async function main() {
           selected = selectLane(currentPool, nextContext);
           
           if (!selected) {
-            out(`[switchboard] No more available lanes to fall back to.`);
+            say(`[switchboard] No more available lanes to fall back to.`);
             process.exitCode = result.code;
             return;
           }
+
+          let handoffPrompt = null;
 
           // Cross-provider/cross-harness transition handling
           if (previousLane.harness !== selected.lane.harness || previousLane.provider !== selected.lane.provider) {
             const handoffExists = !!readHandoff(process.cwd());
             
             if (!handoffExists) {
-              out(`[switchboard] Warning: Cross-provider failover to ${selected.lane.harness} (${selected.lane.provider}) requires a handoff document, but none was found for this workspace.`);
+              say(`[switchboard] Warning: Cross-provider failover to ${selected.lane.harness} (${selected.lane.provider}) requires a handoff document, but none was found for this workspace.`);
               if (!parsed.yes) {
-                out(`[switchboard] Please provide the missing objective manually or start a fresh session.`);
+                say(`[switchboard] Please provide the missing objective manually or start a fresh session.`);
                 const proceed = await promptUser(`Start a fresh session in ${selected.lane.id}? (y/N): `);
                 if (proceed !== 'y' && proceed !== 'yes') {
                   process.exitCode = result.code;
                   return;
                 }
               } else {
-                out(`[switchboard] Proceeding without handoff due to --yes flag.`);
+                say(`[switchboard] Proceeding without handoff due to --yes flag.`);
               }
               // If proceeding without a handoff, we just pass the original args (or none if it was interactive)
             } else {
-              out(`[switchboard] Valid task handoff found for workspace.`);
+              say(`[switchboard] Valid task handoff found for workspace.`);
               if (!parsed.yes) {
                 const proceed = await promptUser(`Cross-provider failover to ${selected.lane.id}. Start new session? (y/N): `);
                 if (proceed !== 'y' && proceed !== 'yes') {
@@ -260,11 +306,23 @@ async function main() {
                 }
               }
               // Inject the single-sentence handoff prompt into the args
-              const prompt = generateHandoffPrompt(process.cwd());
-              currentArgs = [prompt];
+              handoffPrompt = generateHandoffPrompt(process.cwd());
+              if (!spec) currentArgs = [handoffPrompt];
             }
           } else {
-            out(`[switchboard] Falling back to next available lane for harness ${selected.lane.harness}: ${selected.lane.id}`);
+            say(`[switchboard] Falling back to next available lane for harness ${selected.lane.harness}: ${selected.lane.id}`);
+          }
+
+          // The new lane can be a different harness, so a spec is re-read for it and the
+          // handoff prompt appended rather than replacing a command line that needs its
+          // own subcommand and flags.
+          if (spec) {
+            const nextArgs = argsForLane(selected.lane, handoffPrompt);
+            if (!nextArgs) {
+              process.exitCode = result.code || 1;
+              return;
+            }
+            currentArgs = nextArgs;
           }
         } else {
           process.exitCode = result.code;
@@ -372,8 +430,8 @@ async function main() {
       out('  providers                   installed AI tools and versions');
       out('  doctor                      health checks');
       out('  quota                       per-account usage');
-      out('  dry-run [--provider <p>] [--account <id>]   explain which lane would be selected');
-      out('  run [--provider <p>] [--account <id>] [--no-fallback] [--yes] <args...>   launch in the selected lane');
+      out('  dry-run [--provider <p>] [--account <id>] [--json]   explain which lane would be selected');
+      out('  run [--provider <p>] [--account <id>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');
   }
 }
 
