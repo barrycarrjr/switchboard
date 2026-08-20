@@ -27,6 +27,12 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "extraFiles": [
+      {
+        "from": "build/switchboard.cmd",
+        "to": "bin/switchboard.cmd"
+      }
+    ],
     "files": [
       "src/**/*",
       "core/**/*",
@@ -52,7 +58,8 @@
       "deleteAppDataOnUninstall": false,
       "runAfterFinish": true,
       "artifactName": "Switchboard-Setup-${version}.${ext}",
-      "shortcutName": "Switchboard"
+      "shortcutName": "Switchboard",
+      "include": "build/installer.nsh"
     }
   },
   "devDependencies": {
