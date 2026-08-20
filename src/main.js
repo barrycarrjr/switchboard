@@ -337,74 +337,134 @@ async function runQuotaWatch() {
     const settings = loadSettings();
     if (settings.quotaWatch === 'off') return;
     const reg = registry();
-    const active = activeAccount(reg, 'claude');
+
     // The watch shares the render cache, so it never burns the rate-limit allowance.
     const snapshots = {};
     const loginStates = {};
-    await Promise.all(reg.accounts.filter((x) => x.provider === 'claude').map(async (a) => {
+
+    // Only fetch for Claude or accounts that are actually in lanes to avoid spamming
+    const providersToFetch = new Set(['claude']);
+    settings.lanes.forEach(l => providersToFetch.add(l.harness));
+
+    await Promise.all(reg.accounts.filter((x) => providersToFetch.has(x.provider)).map(async (a) => {
       [snapshots[a.id], loginStates[a.id]] = await Promise.all([
         cachedQuota(a),
         cachedLoginState(a),
       ]);
     }));
-    const pinPresent = configuredClaudeOverrides().length > 0;
-    const decision = decideDefaultSwitch({
-      mode: settings.quotaWatch,
-      accounts: reg.accounts,
-      activeId: active?.id ?? null,
-      snapshots,
-      loginStates,
-      lastSwitchAt: settings.lastAutoSwitchAt,
-      pinPresent,
-    });
 
-    if (decision.kind === 'pin-blocked') {
-      if (!pinNotified) {
-        pinNotified = true;
-        new Notification({ title: 'Switchboard', body: 'The default account is out of quota, but a machine-wide Claude authentication or routing override makes folder switching unreliable. Open Health to inspect it.' })
-          .on('click', () => showWindow('health')).show();
-      }
-      return;
-    }
-    if (decision.kind === 'exhausted') {
-      const when = decision.resetsAt ? ` Earliest reset: ${new Date(decision.resetsAt).toLocaleString()}.` : '';
-      new Notification({ title: 'Switchboard', body: `No signed-in Claude account with readable quota has room.${when}` }).show();
-      return;
-    }
-    if (decision.kind === 'switch') {
-      const target = reg.accounts.find((a) => a.id === decision.to);
-      const login = target ? await cachedLoginState(target, true) : null;
-      if (login?.signedIn !== true) {
-        new Notification({ title: 'Switchboard did not switch', body: 'The suggested Claude account is no longer signed in.' }).show();
-        return;
-      }
-      setActive(reg, decision.to);
-      settings.lastAutoSwitchAt = Date.now();
-      saveSettings(settings);
-      refresh();
-      new Notification({ title: 'Switchboard switched the default', body: `${decision.reason}. New terminals and apps now use it; running processes are unchanged.` }).show();
-      return;
-    }
-    if (decision.kind === 'suggest') {
-      const target = reg.accounts.find((a) => a.id === decision.to);
-      new Notification({ title: 'Switchboard', body: `${decision.reason}. Click to switch new terminals to ${target?.label}.` })
-        .on('click', async () => {
-          const fresh = registry();
-          const freshTarget = fresh.accounts.find((a) => a.id === decision.to);
-          const login = freshTarget ? await cachedLoginState(freshTarget, true) : null;
-          if (login?.signedIn !== true) {
-            new Notification({ title: 'Switchboard did not switch', body: 'That Claude account is no longer signed in.' }).show();
-            return;
+    const pinPresent = configuredClaudeOverrides().length > 0;
+
+    // Unify decision: per provider
+    // If lanes exist, use lanes as absolute priority. If no lanes, fallback to legacy Claude logic.
+    let switchDecisions = [];
+    const providers = new Set(reg.accounts.map(a => a.provider));
+    
+    for (const p of providers) {
+      const active = activeAccount(reg, p);
+      const providerLanes = settings.lanes.filter(l => l.harness === p);
+      
+      if (providerLanes.length > 0) {
+        // Lane-driven routing
+        const { selectLane } = await import('../core/lanes.js');
+        const context = {
+          now: Date.now(),
+          loginStates,
+          quotas: snapshots,
+          spendPolicies: settings.spendPolicies,
+          cooldowns: settings.cooldowns,
+          requirements: { harness: p }
+        };
+        const selected = selectLane(providerLanes, context);
+        
+        if (selected && active && selected.lane.accountId !== active.id) {
+          // The top healthy lane doesn't match the current active default. Switch it.
+          if (p === 'claude' && pinPresent) {
+             switchDecisions.push({ kind: 'pin-blocked', provider: p });
+          } else {
+             const activeLane = providerLanes.find(l => l.accountId === active.id);
+             // Avoid rapid switching if recently switched
+             if (Date.now() - settings.lastAutoSwitchAt > (10 * 60 * 1000)) {
+               switchDecisions.push({ 
+                 kind: settings.quotaWatch === 'auto' ? 'switch' : 'suggest',
+                 provider: p,
+                 to: selected.lane.accountId,
+                 from: active.id,
+                 reason: `Lane priority dictates ${selected.lane.id} is the highest healthy ${p} account`
+               });
+             }
           }
-          setActive(fresh, decision.to);
-          const s = loadSettings();
-          s.lastAutoSwitchAt = Date.now();
-          saveSettings(s);
-          refresh();
-        })
-        .show();
+        }
+      } else if (p === 'claude') {
+        // Legacy Claude-only logic when no lanes configured
+        const decision = decideDefaultSwitch({
+          mode: settings.quotaWatch,
+          accounts: reg.accounts,
+          activeId: active?.id ?? null,
+          snapshots,
+          loginStates,
+          lastSwitchAt: settings.lastAutoSwitchAt,
+          pinPresent,
+        });
+        if (decision.kind !== 'none') {
+           decision.provider = 'claude';
+           switchDecisions.push(decision);
+        }
+      }
     }
-  } catch { /* the watch must never take the app down; it tries again next tick */ }
+
+    for (const decision of switchDecisions) {
+      if (decision.kind === 'pin-blocked') {
+        if (!pinNotified) {
+          pinNotified = true;
+          new Notification({ title: 'Switchboard', body: `The default ${decision.provider} account is out of quota, but a machine-wide authentication override makes folder switching unreliable. Open Health to inspect it.` })
+            .on('click', () => showWindow('health')).show();
+        }
+        continue;
+      }
+      if (decision.kind === 'exhausted') {
+        const when = decision.resetsAt ? ` Earliest reset: ${new Date(decision.resetsAt).toLocaleString()}.` : '';
+        new Notification({ title: 'Switchboard', body: `No signed-in ${decision.provider} account with readable quota has room.${when}` }).show();
+        continue;
+      }
+      if (decision.kind === 'switch') {
+        const target = reg.accounts.find((a) => a.id === decision.to);
+        const login = target ? await cachedLoginState(target, true) : null;
+        if (login?.signedIn !== true) {
+          new Notification({ title: 'Switchboard did not switch', body: `The suggested ${decision.provider} account is no longer signed in.` }).show();
+          continue;
+        }
+        setActive(reg, decision.to);
+        settings.lastAutoSwitchAt = Date.now();
+        saveSettings(settings);
+        refresh();
+        new Notification({ title: 'Switchboard switched the default', body: `${decision.reason}. New terminals and apps now use it; running processes are unchanged.` }).show();
+        continue;
+      }
+      if (decision.kind === 'suggest') {
+        const target = reg.accounts.find((a) => a.id === decision.to);
+        new Notification({ title: 'Switchboard', body: `${decision.reason}. Click to switch new terminals to ${target?.label}.` })
+          .on('click', async () => {
+            const fresh = registry();
+            const freshTarget = fresh.accounts.find((a) => a.id === decision.to);
+            const login = freshTarget ? await cachedLoginState(freshTarget, true) : null;
+            if (login?.signedIn !== true) {
+              new Notification({ title: 'Switchboard did not switch', body: `That ${decision.provider} account is no longer signed in.` }).show();
+              return;
+            }
+            setActive(fresh, decision.to);
+            const s = loadSettings();
+            s.lastAutoSwitchAt = Date.now();
+            saveSettings(s);
+            refresh();
+          })
+          .show();
+      }
+    }
+  } catch (err) { 
+    /* the watch must never take the app down; it tries again next tick */
+    console.error('runQuotaWatch error', err);
+  }
 }
 
 app.whenReady().then(() => {
