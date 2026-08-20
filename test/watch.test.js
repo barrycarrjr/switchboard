@@ -77,10 +77,10 @@ test('a nearly-spent target is not worth switching to', () => {
   assert.equal(d.kind, 'exhausted');
 });
 
-test('exhausted reports the earliest known reset of the spent windows', () => {
+test('exhausted reports the latest known reset of the spent windows', () => {
   const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(100, 100, { sessionReset: base.now + 5000, weekReset: base.now + 9000 }), b: snap(10, 99) } });
   assert.equal(d.kind, 'exhausted');
-  assert.equal(d.resetsAt, base.now + 5000);
+  assert.equal(d.resetsAt, base.now + 9000);
 });
 
 test('the pin blocks switching and says so', () => {

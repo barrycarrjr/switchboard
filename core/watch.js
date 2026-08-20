@@ -1,7 +1,7 @@
 import { accountQuota } from './quota.js';
+import { isSpent, latestReset, pct, readable, SPENT_AT } from './lanes-util.js';
 
 export const SWITCH_COOLDOWN_MS = 10 * 60 * 1000;
-const SPENT_AT = 100;   // a window is spent at 100%
 const ROOM_BELOW = 95;  // a target must be comfortably below its limits
 
 /** Collect a quota snapshot per Claude account. Reads, never acts. */
@@ -13,22 +13,7 @@ export async function snapshotQuotas({ accounts, usageSources = {}, fetchImpl = 
   return snapshots;
 }
 
-function pct(snapshot, key) {
-  const w = snapshot?.windows?.find((x) => x.key === key);
-  return w?.usedPercent ?? null;
-}
-
-function readable(snapshot) {
-  return snapshot && !snapshot.error && !snapshot.stale;
-}
-
-export function isSpent(snapshot) {
-  if (!readable(snapshot)) return null; // unknown, never assumed
-  const session = pct(snapshot, 'session');
-  const week = pct(snapshot, 'week');
-  if (session == null && week == null) return null;
-  return (session ?? 0) >= SPENT_AT || (week ?? 0) >= SPENT_AT;
-}
+export { isSpent };
 
 function hasRoom(snapshot) {
   if (!readable(snapshot)) return false; // never switch TO an unknown
@@ -36,13 +21,6 @@ function hasRoom(snapshot) {
   const week = pct(snapshot, 'week');
   if (session == null && week == null) return false;
   return (session ?? 0) < ROOM_BELOW && (week ?? 0) < ROOM_BELOW;
-}
-
-function earliestReset(snapshot, now) {
-  const times = (snapshot?.windows ?? [])
-    .filter((w) => (w.usedPercent ?? 0) >= SPENT_AT && w.resetsAt && w.resetsAt > now)
-    .map((w) => w.resetsAt);
-  return times.length ? Math.min(...times) : null;
 }
 
 /**
@@ -79,7 +57,7 @@ export function decideDefaultSwitch({ mode, accounts, activeId, snapshots, login
     .sort((x, y) => (pct(snapshots[x.id], 'week') ?? 0) - (pct(snapshots[y.id], 'week') ?? 0))[0];
 
   if (!target) {
-    return { kind: 'exhausted', resetsAt: earliestReset(activeSnapshot, now) };
+    return { kind: 'exhausted', resetsAt: latestReset(activeSnapshot, now) };
   }
 
   const reason = `${active.label} is out of quota; ${target.label} has room`;
