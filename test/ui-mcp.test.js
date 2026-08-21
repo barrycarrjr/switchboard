@@ -152,3 +152,15 @@ test('Forget is offered only for a server added by hand', () => {
   const theirs = readRow(mcpRow(server, CLIENTS, () => {}));
   assert.ok(!theirs.buttons.some((b) => b.innerHTML === 'Forget'), 'nothing to forget for a catalogue entry');
 });
+
+// Removing a server that Switchboard could not have added is a one-way door: it has no
+// address to register, so it exists only because the client itself was set up with it.
+test('removing a server that cannot be put back says so', () => {
+  const { mcpRemoveQuestion } = load([...rowParts, 'mcpRemoveQuestion'], ['mcpRemoveQuestion']);
+  const oneWay = mcpRemoveQuestion({ name: 'unifi-home', command: 'D:\\tools\\unifi.exe', addable: false }, CLIENTS[0]);
+  assert.ok(oneWay.includes('Remove "unifi-home" from Claude Code?'));
+  assert.ok(oneWay.includes('cannot put it back'), 'the part that stops a click being regretted');
+
+  const ordinary = mcpRemoveQuestion({ name: 'sentry', url: 'https://mcp.sentry.dev/mcp', addable: true }, CLIENTS[0]);
+  assert.equal(ordinary, 'Remove "sentry" from Claude Code?', 'nothing extra when it can simply be added again');
+});

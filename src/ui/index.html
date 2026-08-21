@@ -1790,6 +1790,19 @@ function mcpWhyNotAddable(server, client) {
   return 'Switchboard adds remote https servers only, so ' + (server.label || server.name) + ' has to be set up inside ' + client.name + '.';
 }
 
+/**
+ * What to ask before taking a server out of a client.
+ *
+ * A server Switchboard could not have added is one it cannot put back: it has no plain
+ * https address to register, so it only exists because the client itself was set up with
+ * it. Removing it here is a one-way door, and the question should say so.
+ */
+function mcpRemoveQuestion(server, client) {
+  const question = 'Remove "' + server.name + '" from ' + client.name + '?';
+  if (server.addable !== false) return question;
+  return question + '\n\nSwitchboard cannot put it back: it was set up inside ' + client.name + ' itself.';
+}
+
 /** One client chip. Clicking toggles registration, then re-reads the client afterwards. */
 function mcpChip(server, client, onDone) {
   const state = (server.state && server.state[client.id]) || 'off';
@@ -1818,7 +1831,7 @@ function mcpChip(server, client, onDone) {
       toast(client.name + ' has no remove command. Take it out from inside ' + client.name + '.');
       return;
     }
-    if (on && !confirm('Remove "' + server.name + '" from ' + client.name + '?')) return;
+    if (on && !confirm(mcpRemoveQuestion(server, client))) return;
     btn.disabled = true;
     btn.textContent = on ? 'Removing...' : 'Adding...';
     try {

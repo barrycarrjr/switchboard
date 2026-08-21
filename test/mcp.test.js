@@ -7,6 +7,7 @@ import {
   FEATURED,
   CLIENTS,
   isValidServerName,
+  isRemovableServerName,
   isValidHttpUrl,
   assertValidServer,
   loadServers,
@@ -19,6 +20,7 @@ import {
   supportsClient,
   cleanCliError,
   registerServer,
+  unregisterServer,
   dedupeServers,
   activeServers,
   registeredServers,
@@ -802,4 +804,44 @@ test('a plain message survives intact', () => {
 test('an empty failure still says something', () => {
   assert.match(cleanCliError(''), /without saying why/);
   assert.match(cleanCliError(undefined), /without saying why/);
+});
+
+// ---- Taking a server back out ----
+
+// Removing was held to the rule for CREATING a server, which demands a plain https url.
+// A server the client starts itself has no url at all, so the panel listed servers it
+// then refused to remove: unchecking Junie on unifi-home answered "invalid server url:
+// undefined". Removing needs a name and nothing else.
+test('removing needs a name, not a url', () => {
+  const discovered = { name: 'unifi-home', command: 'D:\\tools\\unifi.exe' };
+  assert.throws(() => assertValidServer(discovered), /invalid server url/, 'the rule that used to gate removal');
+  assert.ok(isRemovableServerName(discovered.name), 'the rule that gates it now');
+});
+
+test('a name a client already holds can be removed, even one we would never create', () => {
+  for (const name of ['unifi-home', 'MCP_DOCKER', 'node_repl', 'phpstorm', 'atlassian', 'a.b-c_1']) {
+    assert.ok(isRemovableServerName(name), `must be removable: ${name}`);
+  }
+  assert.ok(!isValidServerName('MCP_DOCKER'), 'and still not one we would create');
+  assert.ok(!isValidServerName('node_repl'));
+});
+
+// The name reaches a command line, and on Windows that goes through a shell, so widening
+// the rule must not widen it to anything a shell would act on.
+test('a name that a shell would act on is still refused', async () => {
+  for (const bad of ['x; calc', 'a$(whoami)', 'a b', '`x`', 'a|b', 'a&b', 'a>b', "a'b", 'a"b', '', '-leading', 'a'.repeat(70)]) {
+    assert.ok(!isRemovableServerName(bad), `must stay refused: ${JSON.stringify(bad)}`);
+    await assert.rejects(
+      () => unregisterServer('junie', { name: bad }),
+      /invalid server name/,
+      `unregister must refuse before doing anything: ${JSON.stringify(bad)}`,
+    );
+  }
+  await assert.rejects(() => unregisterServer('junie', {}), /invalid server name/);
+  await assert.rejects(() => unregisterServer('junie', null), /invalid server name/);
+});
+
+test('adding is still held to the stricter rule', () => {
+  assert.throws(() => assertValidServer({ name: 'MCP_DOCKER', url: 'https://example.com/mcp' }), /invalid server name/);
+  assert.throws(() => assertValidServer({ name: 'ok', command: 'thing' }), /invalid server url/);
 });

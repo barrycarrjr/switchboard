@@ -377,6 +377,20 @@ export function isValidServerName(name) {
   return typeof name === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(name);
 }
 
+/**
+ * A name that is safe to remove: wider than the one we would create.
+ *
+ * Removing only ever needs a name. It is a key in a JSON config, or the last argument to
+ * the client's own remove command, and on Windows that command goes through a shell, so
+ * the name still has to be inert. But it does not have to be a name Switchboard would
+ * have chosen: a client's config already holds `MCP_DOCKER` and `node_repl`, which the
+ * stricter rule rejects for having a capital and an underscore. Holding removal to that
+ * rule meant the panel showed a server it could not take back out.
+ */
+export function isRemovableServerName(name) {
+  return typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name);
+}
+
 /** Only https endpoints. A URL reaches a shell, so anything exotic is refused outright. */
 export function isValidHttpUrl(url) {
   if (typeof url !== 'string' || url.length > 2048) return false;
@@ -637,7 +651,12 @@ export async function registerServer(clientId, server) {
 
 export async function unregisterServer(clientId, server) {
   const c = client(clientId);
-  assertValidServer(server);
+  // Deliberately not assertValidServer: that demands an https url, and removing needs no
+  // url at all. A server the client starts itself has none, so requiring one refused to
+  // remove the very servers that can only be removed here.
+  if (!isRemovableServerName(server?.name)) {
+    throw new Error(`invalid server name: ${server?.name}`);
+  }
   if (c.via === 'file') {
     const file = c.configFile();
     const { changed, out } = deleteJsonServer(readIfPresent(file), c.rootKey, server.name);
