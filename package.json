@@ -1,7 +1,7 @@
 {
   "name": "switchboard",
   "productName": "Switchboard",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "A Windows tray manager for AI CLIs and the accounts they use.",
   "license": "MIT",
   "author": "Switchboard contributors",
