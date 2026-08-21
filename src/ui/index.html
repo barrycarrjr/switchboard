@@ -1316,10 +1316,17 @@ function appLaunchPlan(a) {
   const items = [];
   // With one folder there is nothing to choose between, so no list is offered.
   if (profiles.length > 1) {
-    for (const p of profiles) items.push({ kind: 'open', label: p.label, sub: p.dir, dir: p.dir });
+    // The folder is named only where the entry could not be named after an account,
+    // because then it is the only thing identifying it. Where the account is named,
+    // the folder is noise: an app's data folder shown under an account name reads as
+    // that account's own config folder, which is a different folder entirely. The
+    // button's tooltip still carries the full path for anyone who wants it.
+    for (const p of profiles) items.push({ kind: 'open', label: p.label, sub: p.accountId ? null : p.dir, dir: p.dir });
   }
   if (a.supported) {
     items.push({ kind: 'add', label: 'Add another account…' });
+    // This one names the folder whatever happens: the action is about the folder
+    // itself, not about whichever account is signed in to it.
     for (const p of profiles) {
       if (p.added) items.push({ kind: 'forget', label: `Stop offering ${p.label}`, sub: p.dir, dir: p.dir });
     }

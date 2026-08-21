@@ -33,8 +33,8 @@ test('an app with one login per machine keeps the plain button it always had', (
 
 test('the button names the account it opens, and the arrow holds the others', () => {
   const plan = appLaunchPlan(claudeDesktop([
-    { dir: 'C:\\standard', label: 'Main Account', isDefault: true, isOpen: false, added: false },
-    { dir: 'C:\\second', label: 'Secondary', isDefault: false, isOpen: true, added: false },
+    { dir: 'C:\\standard', label: 'Main Account', accountId: 'claude-default', isDefault: true, isOpen: false, added: false },
+    { dir: 'C:\\second', label: 'Secondary', accountId: 'claude-account-2', isDefault: false, isOpen: true, added: false },
   ]));
 
   assert.equal(plan.openLabel, 'Secondary', 'the machine default is what the button opens');
@@ -43,12 +43,23 @@ test('the button names the account it opens, and the arrow holds the others', ()
     plan.items.map((i) => [i.kind, i.label]),
     [['open', 'Main Account'], ['open', 'Secondary'], ['add', 'Add another account…']],
   );
-  assert.equal(plan.items[0].sub, 'C:\\standard', 'each account shows the folder it is kept in');
+  assert.equal(plan.items[0].sub, null, 'a named account needs no folder under it');
+  assert.equal(plan.items[1].sub, null);
+});
+
+test('a folder with no account to name it shows the folder, since nothing else identifies it', () => {
+  const plan = appLaunchPlan(claudeDesktop([
+    { dir: 'C:\\standard', label: 'Main Account', accountId: 'claude-default', isDefault: true, isOpen: true, added: false },
+    { dir: 'D:\\profiles\\fresh', label: 'fresh', accountId: null, isDefault: false, isOpen: false, added: false },
+  ]));
+
+  assert.equal(plan.items[0].sub, null);
+  assert.equal(plan.items[1].sub, 'D:\\profiles\\fresh');
 });
 
 test('one account means nothing to choose between, but it is still named', () => {
   const plan = appLaunchPlan(claudeDesktop([
-    { dir: 'C:\\standard', label: 'Main Account', isDefault: true, isOpen: true, added: false },
+    { dir: 'C:\\standard', label: 'Main Account', accountId: 'claude-default', isDefault: true, isOpen: true, added: false },
   ]));
 
   assert.equal(plan.openLabel, 'Main Account');
@@ -57,13 +68,14 @@ test('one account means nothing to choose between, but it is still named', () =>
 
 test('only a folder added by hand can be taken back off the list', () => {
   const plan = appLaunchPlan(claudeDesktop([
-    { dir: 'C:\\standard', label: 'Main Account', isDefault: true, isOpen: true, added: false },
-    { dir: 'D:\\profiles\\work', label: 'work', isDefault: false, isOpen: false, added: true },
+    { dir: 'C:\\standard', label: 'Main Account', accountId: 'claude-default', isDefault: true, isOpen: true, added: false },
+    { dir: 'D:\\profiles\\work', label: 'work', accountId: null, isDefault: false, isOpen: false, added: true },
   ]));
 
   const forget = plan.items.filter((i) => i.kind === 'forget');
   assert.deepEqual(forget.map((i) => i.label), ['Stop offering work']);
   assert.equal(forget[0].dir, 'D:\\profiles\\work');
+  assert.equal(forget[0].sub, 'D:\\profiles\\work', 'taking a folder off the list is about the folder, so it is named');
 });
 
 test('an app whose accounts could not be worked out is never given a half-built menu', () => {
