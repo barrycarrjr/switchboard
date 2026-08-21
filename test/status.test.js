@@ -34,8 +34,9 @@ test('collectStatus reports every provider, marks the active account, and attach
     registry,
     envReader: (name) => (name === 'CLAUDE_CONFIG_DIR' ? spare.home : null),
     fetchImpl: usageFetch({
-      'tok-claude-primary': { five_hour: { utilization: 0.12 } },
-      'tok-claude-secondary': { five_hour: { utilization: 0.99 }, seven_day: { utilization: 1 } },
+      // utilization is a percentage: 12 means twelve percent. See core/quota.js.
+      'tok-claude-primary': { five_hour: { utilization: 12 } },
+      'tok-claude-secondary': { five_hour: { utilization: 99 }, seven_day: { utilization: 100 } },
     }),
     now: NOW,
   });

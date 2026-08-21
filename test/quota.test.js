@@ -3,15 +3,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { toPercent, toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, toExactPercent, codexWindowLabel, mapCodexRateLimits, codexQuota, providerQuota } from '../core/quota.js';
+import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexQuota, providerQuota } from '../core/quota.js';
 
-test('toPercent accepts fractions and percents, clamps, and passes null through', () => {
-  assert.equal(toPercent(0.34), 34);
-  assert.equal(toPercent(62), 62);
-  assert.equal(toPercent(1), 100);   // 1 is treated as a full fraction
-  assert.equal(toPercent(140), 100);
-  assert.equal(toPercent(null), null);
-  assert.equal(toPercent('nan'), null);
+test('toExactPercent reads every value as a percent, clamps, and passes null through', () => {
+  assert.equal(toExactPercent(34), 34);
+  assert.equal(toExactPercent(62), 62);
+  assert.equal(toExactPercent(1), 1);      // one percent, never a full fraction
+  assert.equal(toExactPercent(0.4), 0);
+  assert.equal(toExactPercent(140), 100);
+  assert.equal(toExactPercent(-5), 0);
+  assert.equal(toExactPercent(null), null);
+  assert.equal(toExactPercent('nan'), null);
+});
+
+test('fractionToPercent converts a genuine 0-1 ratio', () => {
+  assert.equal(fractionToPercent(0.248), 25);
+  assert.equal(fractionToPercent(1), 100);
+  assert.equal(fractionToPercent(null), null);
 });
 
 test('toEpochMs handles seconds, ms, and ISO strings', () => {
@@ -22,11 +30,11 @@ test('toEpochMs handles seconds, ms, and ISO strings', () => {
   assert.equal(toEpochMs(null), null);
 });
 
-test('mapUsage maps the known windows and reports extra usage in dollars from cents', () => {
+test('mapUsage maps the named windows and reports extra usage in dollars from cents', () => {
   const windows = mapUsage({
-    five_hour: { utilization: 0.34, resets_at: 1766000000 },
+    five_hour: { utilization: 34, resets_at: 1766000000 },
     seven_day: { utilization: 62, resets_at: '2026-08-20T09:00:00Z' },
-    seven_day_opus: { utilization: 0.91 },
+    seven_day_opus: { utilization: 91 },
     extra_usage: { is_enabled: true, used_credits: 1240, monthly_limit: 5000 },
   });
   const byKey = Object.fromEntries(windows.map((w) => [w.key, w]));
@@ -36,6 +44,50 @@ test('mapUsage maps the known windows and reports extra usage in dollars from ce
   assert.equal(byKey.week_opus.usedPercent, 91);
   assert.equal(byKey.extra.valueLabel, '$12.40 / $50.00');
   assert.equal(byKey.extra.usedPercent, 25);
+});
+
+// The shape of a real 2026-08-21 reply from an account that had used 2% and 1%.
+// Reading either as a 0-1 fraction reported "limit reached" for a nearly unused
+// subscription, and with the quota watch on auto that switched the machine default.
+test('mapUsage reads one percent as one percent, from the limits array', () => {
+  const windows = mapUsage({
+    five_hour: { utilization: 2.0, resets_at: '2026-08-21T18:30:00Z' },
+    seven_day: { utilization: 1.0, resets_at: '2026-08-28T01:00:00Z' },
+    limits: [
+      { kind: 'session', percent: 2, resets_at: '2026-08-21T18:30:00Z', scope: null },
+      { kind: 'weekly_all', percent: 1, resets_at: '2026-08-28T01:00:00Z', scope: null },
+      { kind: 'weekly_scoped', percent: 0, resets_at: null, scope: { model: { id: null, display_name: 'Fable' } } },
+    ],
+    extra_usage: { is_enabled: false },
+  });
+  const byKey = Object.fromEntries(windows.map((w) => [w.key, w]));
+  assert.equal(byKey.session.usedPercent, 2);
+  assert.equal(byKey.session.resetsAt, Date.parse('2026-08-21T18:30:00Z'));
+  assert.equal(byKey.week.usedPercent, 1);
+  assert.equal(byKey.week.label, 'Week (all models)');
+  assert.equal(byKey.week_fable.usedPercent, 0);
+  assert.equal(byKey.week_fable.label, 'Week (Fable)');
+  assert.equal(byKey.extra.valueLabel, 'Not enabled');
+});
+
+test('mapUsage keeps an unfamiliar limit without letting it take a known key', () => {
+  const windows = mapUsage({
+    limits: [
+      { kind: 'weekly_all', percent: 3 },
+      { kind: 'monthly_experiment', percent: 7 },
+      { kind: 'weekly_all', percent: 9 },
+    ],
+  });
+  assert.deepEqual(windows.map((w) => [w.key, w.label, w.usedPercent]), [
+    ['week', 'Week (all models)', 3],
+    ['monthly_experiment', 'Monthly experiment', 7],
+    ['week2', 'Week (all models)', 9],
+  ]);
+});
+
+test('mapUsage ignores a limit that carries no reading', () => {
+  const windows = mapUsage({ limits: [{ kind: 'session', percent: null }, { kind: 'weekly_all', percent: 4 }] });
+  assert.deepEqual(windows.map((w) => w.key), ['week']);
 });
 
 test('mapUsage reports disabled extra usage without inventing numbers', () => {

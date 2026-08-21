@@ -18,11 +18,25 @@ export function readAccessToken(home) {
   }
 }
 
-/** Convert a utilization value to a 0-100 integer. Accepts 0-1 fractions or 0-100 percents. */
-export function toPercent(utilization) {
-  if (utilization == null || Number.isNaN(Number(utilization))) return null;
-  const n = Number(utilization);
-  return Math.max(0, Math.min(100, Math.round(n <= 1 ? n * 100 : n)));
+/**
+ * Percent-only conversion to a 0-100 integer, shared by every usage source here.
+ *
+ * Every source reports percentages, never 0-1 fractions: the usage endpoint sends
+ * "utilization": 1.0 for an account that has used ONE percent, and says so twice in
+ * the same reply ("limits":[{"kind":"weekly_all","percent":1}]). Reading a value of
+ * 1 or less as a fraction therefore turns 1% into 100%, which shows a healthy account
+ * as "limit reached" and lets the quota watch switch away from it. Verified against a
+ * live response on 2026-08-21.
+ */
+export function toExactPercent(value) {
+  if (value == null || Number.isNaN(Number(value))) return null;
+  return Math.max(0, Math.min(100, Math.round(Number(value))));
+}
+
+/** For the one genuine ratio in this file: extra-usage credits spent over the cap. */
+export function fractionToPercent(fraction) {
+  if (fraction == null || Number.isNaN(Number(fraction))) return null;
+  return toExactPercent(Number(fraction) * 100);
 }
 
 /** Normalize a reset timestamp (epoch seconds, epoch ms, or ISO string) to epoch ms. */
@@ -34,32 +48,85 @@ export function toEpochMs(value) {
 }
 
 /**
+ * The window each entry of the endpoint's `limits` array describes. The keys are the
+ * contract the rest of the app reads by name (see core/lanes-util.js), so a limit that
+ * is not one of these may never take their key.
+ */
+const LIMIT_KINDS = {
+  session: ['session', 'Session (5h)'],
+  weekly_all: ['week', 'Week (all models)'],
+  weekly_opus: ['week_opus', 'Week (Opus)'],
+  weekly_sonnet: ['week_sonnet', 'Week (Sonnet)'],
+};
+
+function humanKind(kind) {
+  const text = String(kind ?? '').replace(/_/g, ' ').trim();
+  return text ? text[0].toUpperCase() + text.slice(1) : 'Usage';
+}
+
+/**
+ * One entry of the `limits` array. An unfamiliar kind is still a real limit, so it is
+ * named from what the reply itself says rather than dropped; `used` keeps every key
+ * distinct so one window can never overwrite another.
+ */
+function limitWindow(limit, used) {
+  if (!limit || limit.percent == null) return null;
+  const model = typeof limit.scope?.model?.display_name === 'string' && limit.scope.model.display_name.length
+    ? limit.scope.model.display_name
+    : null;
+  let [key, label] = LIMIT_KINDS[limit.kind] ?? [];
+  if (!key) {
+    const slug = String(model ?? limit.kind ?? 'usage').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    key = (String(limit.kind ?? '').startsWith('weekly') ? `week_${slug}` : slug) || 'usage';
+    label = model ? `Week (${model})` : humanKind(limit.kind);
+  }
+  while (used.has(key)) key += '2';
+  used.add(key);
+  return { key, label, usedPercent: toExactPercent(limit.percent), resetsAt: toEpochMs(limit.resets_at) };
+}
+
+/**
  * Map the usage endpoint's body into display windows. Pure, so it is testable and so a
  * silent change in the (undocumented) endpoint shows up as nulls, never as invented data.
+ *
+ * `limits` is preferred because it states each window's kind and integer percent
+ * outright; the named objects are the older shape and are read only when it is absent.
  */
 export function mapUsage(body) {
   const windows = [];
+  const used = new Set();
   const push = (key, label, w) => {
     if (!w) return;
-    windows.push({ key, label, usedPercent: toPercent(w.utilization), resetsAt: toEpochMs(w.resets_at) });
+    used.add(key);
+    windows.push({ key, label, usedPercent: toExactPercent(w.utilization), resetsAt: toEpochMs(w.resets_at) });
   };
-  push('session', 'Session (5h)', body.five_hour);
-  push('week', 'Week (all models)', body.seven_day);
-  push('week_sonnet', 'Week (Sonnet)', body.seven_day_sonnet);
-  push('week_opus', 'Week (Opus)', body.seven_day_opus);
+  if (Array.isArray(body.limits) && body.limits.length > 0) {
+    for (const limit of body.limits) {
+      const window = limitWindow(limit, used);
+      if (window) windows.push(window);
+    }
+  } else {
+    push('session', 'Session (5h)', body.five_hour);
+    push('week', 'Week (all models)', body.seven_day);
+    push('week_sonnet', 'Week (Sonnet)', body.seven_day_sonnet);
+    push('week_opus', 'Week (Opus)', body.seven_day_opus);
+  }
   const extra = body.extra_usage;
   if (extra) {
     const enabled = extra.is_enabled !== false;
-    const used = Number(extra.used_credits);
+    const used_credits = Number(extra.used_credits);
     const limit = Number(extra.monthly_limit);
+    const share = extra.utilization != null
+      ? toExactPercent(extra.utilization)
+      : (limit > 0 ? fractionToPercent(used_credits / limit) : null);
     windows.push({
       key: 'extra',
       label: 'Extra usage',
-      usedPercent: enabled ? toPercent(extra.utilization ?? (limit > 0 ? used / limit : null)) : null,
+      usedPercent: enabled ? share : null,
       resetsAt: null,
       // the endpoint reports cents
-      valueLabel: enabled && Number.isFinite(used) && Number.isFinite(limit)
-        ? `$${(used / 100).toFixed(2)} / $${(limit / 100).toFixed(2)}`
+      valueLabel: enabled && Number.isFinite(used_credits) && Number.isFinite(limit)
+        ? `$${(used_credits / 100).toFixed(2)} / $${(limit / 100).toFixed(2)}`
         : (enabled ? null : 'Not enabled'),
     });
   }
@@ -221,11 +288,7 @@ export const CODEX_STALE_MS = 24 * 60 * 60 * 1000;
 const CODEX_TAIL_BYTES = 256 * 1024;
 const CODEX_FILES_SCANNED = 8;
 
-/** Percent-only conversion: Codex reports 6.0 meaning six percent, never a fraction. */
-export function toExactPercent(value) {
-  if (value == null || Number.isNaN(Number(value))) return null;
-  return Math.max(0, Math.min(100, Math.round(Number(value))));
-}
+// Codex reports 6.0 meaning six percent, so it shares toExactPercent above.
 
 export function codexWindowLabel(minutes) {
   const n = Number(minutes);
