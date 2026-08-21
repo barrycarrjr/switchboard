@@ -130,6 +130,13 @@
   .signin-status .btn{min-height:32px;margin-left:auto;padding:4px 9px;flex:0 0 auto}
   .addbtn{width:100%;font:inherit;font-size:.83rem;padding:7px;border:1px dashed #b9c0c9;border-radius:8px;background:none;color:var(--muted);cursor:pointer;margin:4px 0 2px}
   .addbtn:hover{color:var(--accent);border-color:var(--accent)}
+  .tool-shelf{display:none}
+  .tool-shelf.open{display:grid;gap:6px;margin:6px 0 2px}
+  .tool-row{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+  .tool-row-text{flex:1;min-width:0}
+  .tool-row-text b{font-size:.9rem;display:block}
+  .tool-row-text span{display:block;color:var(--muted);font-size:.76rem;line-height:1.45;margin-top:1px}
+  .tool-row .btn{flex:0 0 auto;min-height:32px;padding:4px 9px}
   .panelnote{color:var(--muted);font-size:.76rem;margin:10px 2px 2px;line-height:1.45}
   .prov{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:6px 0;display:flex;align-items:center;gap:10px;position:relative}
   .kebab{border:none;background:none;font:inherit;font-size:1rem;color:var(--muted);cursor:pointer;padding:2px 8px;border-radius:6px;line-height:1}
@@ -295,8 +302,10 @@ function setUsageSummary(node, text, tone = '') {
   node.textContent = text;
 }
 
-function showUsageState(host, summary, { title, detail, tone = '', loading = false, actions = [] }) {
-  setUsageSummary(summary, title, tone === 'bad' ? 'hot' : tone);
+function showUsageState(host, summary, { title, detail, tone = '', loading = false, actions = [], summaryText = null }) {
+  // The box already carries the title, so a card with nothing to measure passes an
+  // empty summary rather than printing the same sentence twice.
+  setUsageSummary(summary, summaryText ?? title, tone === 'bad' ? 'hot' : tone);
   if (loading) host.setAttribute('aria-busy', 'true');
   const box = el('div', 'usage-state' + (tone ? ` ${tone}` : ''));
   box.appendChild(el('strong', null, esc(title)));
@@ -433,7 +442,7 @@ function renderUsageWindows(host, summary, q) {
       const value = el('div', 'quota-value');
       value.appendChild(el('strong', null, esc(w.valueLabel ?? 'Not reported')));
       if (!w.valueLabel || w.valueLabel !== 'Not enabled') {
-        value.appendChild(el('div', 'quota-value-note', 'No percentage reported — not 0% used'));
+        value.appendChild(el('div', 'quota-value-note', 'No percentage reported, not 0% used'));
       }
       metric.appendChild(value);
     }
@@ -451,357 +460,414 @@ function renderUsageWindows(host, summary, q) {
   return true;
 }
 
-async function renderAccounts() {
-  const seq = beginRender('accounts');
-  const state = await sb.state();
-  state.candidates = await sb.candidates();
-  const realPanel = $('#tab-accounts');
-  const panel = el('div');
+/**
+ * Every entry on this page is the same card: who it is, what its usage is, and what
+ * its sign-in is. A tool that cannot report usage says so inside the usage area
+ * rather than getting a card shape of its own, so the page reads as one system.
+ */
+function cardShell({ titleId, title, badge = null, person = null, folder = null, actions = [], accent = false }) {
+  const card = el('article', 'acct account-card' + (accent ? ' is-default' : ''));
+  card.setAttribute('aria-labelledby', titleId);
+  const header = el('header', 'account-head');
+  const identity = el('div', 'account-identity');
+  const titleRow = el('div', 'account-title');
+  const name = el('h3', 'account-name', esc(title));
+  name.id = titleId;
+  titleRow.appendChild(name);
+  if (badge) titleRow.appendChild(el('span', 'badge default-badge', esc(badge)));
+  identity.appendChild(titleRow);
+  if (person) {
+    const personLine = el('div', 'account-person', esc(person));
+    personLine.title = person;
+    identity.appendChild(personLine);
+  }
+  if (folder) {
+    const open = el('button', 'account-path', esc(folder));
+    open.type = 'button';
+    open.title = `Open folder: ${folder}`;
+    open.setAttribute('aria-label', `Open ${title} folder: ${folder}`);
+    open.addEventListener('click', () => sb.openPath(folder));
+    identity.appendChild(open);
+  }
+  header.appendChild(identity);
+  const actionRow = el('div', 'account-actions');
+  for (const action of actions) actionRow.appendChild(action);
+  header.appendChild(actionRow);
+  card.appendChild(header);
+  return { card, name };
+}
 
-  for (const p of Object.values(state.providers)) {
-    const mine = state.accounts
-      .filter((a) => a.provider === p.id)
-      .sort((a, b) => Number(b.id === p.activeAccountId) - Number(a.id === p.activeAccountId));
-    const active = mine.find((a) => a.id === p.activeAccountId);
-    const providerSection = el('section', 'provider-section');
-    const providerTitleId = `provider-${p.id}`;
-    providerSection.setAttribute('aria-labelledby', providerTitleId);
-    const providerHead = el('div', 'provider-head');
-    const providerTitle = el('h2', 'grouphead', esc(p.name));
-    providerTitle.id = providerTitleId;
-    providerHead.appendChild(providerTitle);
-    const providerSummary = el('div', 'provider-summary');
-    providerSummary.textContent = active
-      ? `Default for new sessions: ${active.label} · ${mine.length} account${mine.length === 1 ? '' : 's'}`
-      : mine.length ? `${mine.length} account${mine.length === 1 ? '' : 's'} · no registered default` : 'No accounts yet';
-    providerHead.appendChild(providerSummary);
-    providerSection.appendChild(providerHead);
+function cardButton(label, onClick, { primary = false, ghost = false, title = null } = {}) {
+  const button = el('button', 'btn' + (primary ? ' primary' : '') + (ghost ? ' ghost' : ''), esc(label));
+  button.type = 'button';
+  if (title) button.title = title;
+  button.addEventListener('click', onClick);
+  return button;
+}
 
-    const accountGrid = el('div', 'account-grid');
-    for (const a of mine) {
-      const isDefault = a.id === p.activeAccountId;
-      const login = a.login || {
-        signedIn: null, level: 'info', detail: 'Sign-in status unavailable', verified: false,
-      };
-      const loginIdentity = (value) => JSON.stringify([
-        value?.authMethod ?? null,
-        value?.apiProvider ?? null,
-        value?.email ?? null,
-        value?.organizationUuid ?? null,
-      ]);
-      const openAccountSignin = async () => {
-        try {
-          await sb.signin(a.id);
-          toast(`Opened the ${a.label} sign-in terminal.`);
-          pollUntil(
-            async () => {
-              const refreshed = await sb.state(a.id);
-              const refreshedLogin = refreshed.accounts.find((candidate) => candidate.id === a.id)?.login;
-              if (refreshedLogin?.signedIn !== true) return false;
-              if (login.signedIn !== true) return true;
-              return refreshedLogin.credentialRevision !== login.credentialRevision
-                || loginIdentity(refreshedLogin) !== loginIdentity(login);
-            },
-            () => {
-              toast(`${a.label} is signed in.`);
-              renderAccounts();
-            },
-            () => {
-              toast(`Still waiting for ${a.label} to sign in. Check the terminal, then reopen Accounts.`);
-              renderAccounts();
-            },
-          );
-        } catch (e) {
-          toast('Could not open sign-in: ' + (e.message || e));
-        }
-      };
-      const titleId = `account-${p.id}-${a.id}`.replace(/[^a-zA-Z0-9_-]/g, '-');
-      const card = el('article', 'acct account-card' + (isDefault ? ' is-default' : ''));
-      card.setAttribute('aria-labelledby', titleId);
+/** The usage half of a card. The caller fills the content in, live or static. */
+function cardUsage(card) {
+  const area = el('section', 'account-area usage-area');
+  const head = el('div', 'area-head');
+  head.appendChild(el('h4', 'area-title', 'Usage'));
+  const summary = el('span', 'usage-summary', 'Checking&hellip;');
+  head.appendChild(summary);
+  area.appendChild(head);
+  const content = el('div', 'usage-content');
+  content.setAttribute('role', 'status');
+  content.setAttribute('aria-live', 'polite');
+  content.tabIndex = -1;
+  area.appendChild(content);
+  card.appendChild(area);
+  return { summary, content };
+}
 
-      const header = el('header', 'account-head');
-      const identity = el('div', 'account-identity');
-      const titleRow = el('div', 'account-title');
-      const name = el('h3', 'account-name', esc(a.label));
-      name.id = titleId;
-      titleRow.appendChild(name);
-      if (isDefault) titleRow.appendChild(el('span', 'badge default-badge', 'DEFAULT'));
-      identity.appendChild(titleRow);
-      const person = [login.email, login.plan ? `${login.plan} plan` : null].filter(Boolean).join(' · ');
-      if (person) {
-        const personLine = el('div', 'account-person', esc(person));
-        personLine.title = person;
-        identity.appendChild(personLine);
-      }
-      const folder = el('button', 'account-path', esc(a.home));
-      folder.type = 'button';
-      folder.title = `Open folder: ${a.home}`;
-      folder.setAttribute('aria-label', `Open ${a.label} account folder: ${a.home}`);
-      folder.addEventListener('click', () => sb.openPath(a.home));
-      identity.appendChild(folder);
-      header.appendChild(identity);
+/** The sign-in half of a card. `button` is the caller's node so it can keep it. */
+function cardSignIn(card, { signedIn, detail, level = 'ok', note = null, button = null }) {
+  const unknown = signedIn == null;
+  const needsSignIn = signedIn === false || level === 'warn';
+  const tone = needsSignIn ? ' warn' : unknown ? ' unknown' : '';
+  const area = el('section', 'account-area signin-area' + tone);
+  const head = el('div', 'area-head');
+  head.appendChild(el('h4', 'area-title', 'Sign-in'));
+  area.appendChild(head);
+  const status = el('div', 'signin-status' + tone);
+  const dot = el('span', 'status-dot');
+  dot.setAttribute('aria-hidden', 'true');
+  status.appendChild(dot);
+  status.appendChild(el('strong', null, esc(detail)));
+  if (note) status.appendChild(el('span', 'signin-verified', esc(note)));
+  if (button) status.appendChild(button);
+  area.appendChild(status);
+  card.appendChild(area);
+  return area;
+}
 
-      const actions = el('div', 'account-actions');
-      if (!isDefault) {
-        const makeDefault = el('button', 'btn primary', 'Make default');
-        makeDefault.type = 'button';
-        makeDefault.title = `Use ${a.label} for new ${p.name} sessions`;
-        makeDefault.addEventListener('click', async () => {
-          try {
-            await sb.setActive(a.id);
-            toast(`New terminals and apps will use ${p.name}: ${a.label}. Running processes are unchanged.`);
-          } catch (e) {
-            toast('Switch failed: ' + (e.message || e));
-          }
-        });
-        actions.appendChild(makeDefault);
-      }
+/** A titled group of cards, with the one-line summary that belongs to the group. */
+function toolSection(id, title, summary) {
+  const section = el('section', 'provider-section');
+  const titleId = `provider-${id}`;
+  section.setAttribute('aria-labelledby', titleId);
+  const head = el('div', 'provider-head');
+  const heading = el('h2', 'grouphead', esc(title));
+  heading.id = titleId;
+  head.appendChild(heading);
+  const summaryLine = el('div', 'provider-summary');
+  summaryLine.textContent = summary ?? '';
+  head.appendChild(summaryLine);
+  section.appendChild(head);
+  return section;
+}
 
-      const rename = el('button', 'btn', 'Rename');
-      rename.type = 'button';
-      rename.setAttribute('aria-label', `Rename ${a.label}`);
-      rename.addEventListener('click', () => {
-        const input = el('input', 'account-name-input');
-        input.id = titleId;
-        input.value = a.label;
-        input.setAttribute('aria-label', `New name for ${a.label}`);
-        name.replaceWith(input);
-        rename.disabled = true;
-        input.focus();
-        input.select();
-        let done = false;
-        const commit = async () => {
-          if (done) return;
-          done = true;
-          const value = input.value.trim();
-          let refreshExpected = false;
-          if (value && value !== a.label) {
-            try {
-              await sb.rename(a.id, value);
-              refreshExpected = true;
-            } catch (e) {
-              toast('Rename failed: ' + (e.message || e));
-            }
-          }
-          if (!refreshExpected) renderAccounts();
-        };
-        input.addEventListener('keydown', (ev) => {
-          if (ev.key === 'Enter') commit();
-          if (ev.key === 'Escape') { ev.preventDefault(); done = true; renderAccounts(); }
-        });
-        input.addEventListener('blur', commit);
-      });
-      actions.appendChild(rename);
+/**
+ * Which tools get a section of their own. A tool you actually have (a registered
+ * account, or a signed-in folder waiting to be registered) earns the space. The rest
+ * belong behind "Add another tool", so the page shows your machine rather than a
+ * catalogue of everything Switchboard could manage.
+ */
+function splitToolsByPresence(providers, accounts, candidates) {
+  const mine = (p) => accounts.some((a) => a.provider === p.id) || candidates.some((c) => c.provider === p.id);
+  return { present: providers.filter(mine), absent: providers.filter((p) => !mine(p)) };
+}
 
-      if (!isDefault) {
-        const remove = el('button', 'btn ghost', 'Remove');
-        remove.type = 'button';
-        remove.title = 'Unregister (the folder is never deleted)';
-        remove.addEventListener('click', async () => {
-          if (!confirm(`Unregister "${a.label}"? The folder and its login are not touched.`)) return;
-          try {
-            await sb.removeAccount(a.id);
-          } catch (e) {
-            toast('Remove failed: ' + (e.message || e));
-          }
-        });
-        actions.appendChild(remove);
-      }
-      header.appendChild(actions);
-      card.appendChild(header);
+async function addToolAccount(p) {
+  try {
+    const r = await sb.addAccount(p.id);
+    if (r.ok) toast(`Registered "${r.account.label}". Sign it in from a terminal: ${r.loginHint}`);
+  } catch (e) {
+    toast('Could not add that account: ' + (e.message || e));
+  }
+}
 
-      const usageArea = el('section', 'account-area usage-area');
-      const usageHead = el('div', 'area-head');
-      usageHead.appendChild(el('h4', 'area-title', 'Usage'));
-      const usageSummary = el('span', 'usage-summary', 'Checking…');
-      usageHead.appendChild(usageSummary);
-      usageArea.appendChild(usageHead);
-      const usageContent = el('div', 'usage-content');
-      usageContent.setAttribute('role', 'status');
-      usageContent.setAttribute('aria-live', 'polite');
-      usageContent.tabIndex = -1;
-      usageArea.appendChild(usageContent);
-      card.appendChild(usageArea);
-
-      if (p.hasQuota) {
-        const showLoading = () => showUsageState(usageContent, usageSummary, {
-          title: 'Checking usage…',
-          detail: 'Requesting the latest available reading.',
-          loading: true,
-        });
-        const fillQuota = async (attempt = 0, force = false) => {
-          let q;
-          try {
-            q = await sb.quota(a.id, force);
-          } catch {
-            q = { error: 'unavailable' };
-          }
-          // One silent retry absorbs transient endpoint blips before anything is shown.
-          if (q.error === 'unavailable' && attempt === 0) {
-            // The main process backs transient errors off for normal renders. This
-            // one deliberate retry must bypass that negative cache.
-            setTimeout(() => fillQuota(1, true), 2500);
-            return;
-          }
-          const retry = {
-            label: 'Retry',
-            onClick: () => {
-              showLoading();
-              usageContent.focus();
-              fillQuota(1, true);
-            },
-          };
-          if (q.error === 'no-credentials') {
-            const stateActions = [];
-            if (p.id === 'claude') {
-              stateActions.push({
-                label: 'Choose Claude Desktop data…',
-                onClick: async () => {
-                  try {
-                    const result = await sb.setUsageSource(a.id);
-                    if (result.ok) renderAccounts();
-                    else if (result.error) toast(result.error);
-                  } catch (e) {
-                    toast('Could not select usage data: ' + (e.message || e));
-                  }
-                },
-              });
-            }
-            stateActions.push(retry);
-            showUsageState(usageContent, usageSummary, {
-              title: 'Usage unavailable',
-              detail: login.signedIn === true
-                ? 'This account is signed in, but Switchboard cannot retrieve usage from this profile.'
-                : login.signedIn === false
-                  ? 'Sign in to this account before checking usage. This is unknown, not 0% used.'
-                  : 'Switchboard could not verify sign-in or retrieve usage. This is unknown, not 0% used.',
-              actions: stateActions,
-            });
-            return;
-          }
-          if (q.error === 'no-usage-data') {
-            const stateActions = [];
-            if (p.usageUrl) stateActions.push({ label: 'View official usage', onClick: () => sb.openExternal(p.usageUrl) });
-            stateActions.push(retry);
-            showUsageState(usageContent, usageSummary, {
-              title: 'No usage sample yet',
-              detail: 'Run this account once and the figures will appear. This is unknown, not 0% used.',
-              actions: stateActions,
-            });
-            return;
-          }
-          if (q.error === 'auth') {
-            showUsageState(usageContent, usageSummary, {
-              title: 'Usage authorization failed',
-              detail: 'Re-authenticate this account, run one prompt in that terminal, then retry the usage check.',
-              tone: 'warn',
-              actions: [
-                { label: 'Re-authenticate', primary: true, onClick: openAccountSignin },
-                retry,
-              ],
-            });
-            return;
-          }
-          if (q.error === 'rate-limited') {
-            showUsageState(usageContent, usageSummary, {
-              title: 'Usage check rate-limited',
-              detail: 'No new reading is available yet. The provider should allow another check shortly.',
-              tone: 'warn',
-              actions: [retry],
-            });
-            return;
-          }
-          if (q.error) {
-            showUsageState(usageContent, usageSummary, {
-              title: 'Usage temporarily unavailable',
-              detail: 'Switchboard could not retrieve a current reading. This is unknown, not 0% used.',
-              actions: [retry],
-            });
-            return;
-          }
-          if (!renderUsageWindows(usageContent, usageSummary, q)) {
-            const box = usageContent.querySelector('.usage-state');
-            const actionRow = el('div', 'usage-state-actions');
-            const retryButton = el('button', 'btn', 'Retry');
-            retryButton.type = 'button';
-            retryButton.addEventListener('click', retry.onClick);
-            actionRow.appendChild(retryButton);
-            box.appendChild(actionRow);
-          }
-        };
-        showLoading();
-        fillQuota();
-      } else {
-        showUsageState(usageContent, usageSummary, {
-          title: 'Usage not reported',
-          detail: p.quotaNote || 'This provider exposes no usage source Switchboard can read.',
-        });
-      }
-
-      const signUnknown = login.signedIn == null;
-      const needsSignIn = login.signedIn === false || login.level === 'warn';
-      const signTone = needsSignIn ? ' warn' : signUnknown ? ' unknown' : '';
-      const signArea = el('section', 'account-area signin-area' + signTone);
-      const signHead = el('div', 'area-head');
-      signHead.appendChild(el('h4', 'area-title', 'Sign-in'));
-      signArea.appendChild(signHead);
-      const signStatus = el('div', 'signin-status' + signTone);
-      const dot = el('span', 'status-dot');
-      dot.setAttribute('aria-hidden', 'true');
-      signStatus.appendChild(dot);
-      signStatus.appendChild(el('strong', null, esc(login.detail)));
-      if (login.verified) signStatus.appendChild(el('span', 'signin-verified', 'Status checked by Claude Code'));
-      const signAction = login.signedIn === true
-        ? 'Re-authenticate'
-        : needsSignIn ? 'Sign in' : signUnknown ? 'Open account terminal' : 'Re-authenticate';
-      const signIn = el('button', 'btn', signAction);
-      signIn.type = 'button';
-      signIn.title = `Opens a terminal preset to ${a.label}`;
-      signIn.addEventListener('click', openAccountSignin);
-      signStatus.appendChild(signIn);
-      signArea.appendChild(signStatus);
-      card.appendChild(signArea);
-      accountGrid.appendChild(card);
+/** One registered account: the only card here that can switch, rename and report usage. */
+function accountCard(p, account) {
+  const a = account;
+  const isDefault = a.id === p.activeAccountId;
+  const login = a.login || {
+    signedIn: null, level: 'info', detail: 'Sign-in status unavailable', verified: false,
+  };
+  const loginIdentity = (value) => JSON.stringify([
+    value?.authMethod ?? null,
+    value?.apiProvider ?? null,
+    value?.email ?? null,
+    value?.organizationUuid ?? null,
+  ]);
+  const openAccountSignin = async () => {
+    try {
+      await sb.signin(a.id);
+      toast(`Opened the ${a.label} sign-in terminal.`);
+      pollUntil(
+        async () => {
+          const refreshed = await sb.state(a.id);
+          const refreshedLogin = refreshed.accounts.find((candidate) => candidate.id === a.id)?.login;
+          if (refreshedLogin?.signedIn !== true) return false;
+          if (login.signedIn !== true) return true;
+          return refreshedLogin.credentialRevision !== login.credentialRevision
+            || loginIdentity(refreshedLogin) !== loginIdentity(login);
+        },
+        () => {
+          toast(`${a.label} is signed in.`);
+          renderAccounts();
+        },
+        () => {
+          toast(`Still waiting for ${a.label} to sign in. Check the terminal, then reopen Accounts.`);
+          renderAccounts();
+        },
+      );
+    } catch (e) {
+      toast('Could not open sign-in: ' + (e.message || e));
     }
-    if (mine.length) providerSection.appendChild(accountGrid);
+  };
 
-    for (const c of (state.candidates || []).filter((x) => x.provider === p.id)) {
-      const card = el('div', 'acct');
-      const top = el('div', 'top');
-      top.appendChild(el('div', 'who', `<b>Found: ${esc(c.label)}</b><span>${esc(c.home)}</span>`));
-      top.appendChild(el('div', 'sp'));
-      const reg = el('button', 'btn primary', 'Register');
-      reg.addEventListener('click', async () => {
-        await sb.register(c);
-        toast(`Registered "${c.label}".`);
-      });
-      top.appendChild(reg);
-      card.appendChild(top);
-      card.appendChild(el('div', 'qnote', 'This folder looks like a signed-in account that is not registered yet.'));
-      providerSection.appendChild(card);
-    }
-
-    const add = el('button', 'addbtn', `+ Add ${esc(p.name)} account`);
-    add.addEventListener('click', async () => {
-      const r = await sb.addAccount(p.id);
-      if (r.ok) toast(`Registered "${r.account.label}". Sign it in from a terminal: ${r.loginHint}`);
-    });
-    providerSection.appendChild(add);
-    panel.appendChild(providerSection);
+  const titleId = `account-${p.id}-${a.id}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const actions = [];
+  if (!isDefault) {
+    actions.push(cardButton('Make default', async () => {
+      try {
+        await sb.setActive(a.id);
+        toast(`New terminals and apps will use ${p.name}: ${a.label}. Running processes are unchanged.`);
+      } catch (e) {
+        toast('Switch failed: ' + (e.message || e));
+      }
+    }, { primary: true, title: `Use ${a.label} for new ${p.name} sessions` }));
+  }
+  const rename = cardButton('Rename', () => startRename());
+  rename.setAttribute('aria-label', `Rename ${a.label}`);
+  actions.push(rename);
+  if (!isDefault) {
+    actions.push(cardButton('Remove', async () => {
+      if (!confirm(`Unregister "${a.label}"? The folder and its login are not touched.`)) return;
+      try {
+        await sb.removeAccount(a.id);
+      } catch (e) {
+        toast('Remove failed: ' + (e.message || e));
+      }
+    }, { ghost: true, title: 'Unregister (the folder is never deleted)' }));
   }
 
-  panel.appendChild(el('h2', 'grouphead', 'Antigravity (Google)'));
+  const person = [login.email, login.plan ? `${login.plan} plan` : null].filter(Boolean).join(' · ');
+  const { card, name } = cardShell({
+    titleId,
+    title: a.label,
+    badge: isDefault ? 'DEFAULT' : null,
+    person: person || null,
+    folder: a.home,
+    actions,
+    accent: isDefault,
+  });
+
+  function startRename() {
+    const input = el('input', 'account-name-input');
+    input.id = titleId;
+    input.value = a.label;
+    input.setAttribute('aria-label', `New name for ${a.label}`);
+    name.replaceWith(input);
+    rename.disabled = true;
+    input.focus();
+    input.select();
+    let done = false;
+    const commit = async () => {
+      if (done) return;
+      done = true;
+      const value = input.value.trim();
+      let refreshExpected = false;
+      if (value && value !== a.label) {
+        try {
+          await sb.rename(a.id, value);
+          refreshExpected = true;
+        } catch (e) {
+          toast('Rename failed: ' + (e.message || e));
+        }
+      }
+      if (!refreshExpected) renderAccounts();
+    };
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') commit();
+      if (ev.key === 'Escape') { ev.preventDefault(); done = true; renderAccounts(); }
+    });
+    input.addEventListener('blur', commit);
+  }
+
+  const usage = cardUsage(card);
+  if (p.hasQuota) {
+    const showLoading = () => showUsageState(usage.content, usage.summary, {
+      title: 'Checking usage…',
+      detail: 'Requesting the latest available reading.',
+      loading: true,
+    });
+    const fillQuota = async (attempt = 0, force = false) => {
+      let q;
+      try {
+        q = await sb.quota(a.id, force);
+      } catch {
+        q = { error: 'unavailable' };
+      }
+      // One silent retry absorbs transient endpoint blips before anything is shown.
+      if (q.error === 'unavailable' && attempt === 0) {
+        // The main process backs transient errors off for normal renders. This
+        // one deliberate retry must bypass that negative cache.
+        setTimeout(() => fillQuota(1, true), 2500);
+        return;
+      }
+      const retry = {
+        label: 'Retry',
+        onClick: () => {
+          showLoading();
+          usage.content.focus();
+          fillQuota(1, true);
+        },
+      };
+      if (q.error === 'no-credentials') {
+        const stateActions = [];
+        if (p.id === 'claude') {
+          stateActions.push({
+            label: 'Choose Claude Desktop data…',
+            onClick: async () => {
+              try {
+                const result = await sb.setUsageSource(a.id);
+                if (result.ok) renderAccounts();
+                else if (result.error) toast(result.error);
+              } catch (e) {
+                toast('Could not select usage data: ' + (e.message || e));
+              }
+            },
+          });
+        }
+        stateActions.push(retry);
+        showUsageState(usage.content, usage.summary, {
+          title: 'Usage unavailable',
+          detail: login.signedIn === true
+            ? 'This account is signed in, but Switchboard cannot retrieve usage from this profile.'
+            : login.signedIn === false
+              ? 'Sign in to this account before checking usage. This is unknown, not 0% used.'
+              : 'Switchboard could not verify sign-in or retrieve usage. This is unknown, not 0% used.',
+          actions: stateActions,
+        });
+        return;
+      }
+      if (q.error === 'no-usage-data') {
+        const stateActions = [];
+        if (p.usageUrl) stateActions.push({ label: 'View official usage', onClick: () => sb.openExternal(p.usageUrl) });
+        stateActions.push(retry);
+        showUsageState(usage.content, usage.summary, {
+          title: 'No usage sample yet',
+          detail: 'Run this account once and the figures will appear. This is unknown, not 0% used.',
+          actions: stateActions,
+        });
+        return;
+      }
+      if (q.error === 'auth') {
+        showUsageState(usage.content, usage.summary, {
+          title: 'Usage authorization failed',
+          detail: 'Re-authenticate this account, run one prompt in that terminal, then retry the usage check.',
+          tone: 'warn',
+          actions: [
+            { label: 'Re-authenticate', primary: true, onClick: openAccountSignin },
+            retry,
+          ],
+        });
+        return;
+      }
+      if (q.error === 'rate-limited') {
+        showUsageState(usage.content, usage.summary, {
+          title: 'Usage check rate-limited',
+          detail: 'No new reading is available yet. The provider should allow another check shortly.',
+          tone: 'warn',
+          actions: [retry],
+        });
+        return;
+      }
+      if (q.error) {
+        showUsageState(usage.content, usage.summary, {
+          title: 'Usage temporarily unavailable',
+          detail: 'Switchboard could not retrieve a current reading. This is unknown, not 0% used.',
+          actions: [retry],
+        });
+        return;
+      }
+      if (!renderUsageWindows(usage.content, usage.summary, q)) {
+        const box = usage.content.querySelector('.usage-state');
+        const actionRow = el('div', 'usage-state-actions');
+        const retryButton = el('button', 'btn', 'Retry');
+        retryButton.type = 'button';
+        retryButton.addEventListener('click', retry.onClick);
+        actionRow.appendChild(retryButton);
+        box.appendChild(actionRow);
+      }
+    };
+    showLoading();
+    fillQuota();
+  } else {
+    showUsageState(usage.content, usage.summary, {
+      title: 'Usage not reported',
+      summaryText: '',
+      detail: p.quotaNote || 'This provider exposes no usage source Switchboard can read.',
+    });
+  }
+
+  const signAction = login.signedIn === true
+    ? 'Re-authenticate'
+    : (login.signedIn === false || login.level === 'warn') ? 'Sign in'
+      : login.signedIn == null ? 'Open account terminal' : 'Re-authenticate';
+  cardSignIn(card, {
+    signedIn: login.signedIn,
+    level: login.level,
+    detail: login.detail,
+    note: login.verified ? 'Status checked by Claude Code' : null,
+    button: cardButton(signAction, openAccountSignin, { title: `Opens a terminal preset to ${a.label}` }),
+  });
+  return card;
+}
+
+/** A config folder that looks like a signed-in account nobody has registered yet. */
+function candidateCard(c) {
+  const titleId = `candidate-${c.provider}-${c.label}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const { card } = cardShell({
+    titleId,
+    title: c.label,
+    badge: 'FOUND',
+    folder: c.home,
+    actions: [cardButton('Register', async () => {
+      try {
+        await sb.register(c);
+        toast(`Registered "${c.label}".`);
+      } catch (e) {
+        toast('Could not register that folder: ' + (e.message || e));
+      }
+    }, { primary: true })],
+  });
+  const usage = cardUsage(card);
+  showUsageState(usage.content, usage.summary, {
+    title: 'Not registered yet',
+    summaryText: '',
+    detail: 'This folder looks like a signed-in account. Register it to switch to it and read its usage.',
+  });
+  return card;
+}
+
+/**
+ * Google's Antigravity. One login per machine by the vendor's design, so it can be
+ * shown and opened but never switched, and it is a different tool from Gemini CLI.
+ */
+async function antigravitySection() {
   const ag = await sb.antigravity();
-  const agCard = el('div', 'acct' + (ag.signedIn ? ' active' : ''));
-  const agTop = el('div', 'top');
-  const agSigned = ag.signedIn ? `signed in${ag.who ? ' as ' + esc(ag.who) : ''}${ag.plan ? ' (Google AI ' + esc(ag.plan) + ')' : ''}` : 'not signed in';
-  const agState = [ag.appInstalled ? 'app installed' : 'app not installed', ag.cliInstalled ? 'agy CLI installed' : 'agy CLI not installed', agSigned].join(' &middot; ');
-  agTop.appendChild(el('div', 'who', `<b>This machine's Google login</b><span>${agState}</span>`));
-  agTop.appendChild(el('div', 'sp'));
-  if (ag.signedIn) agTop.appendChild(el('span', 'badge', 'SIGNED IN'));
+  const section = toolSection('antigravity', 'Antigravity (Google)', 'One Google login per machine');
+  const who = [ag.who, ag.plan ? `Google AI ${ag.plan}` : null].filter(Boolean).join(' · ');
+  const { card } = cardShell({
+    titleId: 'account-antigravity',
+    title: 'Antigravity',
+    person: ag.signedIn ? (who || 'Signed in with Google') : null,
+  });
+  const usage = cardUsage(card);
+  showUsageState(usage.content, usage.summary, {
+    title: 'Usage not reported',
+    summaryText: '',
+    detail: 'One Google login per machine, by the vendor\'s design: no account switching, and no usage API for Switchboard to read. Check usage inside agy with /usage and credits with /credits. Gemini CLI is a different tool with its own login.',
+  });
+
+  let button = null;
   if (ag.cliInstalled) {
-    const open = el('button', 'btn', ag.signedIn ? 'Open agy terminal' : 'Sign in');
-    open.addEventListener('click', () => {
+    button = cardButton(ag.signedIn ? 'Open agy terminal' : 'Sign in', () => {
       sb.openTerminal('agy');
       if (!ag.signedIn) {
         pollUntil(async () => (await sb.antigravity()).signedIn === true, () => {
@@ -810,14 +876,12 @@ async function renderAccounts() {
         }, null);
       }
     });
-    agTop.appendChild(open);
   } else {
-    const inst = el('button', 'btn primary', 'Install CLI');
-    inst.addEventListener('click', async () => {
-      inst.disabled = true;
+    button = cardButton('Install CLI', async () => {
+      button.disabled = true;
       const r = await sb.install('antigravity', 'install');
       toast(`Opened a terminal running: ${r.cmd}`);
-      inst.textContent = 'Waiting for install…';
+      button.textContent = 'Waiting for install…';
       pollUntil(async () => (await sb.antigravity()).cliInstalled, () => {
         toast('Antigravity CLI installed. Sign in once from its terminal.');
         renderAccounts();
@@ -825,41 +889,132 @@ async function renderAccounts() {
         toast('Still not seeing agy. Check the terminal output.');
         renderAccounts();
       });
-    });
-    agTop.appendChild(inst);
+    }, { primary: true });
   }
-  agCard.appendChild(agTop);
-  agCard.appendChild(el('div', 'qnote', 'One Google login per machine, by the vendor\'s design: no account switching and no usage API for Switchboard to read. Check usage inside agy with /usage, credits with /credits.'));
-  panel.appendChild(agCard);
+  cardSignIn(card, {
+    signedIn: ag.signedIn,
+    detail: ag.signedIn ? 'Signed in' : 'Not signed in',
+    note: [ag.appInstalled ? 'app installed' : 'app not installed', ag.cliInstalled ? 'agy CLI installed' : 'agy CLI not installed'].join(' · '),
+    button,
+  });
+  const grid = el('div', 'account-grid');
+  grid.appendChild(card);
+  section.appendChild(grid);
+  return section;
+}
+
+/** Tools with one vendor sign-in and no usage to read: shown honestly, never switched. */
+function presenceSection(tools) {
+  const section = toolSection('other-tools', 'Other tool accounts', 'One sign-in each, held by the vendor');
+  const grid = el('div', 'account-grid');
+  for (const t of tools) {
+    const { card } = cardShell({
+      titleId: `account-tool-${t.id}`,
+      title: t.name,
+      person: [t.account, t.who].filter(Boolean).join(' · '),
+    });
+    const usage = cardUsage(card);
+    showUsageState(usage.content, usage.summary, {
+      title: 'Usage not reported',
+      summaryText: '',
+      detail: t.note,
+    });
+    const button = t.cliInstalled
+      ? cardButton(t.signedIn ? 'Open terminal' : 'Sign in', () => {
+        sb.openTerminal(t.bin);
+        if (!t.signedIn) {
+          pollUntil(async () => (await sb.presence()).find((x) => x.id === t.id)?.signedIn === true, () => {
+            toast(`${t.name} signed in.`);
+            renderAccounts();
+          }, null);
+        }
+      })
+      : null;
+    cardSignIn(card, {
+      signedIn: t.signedIn,
+      detail: t.signedIn ? 'Signed in' : 'Not signed in',
+      note: t.cliInstalled ? 'CLI installed' : 'CLI not installed',
+      button,
+    });
+    grid.appendChild(card);
+  }
+  section.appendChild(grid);
+  return section;
+}
+
+/** The tools you do not have, one line each, out of the way until you want one. */
+function shelfSection(absent, open) {
+  const section = el('section', 'provider-section');
+  const list = el('div', 'tool-shelf' + (open ? ' open' : ''));
+  const toggle = el('button', 'addbtn', open ? 'Hide other tools' : '+ Add another tool');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  toggle.addEventListener('click', () => {
+    const nowOpen = !list.classList.contains('open');
+    list.classList.toggle('open', nowOpen);
+    toggle.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
+    toggle.textContent = nowOpen ? 'Hide other tools' : '+ Add another tool';
+  });
+  for (const p of absent) {
+    const row = el('div', 'tool-row');
+    const text = el('div', 'tool-row-text');
+    text.appendChild(el('b', null, esc(p.name)));
+    if (p.note) text.appendChild(el('span', null, esc(p.note)));
+    row.appendChild(text);
+    row.appendChild(cardButton('Add account', () => addToolAccount(p), { title: `Register a ${p.name} config folder` }));
+    list.appendChild(row);
+  }
+  section.appendChild(toggle);
+  section.appendChild(list);
+  return section;
+}
+
+async function renderAccounts() {
+  const seq = beginRender('accounts');
+  const state = await sb.state();
+  state.candidates = await sb.candidates();
+  const realPanel = $('#tab-accounts');
+  const panel = el('div');
+  const { present, absent } = splitToolsByPresence(Object.values(state.providers), state.accounts, state.candidates || []);
+
+  for (const p of present) {
+    const mine = state.accounts
+      .filter((a) => a.provider === p.id)
+      .sort((a, b) => Number(b.id === p.activeAccountId) - Number(a.id === p.activeAccountId));
+    const found = (state.candidates || []).filter((x) => x.provider === p.id);
+    const active = mine.find((a) => a.id === p.activeAccountId);
+    const section = toolSection(p.id, p.name, active
+      ? `Default for new sessions: ${active.label} · ${mine.length} account${mine.length === 1 ? '' : 's'}`
+      : mine.length
+        ? `${mine.length} account${mine.length === 1 ? '' : 's'} · no registered default`
+        : `${found.length} folder${found.length === 1 ? '' : 's'} found, none registered yet`);
+
+    if (mine.length) {
+      const accountGrid = el('div', 'account-grid');
+      for (const a of mine) accountGrid.appendChild(accountCard(p, a));
+      section.appendChild(accountGrid);
+    }
+
+    if (found.length) {
+      const foundGrid = el('div', 'account-grid');
+      for (const c of found) foundGrid.appendChild(candidateCard(c));
+      section.appendChild(foundGrid);
+    }
+
+    const add = el('button', 'addbtn', `+ Add ${esc(p.name)} account`);
+    add.type = 'button';
+    add.addEventListener('click', () => addToolAccount(p));
+    section.appendChild(add);
+    panel.appendChild(section);
+  }
+
+  panel.appendChild(await antigravitySection());
 
   const presence = await sb.presence();
-  if (presence.length) {
-    panel.appendChild(el('h2', 'grouphead', 'Other tool accounts'));
-    for (const t of presence) {
-      const card = el('div', 'acct' + (t.signedIn ? ' active' : ''));
-      const top = el('div', 'top');
-      const state = [t.cliInstalled ? 'CLI installed' : 'CLI not installed', t.signedIn ? `signed in${t.who ? ' as ' + esc(t.who) : ''}` : 'not signed in'].join(' &middot; ');
-      top.appendChild(el('div', 'who', `<b>${esc(t.name)} <small style="font-weight:400;color:var(--muted)">(${esc(t.account)})</small></b><span>${state}</span>`));
-      top.appendChild(el('div', 'sp'));
-      if (t.signedIn) top.appendChild(el('span', 'badge', 'SIGNED IN'));
-      if (t.cliInstalled) {
-        const open = el('button', 'btn', t.signedIn ? 'Open terminal' : 'Sign in');
-        open.addEventListener('click', () => {
-          sb.openTerminal(t.bin);
-          if (!t.signedIn) {
-            pollUntil(async () => (await sb.presence()).find((x) => x.id === t.id)?.signedIn === true, () => {
-              toast(`${t.name} signed in.`);
-              renderAccounts();
-            }, null);
-          }
-        });
-        top.appendChild(open);
-      }
-      card.appendChild(top);
-      card.appendChild(el('div', 'qnote', esc(t.note)));
-      panel.appendChild(card);
-    }
-  }
+  if (presence.length) panel.appendChild(presenceSection(presence));
+
+  // Nothing registered yet is the one case where the catalogue IS the page.
+  if (absent.length) panel.appendChild(shelfSection(absent, present.length === 0));
 
   panel.appendChild(el('p', 'panelnote', 'Switching changes the default for <b>new</b> terminals and newly launched tools. Running apps and pinned automation are never touched.'));
 

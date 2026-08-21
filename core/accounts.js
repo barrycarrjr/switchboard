@@ -34,6 +34,7 @@ export const PROVIDERS = {
     loginCmd: 'claude auth login --claudeai',
     loginNote: 'Complete the browser sign-in; this terminal is scoped to this account.',
     quota: 'claude',
+    note: "Anthropic's terminal agent. Each account keeps its own config folder, so several subscriptions can share one machine.",
   },
   codex: {
     id: 'codex',
@@ -45,6 +46,7 @@ export const PROVIDERS = {
     loginHint: 'codex login',
     loginCmd: 'codex login',
     quota: 'codex',
+    note: "OpenAI's terminal agent. Signs in with a ChatGPT account or an API key.",
     usageUrl: 'https://chatgpt.com/codex/settings/usage',
   },
   gemini: {
@@ -62,6 +64,7 @@ export const PROVIDERS = {
     sharedDirName: true,
     quota: null,
     quotaNote: 'Google publishes no usage endpoint for Gemini CLI sign-ins, so Switchboard has nothing honest to show.',
+    note: 'A different tool from Antigravity, with its own Google login. Google retired it for personal accounts in June 2026 and points those users at Antigravity; enterprise licences and paid API keys still work.',
   },
   qwen: {
     id: 'qwen',
@@ -75,6 +78,7 @@ export const PROVIDERS = {
     loginNote: 'Choose "Qwen OAuth" when the CLI asks how to authenticate.',
     quota: null,
     quotaNote: 'Qwen publishes no usage endpoint for OAuth sign-ins, so Switchboard has nothing honest to show.',
+    note: 'Alibaba\'s terminal agent. Sign in with Qwen OAuth in its own config folder.',
   },
 };
 

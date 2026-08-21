@@ -171,6 +171,7 @@ async function stateSnapshot(forceAuthAccountId = null) {
       activeHome: activeHome(p.id),
       hasQuota: Boolean(p.quota),
       quotaNote: p.quotaNote ?? null,
+      note: p.note ?? null,
       usageUrl: p.usageUrl ?? null,
     };
   }
