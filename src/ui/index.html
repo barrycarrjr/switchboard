@@ -29,16 +29,6 @@
   .grouphead{font-size:.78rem;font-weight:600;letter-spacing:.04em;color:var(--muted);text-transform:uppercase;margin:10px 2px 6px}
   .grouphead:first-child{margin-top:2px}
   .acct{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:6px 0}
-  .acct .top{display:flex;align-items:center;gap:8px}
-  .acct .who{min-width:0}
-  .acct .who b{font-size:.92rem}
-  .acct .who .pen{visibility:hidden;color:var(--muted);cursor:pointer;font-size:.8rem;margin-left:5px}
-  .acct:hover .who .pen{visibility:visible}
-  .acct .who .pen:hover{color:var(--accent)}
-  .acct .who input{font:inherit;font-size:.9rem;font-weight:600;border:1px solid var(--accent);border-radius:5px;padding:1px 6px;width:12em}
-  .acct .who span{display:block;color:var(--muted);font-size:.76rem;word-break:break-all;cursor:pointer}
-  .acct .who span:hover{color:var(--accent)}
-  .acct .top .sp{flex:1}
   .badge{font-size:.72rem;font-weight:700;border-radius:99px;padding:2px 9px;background:var(--ok-bg);color:var(--ok)}
   .btn{font:inherit;font-size:.8rem;border:1px solid #c9ced6;border-radius:6px;background:#fff;padding:3px 10px;cursor:pointer;white-space:nowrap}
   .btn:hover{border-color:var(--accent);color:var(--accent)}
@@ -73,7 +63,8 @@
   .provider-section:first-child .provider-head{margin-top:2px}
   .provider-head .grouphead{margin:0}
   .provider-summary{color:var(--muted);font-size:.74rem;text-align:right}
-  .account-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
+  .account-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;margin-bottom:2px}
+  .account-grid + .account-grid{margin-top:8px}
   .account-card{display:flex;flex-direction:column;min-width:0;height:100%;padding:0;margin:0;overflow:hidden}
   .account-card.is-default{border-color:#92bfe5;box-shadow:inset 3px 0 0 var(--accent)}
   .account-head{display:flex;align-items:flex-start;gap:10px;padding:10px 12px 9px;flex-wrap:wrap}
@@ -89,6 +80,24 @@
   .account-actions .btn{min-height:32px;padding:4px 9px}
   .account-actions .btn.ghost{padding:4px 7px}
   .account-area{border-top:1px solid var(--line);padding:8px 12px}
+  .account-area.note-area .qnote{margin:0}
+  .account-area.warn{background:var(--warn-bg)}
+  .account-area.note-area .qnote + .qnote{margin-top:6px}
+  .account-card > .account-area:first-child{border-top:0}
+  .account-card[draggable="true"]{cursor:grab}
+  .account-card.dragging{opacity:.45}
+  .account-card.dragover{box-shadow:0 -3px 0 0 var(--accent)}
+  .about-lead{font-size:.9rem;line-height:1.5;margin:0 0 6px}
+  .lane-billing{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:.78rem;margin-bottom:5px}
+  .lane-billing .chip{margin-left:0}
+  .chip.bad{background:var(--bad-bg);color:var(--bad)}
+  .card-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}
+  .card-form select,.card-form input{font:inherit;font-size:.85rem;padding:5px 8px;border:1px solid #c9ced6;border-radius:6px;background:var(--card);color:var(--ink)}
+  .card-form select{flex:1 1 150px;min-width:0}
+  .card-form .btn{flex:0 0 auto;min-height:32px;padding:4px 9px}
+  .card-links{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+  .linkbtn{border:0;background:none;padding:0;font:inherit;font-size:.78rem;color:var(--accent);cursor:pointer;text-align:left}
+  .linkbtn:hover{text-decoration:underline}
   .account-area.signin-area{margin-top:auto;background:#fbfbfc}
   .account-area.signin-area.warn{background:var(--warn-bg)}
   .account-area.signin-area.unknown{background:var(--info-bg)}
@@ -188,6 +197,8 @@
   @media (min-width:760px){
     .account-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
     .account-grid>.account-card:only-child{grid-column:1 / -1}
+    /* Lanes and the settings cards read top to bottom, so they never go two-up. */
+    .account-grid.one-column{grid-template-columns:minmax(0,1fr)}
     .account-head{min-height:72px}
   }
   @media (max-width:600px){
@@ -505,20 +516,37 @@ function cardButton(label, onClick, { primary = false, ghost = false, title = nu
   return button;
 }
 
+/**
+ * One labelled block inside a card. A card is a header plus as many of these as the
+ * thing it describes actually has, which is what lets an account, a lane and a settings
+ * panel share a shape without any of them inventing sections they cannot fill.
+ */
+function cardArea(card, title, cls = '') {
+  const area = el('section', 'account-area' + (cls ? ` ${cls}` : ''));
+  const head = el('div', 'area-head');
+  head.appendChild(el('h4', 'area-title', esc(title)));
+  area.appendChild(head);
+  card.appendChild(area);
+  return { area, head };
+}
+
+/** A block that is only explanatory text: nothing to measure, nothing to press. */
+function cardNote(card, title, html) {
+  const { area } = cardArea(card, title, 'note-area');
+  area.appendChild(el('div', 'qnote', html));
+  return area;
+}
+
 /** The usage half of a card. The caller fills the content in, live or static. */
 function cardUsage(card) {
-  const area = el('section', 'account-area usage-area');
-  const head = el('div', 'area-head');
-  head.appendChild(el('h4', 'area-title', 'Usage'));
+  const { area, head } = cardArea(card, 'Usage', 'usage-area');
   const summary = el('span', 'usage-summary', 'Checking&hellip;');
   head.appendChild(summary);
-  area.appendChild(head);
   const content = el('div', 'usage-content');
   content.setAttribute('role', 'status');
   content.setAttribute('aria-live', 'polite');
   content.tabIndex = -1;
   area.appendChild(content);
-  card.appendChild(area);
   return { summary, content };
 }
 
@@ -527,10 +555,7 @@ function cardSignIn(card, { signedIn, detail, level = 'ok', note = null, button 
   const unknown = signedIn == null;
   const needsSignIn = signedIn === false || level === 'warn';
   const tone = needsSignIn ? ' warn' : unknown ? ' unknown' : '';
-  const area = el('section', 'account-area signin-area' + tone);
-  const head = el('div', 'area-head');
-  head.appendChild(el('h4', 'area-title', 'Sign-in'));
-  area.appendChild(head);
+  const { area } = cardArea(card, 'Sign-in', 'signin-area' + tone);
   const status = el('div', 'signin-status' + tone);
   const dot = el('span', 'status-dot');
   dot.setAttribute('aria-hidden', 'true');
@@ -539,8 +564,14 @@ function cardSignIn(card, { signedIn, detail, level = 'ok', note = null, button 
   if (note) status.appendChild(el('span', 'signin-verified', esc(note)));
   if (button) status.appendChild(button);
   area.appendChild(status);
-  card.appendChild(area);
   return area;
+}
+
+/** A card that stands alone still sits in the grid, so its width matches every other. */
+function oneColumn(card) {
+  const grid = el('div', 'account-grid one-column');
+  grid.appendChild(card);
+  return grid;
 }
 
 /** A titled group of cards, with the one-line summary that belongs to the group. */
@@ -1114,6 +1145,44 @@ async function renderProviders() {
   }
 }
 
+/**
+ * One lane: an account, the billing it runs on, and what "switchboard run" may spend
+ * there. The same card as an account, because a lane IS an account, seen from the
+ * failover order rather than from the machine default.
+ */
+function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove = null } = {}) {
+  const billing = lane.billing === 'metered' ? 'Metered (API)' : 'Subscription';
+  const actions = [];
+  if (lane.billing === 'metered' && onSetBudget) {
+    actions.push(cardButton('Set budget', onSetBudget, { title: 'The most this lane may spend' }));
+  }
+  if (onRemove) actions.push(cardButton('Remove', onRemove, { ghost: true, title: 'Take this lane out of the pool' }));
+  const { card } = cardShell({
+    titleId: `lane-${lane.id}`.replace(/[^a-zA-Z0-9_-]/g, '-'),
+    title: account ? account.label : 'Account missing',
+    person: `${lane.provider} via ${lane.harness}`,
+    actions,
+  });
+  // A lane that cannot be chosen is tinted like a signed-out account, so a problem
+  // looks the same wherever it appears.
+  const blocked = !account || (lane.billing === 'metered' && !budget);
+  const { area } = cardArea(card, 'Billing', 'note-area' + (blocked ? ' warn' : ''));
+  const line = el('div', 'lane-billing');
+  line.appendChild(el('strong', null, esc(billing)));
+  if (lane.billing === 'metered') {
+    const chip = el('span', 'chip', budget ? `Budget: $${esc(budget)}` : 'No budget set, so this lane is blocked');
+    if (!budget) chip.classList.add('bad');
+    line.appendChild(chip);
+  }
+  area.appendChild(line);
+  area.appendChild(el('div', 'qnote', account
+    ? (lane.billing === 'metered'
+      ? 'Runs on metered API billing. Without a budget Switchboard will not route work here.'
+      : 'Runs on this account\'s subscription, and is skipped while its quota is spent.')
+    : 'This lane points at an account that is no longer registered, so it can never be selected. Remove it, or register that folder again.'));
+  return card;
+}
+
 async function renderLanes() {
   const seq = beginRender('lanes');
   const realPanel = $('#tab-lanes');
@@ -1127,136 +1196,105 @@ async function renderLanes() {
   }
   if (!isCurrentRender('lanes', seq)) return;
   const panel = el('div');
-  
-  panel.appendChild(el('div', 'grouphead', 'Execution Lanes'));
-  const lanesInfo = el('p', 'panelnote', 'Lanes define the fallback order and settings for "switchboard run". Switchboard will automatically hand off interrupted tasks to the next available lane without leaking secrets.');
-  lanesInfo.style.marginTop = '0';
-  panel.appendChild(lanesInfo);
 
-  const laneIds = data.lanes.map(l => l.id);
+  const section = toolSection('lanes', 'Execution Lanes', data.lanes.length
+    ? `${data.lanes.length} lane${data.lanes.length === 1 ? '' : 's'} · drag to reorder`
+    : 'No lanes yet');
+  const lanesInfo = el('p', 'panelnote', 'Lanes define the fallback order and settings for "switchboard run". Switchboard will automatically hand off interrupted tasks to the next available lane without leaking secrets. The first lane that is healthy gets the work.');
+  lanesInfo.style.marginTop = '0';
+  section.appendChild(lanesInfo);
+
+  const laneIds = data.lanes.map((l) => l.id);
   let draggedId = null;
+  const grid = el('div', 'account-grid one-column');
 
   for (const lane of data.lanes) {
-    const row = el('div', 'prov');
-    row.draggable = true;
-    row.addEventListener('dragstart', () => { draggedId = lane.id; row.classList.add('dragging'); });
-    row.addEventListener('dragend', () => { draggedId = null; row.classList.remove('dragging'); });
-    row.addEventListener('dragover', (ev) => { if (draggedId && draggedId !== lane.id) { ev.preventDefault(); row.classList.add('dragover'); } });
-    row.addEventListener('dragleave', () => row.classList.remove('dragover'));
-    row.addEventListener('drop', async (ev) => {
+    const account = state.accounts.find((a) => a.id === lane.accountId);
+    const card = laneCard(lane, account, {
+      budget: data.spendPolicies[lane.id]?.budget ?? null,
+      onSetBudget: async () => {
+        const current = data.spendPolicies[lane.id]?.budget || '';
+        const amt = prompt('Enter max budget for this lane (number only):', current);
+        if (amt === null) return;
+        const num = parseFloat(amt);
+        if (!isNaN(num) && num > 0) {
+          await sb.setLaneBudget(lane.id, num);
+          renderLanes();
+        } else if (amt.trim() === '') {
+          await sb.setLaneBudget(lane.id, null);
+          renderLanes();
+        } else {
+          toast('That is not a budget Switchboard can use. Enter a number, or leave it empty to clear it.');
+        }
+      },
+      onRemove: async () => {
+        if (!confirm('Remove this lane from the pool?')) return;
+        await sb.removeLane(lane.id);
+        renderLanes();
+      },
+    });
+
+    card.draggable = true;
+    card.addEventListener('dragstart', () => { draggedId = lane.id; card.classList.add('dragging'); });
+    card.addEventListener('dragend', () => { draggedId = null; card.classList.remove('dragging'); });
+    card.addEventListener('dragover', (ev) => { if (draggedId && draggedId !== lane.id) { ev.preventDefault(); card.classList.add('dragover'); } });
+    card.addEventListener('dragleave', () => card.classList.remove('dragover'));
+    card.addEventListener('drop', async (ev) => {
       ev.preventDefault();
-      row.classList.remove('dragover');
+      card.classList.remove('dragover');
       if (!draggedId || draggedId === lane.id) return;
       const order = laneIds.filter((id) => id !== draggedId);
       order.splice(order.indexOf(lane.id), 0, draggedId);
       await sb.updateLaneOrder(order);
       renderLanes();
     });
-
-    const account = state.accounts.find(a => a.id === lane.accountId);
-    row.appendChild(el('div', 'pi', esc(lane.harness[0].toUpperCase())));
-    row.lastChild.style.background = TOOL_COLORS[lane.harness] || '#5b6675';
-
-    const accountLabel = account ? esc(account.label) : '<span style="color:var(--bad)">Account missing</span>';
-    const pm = el('div', 'pm', `<b>${esc(lane.provider)} via ${esc(lane.harness)}</b><span>Account: ${accountLabel} &middot; Billing: ${esc(lane.billing)}</span>`);
-    
-    if (lane.billing === 'metered') {
-      const policy = data.spendPolicies[lane.id];
-      const budgetText = policy && policy.budget ? `Budget: $${policy.budget}` : '<span style="color:var(--bad)">No budget set (Blocked)</span>';
-      const budgetEl = el('span', 'chip', budgetText);
-      if (!policy || !policy.budget) budgetEl.style.background = 'var(--bad-bg)';
-      pm.appendChild(budgetEl);
-    }
-    
-    row.appendChild(pm);
-
-    const laneMenu = [];
-    if (lane.billing === 'metered') {
-      laneMenu.push({
-        label: 'Set Budget',
-        onClick: async () => {
-          const current = data.spendPolicies[lane.id]?.budget || '';
-          const amt = prompt('Enter max budget for this lane (number only):', current);
-          if (amt !== null) {
-            const num = parseFloat(amt);
-            if (!isNaN(num) && num > 0) {
-              await sb.setLaneBudget(lane.id, num);
-              renderLanes();
-            } else if (amt.trim() === '') {
-              await sb.setLaneBudget(lane.id, null);
-              renderLanes();
-            } else {
-              alert('Invalid budget amount');
-            }
-          }
-        }
-      });
-    }
-
-    laneMenu.push({
-      label: 'Remove Lane',
-      danger: true,
-      onClick: async () => {
-        if (!confirm('Remove this lane from the pool?')) return;
-        await sb.removeLane(lane.id);
-        renderLanes();
-      }
-    });
-
-    attachMenu(row, laneMenu, null);
-    panel.appendChild(row);
+    grid.appendChild(card);
   }
 
-  const addArea = el('div', 'acct');
-  const addHead = el('div', 'top');
-  addHead.appendChild(el('div', 'who', '<b>Add Lane</b><span>Map an existing account to the failover pool</span>'));
-  addArea.appendChild(addHead);
+  if (data.lanes.length) section.appendChild(grid);
 
-  const form = el('div');
-  form.style.marginTop = '10px';
-  form.style.display = 'flex';
-  form.style.gap = '8px';
-  form.style.alignItems = 'center';
+  const addGrid = el('div', 'account-grid one-column');
+  const { card: addCard } = cardShell({
+    titleId: 'lane-add',
+    title: 'Add a lane',
+    person: 'Map an account you have registered into the failover pool',
+  });
+  const { area } = cardArea(addCard, 'New lane', 'note-area');
+  const form = el('div', 'card-form');
 
   const select = el('select');
-  select.style.cssText = 'font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:4px;flex:1';
   select.appendChild(new Option('Select account...', ''));
-  for (const a of state.accounts) {
-    select.appendChild(new Option(`${a.label} (${a.provider})`, a.id));
-  }
+  for (const a of state.accounts) select.appendChild(new Option(`${a.label} (${a.provider})`, a.id));
   form.appendChild(select);
 
   const billing = el('select');
-  billing.style.cssText = 'font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:4px';
   billing.appendChild(new Option('Subscription', 'subscription'));
   billing.appendChild(new Option('Metered (API)', 'metered'));
   form.appendChild(billing);
 
-  const addBtn = el('button', 'btn primary', 'Add');
-  addBtn.addEventListener('click', async () => {
+  form.appendChild(cardButton('Add', async () => {
     const accountId = select.value;
-    if (!accountId) return;
-    const account = state.accounts.find(a => a.id === accountId);
+    if (!accountId) {
+      toast('Choose an account first.');
+      return;
+    }
+    const account = state.accounts.find((a) => a.id === accountId);
     if (!account) return;
-    
     // Simplistic mapping for now
-    let harness = account.provider; 
-    let provider = account.provider === 'claude' ? 'anthropic' : account.provider === 'codex' ? 'openai' : account.provider === 'gemini' ? 'google' : account.provider;
-    
-    const newLane = {
-      harness,
-      provider,
-      accountId,
-      billing: billing.value,
-      capabilities: ['chat'] // base capability
-    };
-    await sb.addLane(newLane);
-    renderLanes();
-  });
-  form.appendChild(addBtn);
-  addArea.appendChild(form);
+    const harness = account.provider;
+    const provider = account.provider === 'claude' ? 'anthropic' : account.provider === 'codex' ? 'openai' : account.provider === 'gemini' ? 'google' : account.provider;
+    try {
+      await sb.addLane({ harness, provider, accountId, billing: billing.value, capabilities: ['chat'] });
+      renderLanes();
+    } catch (e) {
+      toast('Could not add that lane: ' + (e.message || e));
+    }
+  }, { primary: true }));
+  area.appendChild(form);
+  addGrid.appendChild(addCard);
+  section.appendChild(addGrid);
 
-  panel.appendChild(addArea);
+  panel.appendChild(section);
   realPanel.replaceChildren(...panel.childNodes);
 }
 
@@ -1555,45 +1593,28 @@ async function renderAbout() {
   if (!isCurrentRender('about', seq)) return;
   const panel = el('div');
 
-  panel.appendChild(el('div', 'grouphead', 'What is Switchboard?'));
-  const what = el('div', 'acct');
-  what.appendChild(el('div', '', '<p style="margin:2px 0 8px;font-size:.9rem">A Windows tray app that answers one question: <b>which AI account is this machine using right now?</b> And lets you change it.</p><p style="margin:0;font-size:.86rem;color:var(--muted)">Register multiple subscription accounts per AI tool, switch the machine default in two clicks, see each account\'s usage against its available limits, install and update the tools through their vendors\' own mechanisms, and catch the setups that silently bill the wrong thing.</p>'));
+  const what = toolSection('about-what', 'What is Switchboard?', 'A Windows tray app');
+  const whatCard = el('article', 'acct account-card');
+  const { area: whatArea } = cardArea(whatCard, 'In one line', 'note-area');
+  whatArea.appendChild(el('p', 'about-lead', 'It answers one question: <b>which AI account is this machine using right now?</b> And lets you change it.'));
+  whatArea.appendChild(el('div', 'qnote', 'Register multiple subscription accounts per AI tool, switch the machine default in two clicks, see each account\'s usage against its available limits, install and update the tools through their vendors\' own mechanisms, and catch the setups that silently bill the wrong thing.'));
+  cardNote(whatCard, 'What it never does', 'It never runs tasks, never holds sessions, never touches a running application or any GUI app\'s login, never stores your tokens, and sends no telemetry. Installs only ever run vendor mechanisms in a visible terminal.');
+  what.appendChild(oneColumn(whatCard));
   panel.appendChild(what);
 
-  panel.appendChild(el('div', 'grouphead', 'The panels'));
-  const panels = el('div', 'acct', [
-    '<b style="font-size:.86rem">Accounts</b><div class="qnote" style="margin:2px 0 8px">Your accounts per tool, which one is active, live quota, and one-click switching.</div>',
-    '<b style="font-size:.86rem">Providers</b><div class="qnote" style="margin:2px 0 8px">The AI command-line tools: detected versions, honest update checks, install, reinstall, uninstall.</div>',
-    '<b style="font-size:.86rem">Apps</b><div class="qnote" style="margin:2px 0 8px">Desktop AI apps and terminals: detect, install, launch, plus your own Start-menu launchers.</div>',
-    '<b style="font-size:.86rem">Health</b><div class="qnote" style="margin:2px 0">Checks for billing traps, expired logins, PATH problems, and dead proxy configs, with safe one-click fixes.</div>',
-  ].join(''));
-  panel.appendChild(panels);
+  const tour = toolSection('about-panels', 'The panels', 'What each tab is for');
+  const tourCard = el('article', 'acct account-card');
+  cardNote(tourCard, 'Accounts', 'Your accounts per tool, which one is active, live quota, and one-click switching.');
+  cardNote(tourCard, 'Providers', 'The AI command-line tools: detected versions, honest update checks, install, reinstall, uninstall.');
+  cardNote(tourCard, 'Lanes', 'The fallback order for "switchboard run", and what each lane is allowed to spend.');
+  cardNote(tourCard, 'Apps', 'Desktop AI apps and terminals: detect, install, launch, plus your own Start-menu launchers.');
+  cardNote(tourCard, 'MCP', 'The MCP servers your clients can reach, and which client each one is registered with.');
+  cardNote(tourCard, 'Health', 'Checks for billing traps, expired logins, PATH problems, and dead proxy configs, with safe one-click fixes.');
+  tour.appendChild(oneColumn(tourCard));
+  panel.appendChild(tour);
 
-  panel.appendChild(el('div', 'grouphead', 'What it never does'));
-  panel.appendChild(el('div', 'acct', '<div class="qnote" style="margin:0">It never runs tasks, never holds sessions, never touches a running application or any GUI app\'s login, never stores your tokens, and sends no telemetry. Installs only ever run vendor mechanisms in a visible terminal.</div>'));
-
-  if (repo) {
-    panel.appendChild(el('div', 'grouphead', 'Project'));
-    const links = el('div', 'acct');
-    const mkLink = (label, url) => {
-      const a = el('div', 'qnote', `<a>${esc(label)}</a>`);
-      a.style.margin = '3px 0';
-      a.querySelector('a').addEventListener('click', () => sb.openExternal(url));
-      return a;
-    };
-    links.appendChild(mkLink('Open the project on GitHub', `https://github.com/${repo}`));
-    links.appendChild(mkLink('Report an issue or request a feature', `https://github.com/${repo}/issues/new`));
-    links.appendChild(mkLink('All releases', `https://github.com/${repo}/releases`));
-    panel.appendChild(links);
-  }
-
-  panel.appendChild(el('div', 'grouphead', 'Backup and restore'));
-  const config = el('div', 'acct');
-  const configTop = el('div', 'top');
-  configTop.appendChild(el('div', 'who', '<b>Switchboard configuration</b><span>Accounts, preferences, custom launchers, and custom MCP servers</span>'));
-  configTop.appendChild(el('div', 'sp'));
-  const exportBtn = el('button', 'btn', 'Export...');
-  exportBtn.addEventListener('click', async () => {
+  const backup = toolSection('about-backup', 'Backup and restore', 'Records only, never credentials');
+  const exportBtn = cardButton('Export...', async () => {
     exportBtn.disabled = true;
     try {
       const r = await sb.configExport();
@@ -1604,8 +1625,7 @@ async function renderAbout() {
       exportBtn.disabled = false;
     }
   });
-  const importBtn = el('button', 'btn', 'Import...');
-  importBtn.addEventListener('click', async () => {
+  const importBtn = cardButton('Import...', async () => {
     importBtn.disabled = true;
     try {
       const r = await sb.configImport();
@@ -1620,27 +1640,24 @@ async function renderAbout() {
       importBtn.disabled = false;
     }
   });
-  configTop.appendChild(exportBtn);
-  configTop.appendChild(importBtn);
-  config.appendChild(configTop);
-  config.appendChild(el('div', 'qnote', 'Exports contain folder paths, but no tokens or vendor credential files. On another machine, those folders and sign-ins must be set up separately. Import replaces Switchboard\'s current records after validation and saves a recovery backup first.'));
-  panel.appendChild(config);
+  const { card: configCard } = cardShell({
+    titleId: 'about-config',
+    title: 'Switchboard configuration',
+    person: 'Accounts, preferences, custom launchers, and custom MCP servers',
+    actions: [exportBtn, importBtn],
+  });
+  cardNote(configCard, 'What is included', 'Exports contain folder paths, but no tokens or vendor credential files. On another machine, those folders and sign-ins must be set up separately. Import replaces Switchboard\'s current records after validation and saves a recovery backup first.');
+  backup.appendChild(oneColumn(configCard));
+  panel.appendChild(backup);
 
-  panel.appendChild(el('div', 'grouphead', 'This install'));
-  const ver = el('div', 'acct');
-  const verTop = el('div', 'top');
-  verTop.appendChild(el('div', 'who', `<b>Version ${esc(state.version)}</b><span>MIT licensed, free to share</span>`));
-  verTop.appendChild(el('div', 'sp'));
-  const checkBtn = el('button', 'btn', 'Check for updates');
-  const verNote = el('div', 'qnote');
-  verNote.style.display = 'none';
-  checkBtn.addEventListener('click', async () => {
+  const install = toolSection('about-install', 'This install', repo ? `Updates come from ${repo}` : 'No update source configured');
+  const verNote = el('div', 'qnote', 'Not checked yet in this session.');
+  const checkBtn = cardButton('Check for updates', async () => {
     checkBtn.disabled = true;
     checkBtn.textContent = 'Checking…';
     const r = await sb.updateCheck();
     checkBtn.disabled = false;
     checkBtn.textContent = 'Check for updates';
-    verNote.style.display = 'block';
     if (r.available) {
       verNote.innerHTML = `A newer version is available: <b>${esc(r.tag)}</b>. `;
       const go = el('button', 'btn primary', `Update to ${esc(r.tag)}`);
@@ -1656,10 +1673,31 @@ async function renderAbout() {
       verNote.textContent = 'You are on the latest version.';
     }
   });
-  verTop.appendChild(checkBtn);
-  ver.appendChild(verTop);
-  ver.appendChild(verNote);
-  panel.appendChild(ver);
+  const { card: verCard } = cardShell({
+    titleId: 'about-version',
+    title: `Version ${state.version}`,
+    person: 'MIT licensed, free to share',
+    actions: [checkBtn],
+  });
+  const { area: verArea } = cardArea(verCard, 'Updates', 'note-area');
+  verArea.appendChild(verNote);
+
+  if (repo) {
+    const { area: linkArea } = cardArea(verCard, 'Project', 'note-area');
+    const links = el('div', 'card-links');
+    const mkLink = (label, url) => {
+      const link = el('button', 'linkbtn', esc(label));
+      link.type = 'button';
+      link.addEventListener('click', () => sb.openExternal(url));
+      return link;
+    };
+    links.appendChild(mkLink('Open the project on GitHub', `https://github.com/${repo}`));
+    links.appendChild(mkLink('Report an issue or request a feature', `https://github.com/${repo}/issues/new`));
+    links.appendChild(mkLink('All releases', `https://github.com/${repo}/releases`));
+    linkArea.appendChild(links);
+  }
+  install.appendChild(oneColumn(verCard));
+  panel.appendChild(install);
 
   realPanel.replaceChildren(...panel.childNodes);
 }

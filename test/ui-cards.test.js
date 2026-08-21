@@ -5,10 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The Accounts page lives in the single-file UI, so there is nothing to import. These
- * tests lift its helpers out of index.html and run them against a DOM small enough to
- * read. What they protect is the page's promise: one card shape for every account,
- * and a section only for the tools this machine actually has.
+ * The interface lives in one HTML file, so there is nothing to import. These tests lift
+ * its card helpers out of index.html and run them against a DOM small enough to read.
+ * What they protect is the promise the pages make together: one card shape for every
+ * account, lane and settings block, and a section only for the tools this machine has.
  */
 const HTML = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'ui', 'index.html'), 'utf8');
 
@@ -82,7 +82,7 @@ test('a tool you do not have never takes a section, and nothing is lost', () => 
 });
 
 test('an account and a vendor-managed tool build the same card', () => {
-  const { cardShell, cardSignIn } = load(['cardShell', 'cardSignIn'], ['cardShell', 'cardSignIn']);
+  const { cardShell, cardSignIn } = load(['cardArea', 'cardShell', 'cardSignIn'], ['cardShell', 'cardSignIn']);
 
   const account = cardShell({
     titleId: 'account-claude-1',
@@ -127,7 +127,7 @@ test('an account and a vendor-managed tool build the same card', () => {
 
 test('an unregistered folder is offered as the same card, with Register on it', () => {
   const { candidateCard } = load(
-    ['setUsageSummary', 'showUsageState', 'cardShell', 'cardButton', 'cardUsage', 'candidateCard'],
+    ['setUsageSummary', 'showUsageState', 'cardArea', 'cardShell', 'cardButton', 'cardUsage', 'candidateCard'],
     ['candidateCard'],
   );
   const card = candidateCard({ provider: 'claude', label: 'work', home: 'D:\\profiles\\work\\.claude' });
@@ -172,10 +172,66 @@ test('with nothing registered the shelf opens itself, because it is the whole pa
 });
 
 test('the usage area is present on every card, filled or not', () => {
-  const { cardShell, cardUsage } = load(['cardShell', 'cardUsage'], ['cardShell', 'cardUsage']);
+  const { cardShell, cardUsage } = load(['cardArea', 'cardShell', 'cardUsage'], ['cardShell', 'cardUsage']);
   const { card } = cardShell({ titleId: 'account-tool-junie', title: 'Junie' });
   const { summary, content } = cardUsage(card);
   assert.equal(card.children[1].className, 'account-area usage-area');
   assert.equal(summary.className, 'usage-summary');
   assert.equal(content.attrs['aria-live'], 'polite');
+});
+
+test('a card carries as many labelled areas as the thing it describes has', () => {
+  const { cardShell, cardArea, cardNote } = load(['cardArea', 'cardNote', 'cardShell'], ['cardShell', 'cardArea', 'cardNote']);
+  const { card } = cardShell({ titleId: 'about-config', title: 'Switchboard configuration' });
+  cardNote(card, 'What is included', 'Folder paths, never tokens.');
+  const { area } = cardArea(card, 'Updates', 'note-area');
+  area.appendChild({ tag: 'div', className: 'qnote', children: [] });
+
+  assert.deepEqual(card.children.map((c) => c.className), [
+    'account-head',
+    'account-area note-area',
+    'account-area note-area',
+  ]);
+  const [, included] = card.children;
+  assert.equal(included.children[0].children[0].innerHTML, 'What is included', 'the area names itself');
+  assert.equal(included.children[1].className, 'qnote');
+});
+
+test('a lane is the same card as the account it points at', () => {
+  const { laneCard } = load(
+    ['cardArea', 'cardShell', 'cardButton', 'laneCard'],
+    ['laneCard'],
+  );
+  const lane = { id: 'lane-1', provider: 'anthropic', harness: 'claude', accountId: 'claude-1', billing: 'subscription' };
+  const card = laneCard(lane, { id: 'claude-1', label: 'Main Account' }, { onRemove() {} });
+
+  assert.equal(card.className, 'acct account-card');
+  const [head, billing] = card.children;
+  assert.equal(head.children[0].children[0].children[0].innerHTML, 'Main Account');
+  assert.equal(head.children[0].children[1].innerHTML, 'anthropic via claude');
+  assert.deepEqual(head.children[1].children.map((b) => b.innerHTML), ['Remove'], 'no budget button on a subscription lane');
+  assert.equal(billing.className, 'account-area note-area');
+  assert.equal(billing.children[1].children[0].innerHTML, 'Subscription');
+});
+
+test('a metered lane with no budget says so, and offers the button that fixes it', () => {
+  const { laneCard } = load(['cardArea', 'cardShell', 'cardButton', 'laneCard'], ['laneCard']);
+  const lane = { id: 'lane-2', provider: 'openai', harness: 'codex', accountId: 'codex-1', billing: 'metered' };
+  const card = laneCard(lane, { id: 'codex-1', label: 'Work' }, { budget: null, onSetBudget() {}, onRemove() {} });
+
+  const [head, billing] = card.children;
+  assert.deepEqual(head.children[1].children.map((b) => b.innerHTML), ['Set budget', 'Remove']);
+  assert.equal(billing.className, 'account-area note-area warn', 'a lane that cannot be chosen is tinted');
+  const chip = billing.children[1].children[1];
+  assert.equal(chip.className, 'chip bad');
+  assert.equal(chip.innerHTML, 'No budget set, so this lane is blocked');
+});
+
+test('a lane whose account was unregistered says what is wrong instead of showing a blank', () => {
+  const { laneCard } = load(['cardArea', 'cardShell', 'cardButton', 'laneCard'], ['laneCard']);
+  const lane = { id: 'lane-3', provider: 'anthropic', harness: 'claude', accountId: 'gone', billing: 'subscription' };
+  const card = laneCard(lane, undefined, { onRemove() {} });
+  assert.equal(card.children[0].children[0].children[0].children[0].innerHTML, 'Account missing');
+  assert.match(card.children[1].children[2].innerHTML, /no longer registered/);
+  assert.equal(card.children[1].className, 'account-area note-area warn');
 });
