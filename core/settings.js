@@ -11,6 +11,7 @@ const DEFAULTS = {
   customApps: [],             // [{label, appId}] user-added launchers from the Start menu
   updateRepo: null,           // "owner/name" GitHub slug for self-update; local-only by design
   appOrder: [],               // Apps-panel card order, by app id; new apps append until placed
+  appProfileDirs: {},         // appId -> extra data folders to offer, beyond the detected ones
   windowBounds: null,         // last window size/position, restored on launch
   lanes: [],                  // ordered pool of lanes [{ id, harness, provider, accountId, billing, capabilities }]
   spendPolicies: {},          // laneId -> { budget }
@@ -29,6 +30,7 @@ export function loadSettings(file = settingsFile()) {
     if (typeof merged.usageSources !== 'object' || merged.usageSources === null) merged.usageSources = {};
     if (!Array.isArray(merged.customApps)) merged.customApps = [];
     if (!Array.isArray(merged.appOrder)) merged.appOrder = [];
+    if (typeof merged.appProfileDirs !== 'object' || merged.appProfileDirs === null || Array.isArray(merged.appProfileDirs)) merged.appProfileDirs = {};
     if (!Array.isArray(merged.lanes)) merged.lanes = [];
     if (typeof merged.spendPolicies !== 'object' || merged.spendPolicies === null) merged.spendPolicies = {};
     if (typeof merged.cooldowns !== 'object' || merged.cooldowns === null) merged.cooldowns = {};

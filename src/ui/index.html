@@ -155,6 +155,8 @@
   .btn.term{display:inline-flex;align-items:center;gap:7px;padding:5px 10px;font-size:.82rem}
   .btn.term i{font-style:normal;font-family:Consolas,ui-monospace,monospace;font-size:.7rem;color:#fff;background:#33404f;border-radius:4px;padding:1px 4px}
   .btn.term em{font-style:normal;color:var(--muted);font-size:.76rem}
+  .btn em{font-style:normal;color:var(--muted);font-size:.76rem;margin-left:6px}
+  .btn.primary em{color:rgba(255,255,255,.78)}
   .split{position:relative;display:flex;align-items:stretch;flex:0 0 auto}
   .split .btn{border-top-right-radius:0;border-bottom-right-radius:0}
   .caret{font:inherit;font-size:.68rem;line-height:1;display:flex;align-items:center;cursor:pointer;padding:0 7px;border:1px solid #c9ced6;border-left:none;border-radius:0 6px 6px 0;background:#fff;color:var(--muted)}
@@ -1300,6 +1302,40 @@ async function renderLanes() {
 
 const APP_COLORS = { 'claude-desktop': '#c96f4a', t3code: '#7c3aed', chatgpt: '#10a37f', antigravity: '#2e6ff2', lmstudio: '#6d28d9' };
 
+/**
+ * What one app's Launch control offers.
+ *
+ * An app that keeps each account in its own data folder opens the way a terminal does:
+ * the button opens the account that is the machine default right now, and the arrow
+ * holds the others. An app with one login per machine keeps the plain button it has
+ * always had, and names no folder at all.
+ */
+function appLaunchPlan(a) {
+  const profiles = a.supported ? (a.profiles ?? []) : [];
+  const open = profiles.find((p) => p.isOpen) ?? null;
+  const items = [];
+  // With one folder there is nothing to choose between, so no list is offered.
+  if (profiles.length > 1) {
+    for (const p of profiles) items.push({ kind: 'open', label: p.label, sub: p.dir, dir: p.dir });
+  }
+  if (a.supported) {
+    items.push({ kind: 'add', label: 'Add another account…' });
+    for (const p of profiles) {
+      if (p.added) items.push({ kind: 'forget', label: `Stop offering ${p.label}`, sub: p.dir, dir: p.dir });
+    }
+  }
+  return { openLabel: open?.label ?? null, openDir: open?.dir ?? null, items };
+}
+
+/** Launch, and say so when the app refuses rather than leaving a click with no result. */
+async function openApp(a, profileDir) {
+  try {
+    await sb.appLaunch(a.id, profileDir ?? null);
+  } catch (e) {
+    toast(`Could not open ${a.name}: ${e.message || e}`);
+  }
+}
+
 async function renderApps() {
   const seq = beginRender('apps');
   const realPanel = $('#tab-apps');
@@ -1344,9 +1380,31 @@ async function renderApps() {
     if (a.url) apm.querySelector('.ext').addEventListener('click', () => sb.openExternal(a.url));
     row.appendChild(apm);
     if (a.installed) {
-      const launch = el('button', 'btn primary', 'Launch');
-      launch.addEventListener('click', () => sb.appLaunch(a.id));
-      const appMenu = [];
+      const plan = appLaunchPlan(a);
+      const launch = el('button', 'btn primary', plan.openLabel ? `Launch<em>${esc(plan.openLabel)}</em>` : 'Launch');
+      if (plan.openLabel) launch.title = `Opens ${a.name} on ${plan.openLabel}\n${plan.openDir}`;
+      launch.addEventListener('click', () => openApp(a, plan.openDir));
+      const appMenu = plan.items.map((item) => ({
+        label: item.label,
+        sub: item.sub,
+        onClick: async () => {
+          if (item.kind === 'open') return openApp(a, item.dir);
+          if (item.kind === 'forget') {
+            await sb.removeAppProfile(a.id, item.dir);
+            return renderApps();
+          }
+          const r = await sb.addAppProfile(a.id);
+          if (!r.ok) {
+            if (r.error) toast(r.error);
+            return undefined;
+          }
+          renderApps();
+          toast(r.alreadyListed
+            ? `${a.name} was already offered on that folder. Opening it.`
+            : `Opening ${a.name} on that folder. Sign in there as the account you want it to use.`);
+          return openApp(a, r.dir);
+        },
+      }));
       if (a.custom) {
         appMenu.push({ label: 'Remove launcher', danger: true, onClick: async () => { await sb.removeCustomApp(a.appId); renderApps(); } });
       } else {
@@ -1393,7 +1451,7 @@ async function renderApps() {
   const add = el('button', 'addbtn', '+ Add a launcher from the Start menu');
   add.addEventListener('click', openPicker);
   panel.appendChild(add);
-  panel.appendChild(el('p', 'panelnote', 'A terminal button opens that CLI on the account named on it, and sets the account for that window only: the machine default and every other running terminal stay as they are. Where a CLI has more than one account, the arrow opens on one of the others. Launching is where Switchboard stops: it never manages what an app does or which account a GUI app is signed into.'));
+  panel.appendChild(el('p', 'panelnote', 'A terminal button opens that CLI on the account named on it, and sets the account for that window only: the machine default and every other running terminal stay as they are. Where a CLI has more than one account, the arrow opens on one of the others. An app that keeps each account in its own data folder works the same way, and its arrow can add another folder. Switchboard only names the folder on the command line: signing in is still done in the app itself, and a running application is never touched.'));
   realPanel.replaceChildren(...panel.childNodes);
   fillTerminals(terminals, seq);
 }
@@ -1607,7 +1665,7 @@ async function renderAbout() {
   cardNote(tourCard, 'Accounts', 'Your accounts per tool, which one is active, live quota, and one-click switching.');
   cardNote(tourCard, 'Providers', 'The AI command-line tools: detected versions, honest update checks, install, reinstall, uninstall.');
   cardNote(tourCard, 'Lanes', 'The fallback order for "switchboard run", and what each lane is allowed to spend.');
-  cardNote(tourCard, 'Apps', 'Desktop AI apps and terminals: detect, install, launch, plus your own Start-menu launchers.');
+  cardNote(tourCard, 'Apps', 'Desktop AI apps and terminals: detect, install, launch on a chosen account, plus your own Start-menu launchers.');
   cardNote(tourCard, 'MCP', 'The MCP servers your clients can reach, and which client each one is registered with.');
   cardNote(tourCard, 'Health', 'Checks for billing traps, expired logins, PATH problems, and dead proxy configs, with safe one-click fixes.');
   tour.appendChild(oneColumn(tourCard));

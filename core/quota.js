@@ -227,6 +227,26 @@ export function readDesktopUsage(profileDir, now = Date.now(), expectedOrganizat
 }
 
 /**
+ * Which account a Claude Desktop profile folder is signed in as, read from the
+ * organization stamped on its newest usage sample. Identity only: no percentages and
+ * no credentials, and nothing is inferred from the folder's name or its position on
+ * disk, so an unsampled profile answers "unknown" rather than guessing.
+ */
+export function readDesktopOrganization(profileDir) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(profileDir, 'plan-usage-history.json'), 'utf8'));
+    const samples = Array.isArray(parsed?.samples) ? parsed.samples : [];
+    const newest = samples.reduce((best, sample) => {
+      if (!sample || typeof sample.t !== 'number' || typeof sample.org !== 'string' || !sample.org) return best;
+      return !best || sample.t > best.t ? sample : best;
+    }, null);
+    return newest?.org ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Quota for one registered Claude account. Never throws; unknown is reported, not
  * guessed. Ladder: the account's own token, then an associated Claude Desktop
  * profile's identity-matched usage history, then honest unavailability.

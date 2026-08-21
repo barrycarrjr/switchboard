@@ -26,6 +26,15 @@ For deep-dives into architecture, guides, and full command references, see the *
   the Accounts page as a single machine-wide login instead.
 - Switching sets the user-scope default for those variables, so new terminals and newly
   launched tools inherit it. Running processes are untouched, unless launched via `switchboard run`.
+- A desktop app follows the same switch where the app can. Claude Desktop keeps each
+  account in its own data folder, so the Apps tab names the account its Launch button
+  will open (the one that is the machine default right now) and puts the others behind
+  the arrow, exactly as the terminal buttons do. Switchboard finds the standard folder
+  and any `~/.claude-desktop*` folder the app has run in, names each one after the
+  registered account it is signed in as, and lets you add a folder kept anywhere else.
+  Signing in stays the app's own job, and an app that keeps one login per machine
+  (Antigravity), switches accounts inside itself (T3 Code), or has no account at all
+  (LM Studio) keeps its plain button.
 - No secrets are stored. Quota display reads each account's own credentials file
   transiently and calls the vendor usage endpoint; tokens are never persisted or logged.
 - Usage is shown wherever the vendor gives an honest source. Claude reads the account's

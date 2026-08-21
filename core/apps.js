@@ -13,10 +13,16 @@ const run = promisify(execFile);
  * Desktop applications. Same rules as the CLI table: installs delegate to a vendor
  * mechanism or link to the vendor; detection is by install path or the Windows app
  * registry (Get-StartApps), so store and classic installs both work. Launching is
- * where Switchboard's involvement ends: it never manages what the app then does.
+ * where Switchboard's involvement ends: an app that keeps each account in its own data
+ * folder can be opened on one of them (see core/appprofiles.js), but what the app then
+ * does, and what it does with that folder, is the app's own business.
  */
 export const APPS = [
-  { id: 'claude-desktop', name: 'Claude Desktop', url: 'https://claude.ai/download', startAppsMatch: /^Claude$/, install: { via: 'winget', cmd: 'winget install --id Anthropic.Claude -e' } },
+  // packagedExe is the program file inside the Store package, relative to where the
+  // package is installed. Opening the app normally never needs it (Windows activates
+  // the package by id), but an activation cannot carry arguments, so opening on a
+  // chosen account has to run the program file itself.
+  { id: 'claude-desktop', name: 'Claude Desktop', url: 'https://claude.ai/download', startAppsMatch: /^Claude$/, packagedExe: 'app/Claude.exe', install: { via: 'winget', cmd: 'winget install --id Anthropic.Claude -e' } },
   { id: 't3code', name: 'T3 Code', url: 'https://t3.codes', startAppsMatch: /^T3 Code/, exePaths: () => [path.join(process.env.LOCALAPPDATA || '', 'Programs', 'T3 Code', 'T3 Code.exe')], install: { via: 'winget', cmd: 'winget install --id T3Tools.T3Code -e' } },
   // OpenAI shipped Codex inside the app that used to be ChatGPT: the window says Codex,
   // while the Store listing and the Start menu entry still say ChatGPT, so both names
@@ -64,8 +70,52 @@ export function detectApps(startApps) {
       out.installed = true;
       out.appId = entry.appId;
     }
+    out.packagedExe = app.packagedExe ?? null;
     return out;
   });
+}
+
+/**
+ * The package family inside a Windows app id ("Claude_pzs8sxrjxfjjc!Claude"), or null
+ * when the id is not a packaged app at all. A classic install and a person's own
+ * launcher both land here, so this has to say no rather than return something
+ * plausible: the answer is used to find a program file on disk.
+ */
+export function packageFamilyFromAppId(appId) {
+  const raw = String(appId || '');
+  if (!raw.includes('!')) return null;
+  const family = raw.slice(0, raw.indexOf('!'));
+  return /^[A-Za-z0-9.-]+_[A-Za-z0-9]+$/.test(family) ? family : null;
+}
+
+/** Where Windows installed a packaged app, asked of Windows rather than guessed. */
+async function queryInstallLocation(family) {
+  try {
+    // The family name reaches PowerShell as an environment variable, never spliced
+    // into the command text: the same rule the sign-in terminal follows.
+    const { stdout } = await run(
+      'powershell',
+      ['-NoProfile', '-Command', 'Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq $env:SB_PACKAGE_FAMILY } | Select-Object -First 1 -ExpandProperty InstallLocation'],
+      { windowsHide: true, timeout: 15000, env: { ...process.env, SB_PACKAGE_FAMILY: family } },
+    );
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The program file of a Store-installed app, or null when it cannot be found. Null is
+ * a real answer here: the caller must refuse the launch rather than fall back to a
+ * plain activation, which would open the app on the wrong account without saying so.
+ */
+export async function resolvePackagedExe(appId, relativeExe, { query = queryInstallLocation, exists = fs.existsSync } = {}) {
+  const family = packageFamilyFromAppId(appId);
+  if (!family || !relativeExe) return null;
+  const location = await query(family);
+  if (!location) return null;
+  const exe = path.join(location, ...String(relativeExe).split('/'));
+  return exists(exe) ? exe : null;
 }
 
 /**
@@ -184,12 +234,19 @@ export function orderApps(apps, order = []) {
   return [...known, ...fresh];
 }
 
-/** Launch by exe path when there is one, else through the Windows app registry. */
-export function launchApp({ exePath, appId }) {
+/**
+ * Launch by exe path when there is one, else through the Windows app registry.
+ *
+ * Arguments only ever go to a program file. A Windows app activation cannot carry
+ * them, so an argument with nowhere to go is an error rather than a launch: dropping
+ * it would open the app on the standard account while the person asked for another.
+ */
+export function launchApp({ exePath, appId, args = [] }) {
   if (exePath) {
-    spawn(exePath, [], { detached: true, stdio: 'ignore' }).unref();
+    spawn(exePath, args, { detached: true, stdio: 'ignore' }).unref();
     return true;
   }
+  if (args.length) throw new Error('this app can only be opened on a chosen account through its program file');
   if (appId) {
     spawn('explorer.exe', [`shell:AppsFolder\\${appId}`], { detached: true, stdio: 'ignore' }).unref();
     return true;

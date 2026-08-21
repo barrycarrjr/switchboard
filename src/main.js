@@ -10,7 +10,8 @@ import { providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../c
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
-import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, APPS } from '../core/apps.js';
+import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, resolvePackagedExe, APPS } from '../core/apps.js';
+import { appProfileDef, chooseOpenProfile, describeProfiles, discoverProfileDirs, profileFolderProblem, profileLaunchArgs } from '../core/appprofiles.js';
 import { detectPresence } from '../core/presence.js';
 import { terminalRows, terminalChips } from '../core/terminals.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
@@ -26,7 +27,7 @@ function effectiveUpdateRepo() {
 import { decideDefaultSwitch } from '../core/watch.js';
 import { accountNote, trayModel } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
-import { dataDir, writeJsonAtomic } from '../core/paths.js';
+import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -913,7 +914,9 @@ ipcMain.handle('sb:mcpList', (_e, clientId) => listRegistered(clientId));
 ipcMain.handle('sb:apps', async () => {
   const startApps = await getStartApps();
   const settings = loadSettings();
-  const builtin = detectApps(startApps);
+  // An installed app carries the accounts it can open on, so the panel can name the
+  // one its button opens without a second round trip and a visible correction.
+  const builtin = detectApps(startApps).map((a) => (a.installed ? { ...a, ...appProfilesFor(a.id) } : a));
   const custom = settings.customApps.map((c) => ({ id: `custom:${c.appId}`, name: c.label, installed: true, appId: c.appId, exePath: null, custom: true }));
   return orderApps([...builtin, ...custom], settings.appOrder);
 });
@@ -926,13 +929,96 @@ ipcMain.handle('sb:setAppOrder', (_e, ids) => {
   return { ok: true };
 });
 
-ipcMain.handle('sb:appLaunch', async (_e, id) => {
+/**
+ * The accounts one app can be opened on, and which of them the button opens.
+ *
+ * Impure by nature: it reads the account registry, the folders added by hand, and each
+ * folder's own record of who it is signed in as. Every decision it makes about those
+ * facts lives in core/appprofiles.js, where it can be tested.
+ */
+function appProfilesFor(appId) {
+  const def = appProfileDef(appId);
+  if (!def) return { supported: false, profiles: [], openDir: null };
+  const settings = loadSettings();
+  const dirs = discoverProfileDirs(appId, { extra: settings.appProfileDirs[appId] ?? [] });
+  const reg = registry();
+  const accounts = reg.accounts
+    .filter((a) => a.provider === def.provider)
+    .map((a) => ({ id: a.id, label: a.label, organizationUuid: def.accountOrganization(a.home) }));
+  const profiles = describeProfiles(dirs, {
+    accounts,
+    organizationOf: def.organizationOf,
+    defaultDir: def.defaultDir(),
+  });
+  const active = activeAccount(reg, def.provider);
+  const open = chooseOpenProfile(profiles, active?.id ?? null);
+  const added = settings.appProfileDirs[appId] ?? [];
+  return {
+    supported: true,
+    profiles: profiles.map((p) => ({
+      ...p,
+      added: added.some((d) => samePath(d, p.dir)),
+      isOpen: open != null && samePath(p.dir, open.dir),
+    })),
+    openDir: open?.dir ?? null,
+  };
+}
+
+ipcMain.handle('sb:appProfiles', (_e, appId) => appProfilesFor(appId));
+
+ipcMain.handle('sb:appLaunch', async (_e, id, profileDir = null) => {
   if (id.startsWith('custom:')) {
     return { ok: launchApp({ appId: id.slice('custom:'.length) }) };
   }
   const detected = detectApps(await getStartApps()).find((a) => a.id === id);
   if (!detected?.installed) throw new Error('not installed');
-  return { ok: launchApp(detected) };
+  if (!profileDir) return { ok: launchApp(detected) };
+  // The renderer names one of the folders Switchboard itself offered, never a path of
+  // its own, so the list is rebuilt here rather than trusted.
+  const profile = appProfilesFor(id).profiles.find((p) => samePath(p.dir, profileDir));
+  if (!profile) throw new Error('that is not a folder this app was offered on');
+  // The standard profile opens the way it always has, through Windows' own activation,
+  // so the everyday launch keeps the app's package identity and needs nothing found.
+  if (profile.isDefault) return { ok: launchApp(detected) };
+  const exePath = detected.exePath ?? await resolvePackagedExe(detected.appId, detected.packagedExe);
+  if (!exePath) throw new Error(`Switchboard cannot find ${detected.name}'s program file, so it can only open the standard account.`);
+  return { ok: launchApp({ exePath, args: profileLaunchArgs(id, profile.dir) }) };
+});
+
+/**
+ * Add a folder for an app to open on. Switchboard records the folder and nothing else:
+ * the account inside it is created by signing in to the app itself, exactly as a CLI
+ * account is created by signing in to the CLI.
+ */
+ipcMain.handle('sb:addAppProfile', async (_e, appId) => {
+  const def = appProfileDef(appId);
+  if (!def) throw new Error('that app cannot be opened on a chosen account');
+  const named = APPS.find((a) => a.id === appId)?.name ?? appId;
+  const picked = await dialog.showOpenDialog(win, {
+    title: `Choose (or create) a data folder for another ${named} account`,
+    defaultPath: app.getPath('home'),
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return { ok: false };
+  const dir = picked.filePaths[0];
+  const problem = profileFolderProblem(dir);
+  if (problem) return { ok: false, error: problem };
+  const settings = loadSettings();
+  const known = appProfilesFor(appId).profiles.some((p) => samePath(p.dir, dir));
+  if (!known) {
+    settings.appProfileDirs[appId] = [...(settings.appProfileDirs[appId] ?? []), dir];
+    saveSettings(settings);
+  }
+  return { ok: true, dir, alreadyListed: known };
+});
+
+/** Stop offering a folder that was added by hand. The folder itself is left alone. */
+ipcMain.handle('sb:removeAppProfile', (_e, appId, dir) => {
+  const settings = loadSettings();
+  const kept = (settings.appProfileDirs[appId] ?? []).filter((d) => !samePath(d, dir));
+  settings.appProfileDirs[appId] = kept;
+  saveSettings(settings);
+  return { ok: true };
 });
 
 ipcMain.handle('sb:appInstall', (_e, id, mode = 'install') => {

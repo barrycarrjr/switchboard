@@ -100,11 +100,25 @@ function normalizePreferences(value, accounts) {
   }
 
   const appOrder = uniqueStrings(raw.appOrder, 'preferences.appOrder', 1000);
+
+  // Folders added by hand for an app to open on. The app id is checked for shape but
+  // not for membership: a file exported by a later version may name an app this one
+  // has never heard of, and refusing the whole import over that would be unhelpful.
+  const rawProfileDirs = raw.appProfileDirs == null
+    ? {}
+    : object(raw.appProfileDirs, 'preferences.appProfileDirs must be an object');
+  const appProfileDirs = {};
+  for (const [appId, dirs] of Object.entries(rawProfileDirs)) {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(appId)) throw new Error(`preferences.appProfileDirs has an invalid app id: ${appId}`);
+    appProfileDirs[appId] = uniqueStrings(dirs, `preferences.appProfileDirs.${appId}`, MAX_CUSTOM_APPS)
+      .map((dir, i) => absolutePath(dir, `preferences.appProfileDirs.${appId}[${i}]`));
+  }
+
   const updateRepo = raw.updateRepo == null ? null : text(raw.updateRepo, 'preferences.updateRepo', 200);
   if (updateRepo !== null && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(updateRepo)) {
     throw new Error('preferences.updateRepo must use the owner/name form');
   }
-  return { quotaWatch, usageSources, customApps, appOrder, updateRepo };
+  return { quotaWatch, usageSources, customApps, appOrder, appProfileDirs, updateRepo };
 }
 
 function normalizeServers(value) {
@@ -173,6 +187,7 @@ export function createSwitchboardConfig({ registry, settings, mcp, activeAccount
       usageSources,
       customApps: settings.customApps,
       appOrder: settings.appOrder,
+      appProfileDirs: settings.appProfileDirs ?? {},
       updateRepo: settings.updateRepo,
     },
     mcpServers: mcp.servers,
