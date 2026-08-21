@@ -95,6 +95,13 @@ export function catalogServers() {
 }
 
 /**
+ * The filter that means "the hand-checked list", rather than one of the categories the
+ * catalogue data carries. The catalogue has no category by this name, and a regenerated
+ * catalogue that grew one would simply be filtered by this instead.
+ */
+export const SUGGESTED = 'suggested';
+
+/**
  * Search and filter the catalogue. Matching is on title, name, description and tags, so
  * "jira" finds Atlassian even though the word does not appear in its title.
  */
@@ -102,23 +109,30 @@ export function searchCatalog(servers, { query = '', category = '' } = {}) {
   const q = String(query).trim().toLowerCase();
   const cat = String(category).trim().toLowerCase();
   return servers.filter((s) => {
-    if (cat && String(s.category ?? '').toLowerCase() !== cat) return false;
+    if (cat === SUGGESTED) {
+      if (!s.featured) return false;
+    } else if (cat && String(s.category ?? '').toLowerCase() !== cat) return false;
     if (!q) return true;
     const hay = [s.name, s.title, s.label, s.description, s.note, ...(s.tags ?? [])].join(' ').toLowerCase();
     return hay.includes(q);
   });
 }
 
-/** Categories present in a set of servers, with counts, most populated first. */
+/**
+ * Categories to filter by: the suggestions first, because they are the recommended place
+ * to start, then the catalogue's own categories, most populated first.
+ */
 export function categoriesOf(servers) {
   const counts = new Map();
   for (const s of servers) {
     const c = String(s.category ?? 'other').toLowerCase();
     counts.set(c, (counts.get(c) ?? 0) + 1);
   }
-  return [...counts.entries()]
+  const rest = [...counts.entries()]
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  const suggested = servers.filter((s) => s.featured).length;
+  return suggested ? [{ name: SUGGESTED, count: suggested }, ...rest] : rest;
 }
 
 /**
@@ -228,19 +242,49 @@ function firstTomlKey(tablePath) {
   return seg || null;
 }
 
+/** A TOML value of the form `key = "text"`, or null. Backslashes arrive doubled. */
+function tomlString(line, keys) {
+  const m = line.match(new RegExp(`^\\s*(${keys})\\s*=\\s*(["'])(.*?)\\2\\s*$`));
+  if (!m) return null;
+  const value = m[2] === '"' ? m[3].replace(/\\(["\\])/g, '$1') : m[3];
+  return { key: m[1], value };
+}
+
 /**
- * Server names from a Codex config. Only the first path segment counts, so the sub-table
- * `[mcp_servers.foo.env]` is the same server as `[mcp_servers.foo]` and not a second one.
+ * Servers from a Codex config, as a name and whatever address it carries.
+ *
+ * Only the first path segment names the server, so the sub-table `[mcp_servers.foo.env]`
+ * is the same server as `[mcp_servers.foo]` and not a second one. Addresses are read only
+ * from the server's own table: a sub-table holds environment variables, which are that
+ * person's secrets and are never read here.
  */
-export function parseCodexServerNames(toml) {
-  const names = new Set();
+export function parseCodexServerEntries(toml) {
+  const found = new Map();
+  let own = null;
   for (const line of String(toml ?? '').split(/\r?\n/)) {
-    const m = line.match(/^\s*\[mcp_servers\.(.+)\]\s*$/);
-    if (!m) continue;
-    const first = firstTomlKey(m[1]);
-    if (first) names.add(first);
+    const header = line.match(/^\s*\[(.+)\]\s*$/);
+    if (header) {
+      own = null;
+      const table = header[1].trim().match(/^mcp_servers\.(.+)$/);
+      if (!table) continue;
+      const rest = table[1].trim();
+      const first = firstTomlKey(rest);
+      if (!first) continue;
+      if (!found.has(first)) found.set(first, { name: first });
+      // `[mcp_servers.foo]` is the server itself; `[mcp_servers.foo.env]` is not.
+      if (rest === first || rest === `"${first}"` || rest === `'${first}'`) own = first;
+      continue;
+    }
+    if (!own) continue;
+    const pair = tomlString(line, 'url|command');
+    if (pair && !found.get(own)[pair.key]) found.get(own)[pair.key] = pair.value;
   }
-  return [...names];
+  return [...found.values()];
+}
+
+/** Server names from a Codex config. */
+export function parseCodexServerNames(toml) {
+  return parseCodexServerEntries(toml).map((s) => s.name);
 }
 
 /**
@@ -299,14 +343,30 @@ export function parseClaudeAuthorizedUrls(text) {
   }
 }
 
-/** Server names from a JSON config. An unreadable or unexpected file reports nothing. */
-export function parseJsonServerNames(text, rootKey) {
+/**
+ * Servers from a JSON config, as a name and whatever address each carries: `url` for a
+ * remote server, `command` for one the client starts itself. An unreadable or unexpected
+ * file reports nothing. Arguments and environment variables are deliberately not read;
+ * they hold API keys, and nothing here needs them.
+ */
+export function parseJsonServerEntries(text, rootKey) {
   try {
     const map = JSON.parse(text)?.[rootKey];
-    return map && typeof map === 'object' && !Array.isArray(map) ? Object.keys(map) : [];
+    if (!map || typeof map !== 'object' || Array.isArray(map)) return [];
+    return Object.entries(map).map(([name, entry]) => {
+      const out = { name };
+      if (entry && typeof entry.url === 'string') out.url = entry.url;
+      if (entry && typeof entry.command === 'string') out.command = entry.command;
+      return out;
+    });
   } catch {
     return [];
   }
+}
+
+/** Server names from a JSON config. An unreadable or unexpected file reports nothing. */
+export function parseJsonServerNames(text, rootKey) {
+  return parseJsonServerEntries(text, rootKey).map((s) => s.name);
 }
 
 /**
@@ -379,15 +439,37 @@ export function allServers(registry = loadServers()) {
 }
 
 /**
- * The default view: the short featured list, whatever was added by hand, and anything a
- * client already has registered even if it came from neither. The long catalogue is a
- * separate screen; showing eighty rows here would bury the handful that matter.
+ * The default view: what is actually switched on. Everything any client has registered,
+ * plus anything added here by hand, and nothing else.
+ *
+ * Suggestions used to be mixed in, which made the list read as a set of things already in
+ * use when most of it was advertising. Suggestions now live on the browse screen under
+ * their own filter, and this list answers one question only: what is turned on.
+ *
+ * A server a client has that Switchboard has never heard of still belongs here, because
+ * it is running. Its name and address are taken from the client's own config, so it can
+ * be shown honestly and removed again even though no catalogue entry describes it.
  */
-export function yourServers(registry = loadServers(), clientIds = Object.keys(CLIENTS)) {
-  const inUse = new Set();
-  for (const id of clientIds) for (const n of registeredNames(id)) inUse.add(n);
-  const extra = catalogServers().filter((s) => inUse.has(s.name));
-  return dedupeServers([...(registry.servers ?? []), ...FEATURED, ...extra]);
+export function activeServers(registry = loadServers(), clientIds = Object.keys(CLIENTS), read = registeredServers) {
+  const known = [...FEATURED, ...catalogServers()];
+  const found = [];
+  for (const id of clientIds) {
+    for (const entry of read(id)) {
+      // A catalogue entry describes the service properly, so prefer it over the bare
+      // name and url a client config carries.
+      const described = known.find((k) => k.name === entry.name || sameEndpoint(k.url, entry.url));
+      found.push(described ? { ...described } : { ...entry, discovered: true });
+    }
+  }
+  // By name, because the order clients happen to list their servers in is arbitrary and
+  // changes as they are edited. A list someone reads should not reshuffle itself.
+  return dedupeServers([...(registry.servers ?? []), ...found])
+    .sort((a, b) => displayName(a).localeCompare(displayName(b), undefined, { sensitivity: 'base' }));
+}
+
+/** What a row is called on screen: the curated label first, then the catalogue title. */
+export function displayName(server) {
+  return String(server?.label ?? server?.title ?? server?.name ?? '');
 }
 
 /** Trailing slashes and casing differ between sources; the endpoint is what matters. */
@@ -416,16 +498,38 @@ export function dedupeServers(list) {
     // takes any field it lacks from the duplicate. That is how the hand-written Atlassian
     // keeps its label and note while gaining the catalogue's description, category and
     // tags, which is what makes it findable by searching "jira".
-    for (const key of ['description', 'category', 'tags', 'title', 'transport']) {
+    for (const key of ['description', 'category', 'tags', 'title', 'transport', 'featured']) {
       if (existing[key] === undefined && s[key] !== undefined) existing[key] = s[key];
     }
   }
   return out;
 }
 
-/** Everything, for the browse screen: local first, then featured, then the catalogue. */
+/**
+ * Everything, for the browse screen. Local entries are merged first so that a server
+ * someone added by hand keeps its own address, then the suggestions are lifted to the top
+ * of the finished list: they are the recommended starting point, so they are what the
+ * screen opens on.
+ */
 export function browseServers(registry = loadServers()) {
-  return dedupeServers([...(registry.servers ?? []), ...FEATURED, ...catalogServers()]);
+  const all = dedupeServers([...(registry.servers ?? []), ...FEATURED, ...catalogServers()]);
+  // Sorting is stable, so everything below the suggestions keeps catalogue order.
+  return all.sort((a, b) => Number(Boolean(b.featured)) - Number(Boolean(a.featured)));
+}
+
+/**
+ * The definition behind a name: from the catalogue, from what was added by hand, or from
+ * a client's own config. Registering and removing send a name and nothing else, so this
+ * is the single place a name turns back into an address.
+ *
+ * The catalogue has to be part of that, and once was not: every browse row outside the
+ * six suggestions failed with "no such server" the moment its button was clicked.
+ */
+export function resolveServerByName(name, registry = loadServers(), clientIds = Object.keys(CLIENTS), read = registeredServers) {
+  const found = browseServers(registry).find((s) => s.name === name)
+    ?? activeServers(registry, clientIds, read).find((s) => s.name === name);
+  if (!found) throw new Error(`no such server: ${name}`);
+  return found;
 }
 
 function client(clientId) {
@@ -452,6 +556,16 @@ export async function clientAvailable(clientId) {
   const finder = process.platform === 'win32' ? 'where' : 'which';
   try {
     await run(finder, [c.bin], execOpts);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether this definition is one Switchboard could register, without throwing to ask. */
+export function canRegister(server) {
+  try {
+    assertValidServer(server);
     return true;
   } catch {
     return false;
@@ -587,7 +701,7 @@ export function pruneBackups(file, keep = BACKUPS_KEPT, fsImpl = fs) {
  * Asking each CLI instead would mean running `mcp list`, and at least one of them health
  * checks every server first, which takes tens of seconds and would make the panel crawl.
  */
-export function registeredNames(clientId) {
+export function registeredServers(clientId) {
   const c = client(clientId);
   let text;
   try {
@@ -595,7 +709,12 @@ export function registeredNames(clientId) {
   } catch {
     return []; // no config yet, or unreadable: nothing is registered as far as we can tell
   }
-  return c.format === 'toml' ? parseCodexServerNames(text) : parseJsonServerNames(text, c.rootKey);
+  return c.format === 'toml' ? parseCodexServerEntries(text) : parseJsonServerEntries(text, c.rootKey);
+}
+
+/** Just the names, for the callers that only need to know whether a server is there. */
+export function registeredNames(clientId) {
+  return registeredServers(clientId).map((s) => s.name);
 }
 
 /**
@@ -622,19 +741,28 @@ export function authorizedUrls(clientId) {
  *   'ready'      registered and signed in
  *   'needs-auth' registered, and this client says it has no session for it
  */
-export function registrationMatrix(servers, clientIds = Object.keys(CLIENTS)) {
+export function registrationMatrix(servers, clientIds = Object.keys(CLIENTS), read = {}) {
+  const readNames = read.names ?? registeredNames;
+  const readAuth = read.auth ?? authorizedUrls;
   const names = {};
   const auth = {};
   for (const id of clientIds) {
-    names[id] = new Set(registeredNames(id));
-    const urls = authorizedUrls(id);
+    names[id] = new Set(readNames(id));
+    const urls = readAuth(id);
     auth[id] = urls === null ? null : new Set(urls);
   }
   return servers.map((s) => ({
     ...s,
+    // Whether Switchboard could put this server into another client. It cannot invent an
+    // address, and it only ever writes remote https ones, so a server the client starts
+    // itself is shown where it is and offered nowhere else.
+    addable: canRegister(s),
     state: Object.fromEntries(clientIds.map((id) => {
       if (!names[id].has(s.name)) return [id, 'off'];
-      if (auth[id] === null) return [id, 'on'];
+      // Sign-in only applies to remote https servers. One the client starts itself, or a
+      // loopback address, has nothing to sign in to, so reporting it as awaiting sign-in
+      // would be a warning about nothing.
+      if (auth[id] === null || !isValidHttpUrl(s.url)) return [id, 'on'];
       return [id, auth[id].has(s.url) ? 'ready' : 'needs-auth'];
     })),
   }));

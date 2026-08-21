@@ -43,9 +43,10 @@ error reporter. Every client keeps its own private list, so connecting one servi
 clients means doing the same job four times, and a new machine repeats all of it.
 
 The MCP tab keeps the list in one place and registers it with each client you have. Claude
-Code, Codex, Junie and VS Code are supported today. "Your servers" shows the handful you
-use, with a chip per client; "Browse" is a catalogue of public servers with search and
-categories.
+Code, Codex, Junie and VS Code are supported today. "Active servers" shows what is switched
+on right now, with a chip per client, including anything a client was given outside
+Switchboard; "Browse" is a catalogue of public servers with search and categories, and a
+short suggested list at the top of it.
 
 - Switchboard stores a name and an https address, nothing more. **No token ever passes
   through it, and it opens no port and proxies nothing.** Each client still signs in for

@@ -7,7 +7,7 @@ import { runChecks, accountLoginState } from '../core/doctor.js';
 import { providerQuota } from '../core/quota.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings } from '../core/settings.js';
-import { selectLane } from '../core/lanes.js';
+import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
 import { readHandoff, generateHandoffPrompt } from '../core/handoff.js';
 import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio } from '../core/runargs.js';
 import readline from 'node:readline/promises';
@@ -81,19 +81,18 @@ async function main() {
         // Actually selectLane doesn't filter by accountId yet, let's filter the pool manually
       }
       
-      const filteredPool = parsed.account ? pool.filter(l => l.accountId === parsed.account) : pool;
+      // A lane is named by its harness ("claude") or by its vendor ("anthropic"), and
+      // --provider takes either. Filtering here rather than leaving it to selectLane is
+      // what separates "nothing matched what you asked for" from "everything that matched
+      // is busy", which are different problems with different fixes.
+      const filteredPool = pool
+        .filter((l) => !parsed.account || l.accountId === parsed.account)
+        .filter((l) => laneAnswersTo(l, parsed.provider));
       
-      if (filteredPool.length === 0) {
-        const reason = 'No configured lanes match the criteria.';
-        out(asJson ? JSON.stringify({ available: false, reason }) : reason);
-        process.exitCode = 1;
-        return;
-      }
+      const selected = filteredPool.length ? selectLane(filteredPool, context) : null;
 
-      const selected = selectLane(filteredPool, context);
-      
       if (!selected) {
-        const reason = 'No lane is currently available.';
+        const reason = selectionFailure(pool, filteredPool);
         out(asJson ? JSON.stringify({ available: false, reason }) : reason);
         process.exitCode = 1;
         return;
@@ -140,15 +139,18 @@ async function main() {
         }
       }
 
-      let currentPool = parsed.account ? settings.lanes.filter(l => l.accountId === parsed.account) : settings.lanes;
+      let currentPool = settings.lanes
+        .filter((l) => !parsed.account || l.accountId === parsed.account)
+        .filter((l) => laneAnswersTo(l, parsed.provider));
+
       let { context } = await prepareLanesContext(settings, registry, {
         provider: parsed.provider,
       });
 
-      let selected = selectLane(currentPool, context);
+      let selected = currentPool.length ? selectLane(currentPool, context) : null;
 
       if (!selected) {
-        say('No configured lane is available to run this task.');
+        say(selectionFailure(settings.lanes, currentPool));
         process.exitCode = 1;
         return;
       }
@@ -432,6 +434,7 @@ async function main() {
       out('  quota                       per-account usage');
       out('  dry-run [--provider <p>] [--account <id>] [--json]   explain which lane would be selected');
       out('  run [--provider <p>] [--account <id>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');
+      out(`  <p> is a harness (${providerList}) or the vendor behind it (anthropic|openai|google)`);
   }
 }
 

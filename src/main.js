@@ -14,7 +14,7 @@ import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, AP
 import { detectPresence } from '../core/presence.js';
 import { terminalRows, terminalChips } from '../core/terminals.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
-import { CLIENTS as MCP_CLIENTS, allServers, yourServers, browseServers, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix } from '../core/mcp.js';
+import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix } from '../core/mcp.js';
 import { createRequire } from 'node:module';
 
 // CI stamps updateRepo into the packaged package.json (extraMetadata); the committed
@@ -24,6 +24,7 @@ function effectiveUpdateRepo() {
   return loadSettings().updateRepo ?? pkgMeta.updateRepo ?? null;
 }
 import { decideDefaultSwitch } from '../core/watch.js';
+import { accountNote, trayModel } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
@@ -244,52 +245,155 @@ function createWindow() {
   win.on('closed', () => { win = null; });
 }
 
-function buildTrayMenu() {
-  const reg = registry();
-  const items = [];
-  for (const p of Object.values(PROVIDERS)) {
-    const accounts = reg.accounts.filter((a) => a.provider === p.id);
-    if (accounts.length === 0) continue;
-    const active = activeAccount(reg, p.id);
-    items.push({ label: p.name, enabled: false });
-    for (const a of accounts) {
-      items.push({
-        label: a.label,
-        type: 'radio',
-        checked: active?.id === a.id,
-        click: () => {
-          try {
-            setActive(reg, a.id);
-            refresh();
-          } catch (e) {
-            dialog.showErrorBox('Switch failed', String(e.message || e));
-          }
-        },
+/**
+ * What the tray shows that cannot be read without waiting.
+ *
+ * Building a menu is synchronous, and finding the installed CLIs or reading a sign-in
+ * means spawning processes, so the menu reads this and never fetches. It is refreshed at
+ * startup and at the end of every quota-watch pass, which is also when the account
+ * readings it reports were taken.
+ */
+let trayFacts = { terminals: [], alsoSignedIn: [], notes: {}, update: null };
+
+async function refreshTrayFacts() {
+  if (factsInFlight) return;
+  factsInFlight = true;
+  try {
+    const reg = registry();
+    factsSignature = accountSignature();
+    const activeHomes = {};
+    for (const id of Object.keys(PROVIDERS)) activeHomes[id] = activeHome(id);
+    const [tools, presence, antigravity] = await Promise.all([
+      detectInstalled(),
+      detectPresence(),
+      antigravityPresence(),
+    ]);
+    trayFacts.terminals = terminalChips(terminalRows({ tools, accounts: reg.accounts, activeHomes }));
+    // Tools that hold one sign-in for the whole machine. There is nothing to pick
+    // between, so these are shown as lines to read rather than things to click.
+    const rows = presence.map((t) => ({ name: t.name, who: t.who, signedIn: t.signedIn }));
+    if (antigravity.cliInstalled || antigravity.appInstalled || antigravity.signedIn) {
+      rows.unshift({
+        name: 'Antigravity',
+        who: antigravity.who && antigravity.plan ? `${antigravity.who}, ${antigravity.plan}` : (antigravity.who ?? antigravity.plan),
+        signedIn: antigravity.signedIn,
       });
     }
-    items.push({ type: 'separator' });
+    trayFacts.alsoSignedIn = rows;
+  } catch (e) {
+    console.error('refreshTrayFacts error', e);
+  } finally {
+    factsInFlight = false;
   }
-  items.push({ label: 'Open Switchboard', click: () => showWindow() });
-  items.push({ label: 'Run health checks', click: () => showWindow('health') });
-  items.push({ label: 'About Switchboard', click: () => showWindow('about') });
+  refresh();
+}
+
+/**
+ * The tray menu: `core/tray.js` decides what it says, this turns each row into a menu
+ * item and attaches what it does.
+ */
+function buildTrayMenu() {
+  const reg = registry();
   const settings = loadSettings();
-  items.push({
-    label: 'Quota watch',
-    submenu: [
-      { label: 'Off', type: 'radio', checked: settings.quotaWatch === 'off', click: () => setWatchMode('off') },
-      { label: 'Notify when the default runs out', type: 'radio', checked: settings.quotaWatch === 'notify', click: () => setWatchMode('notify') },
-      { label: 'Switch the default automatically', type: 'radio', checked: settings.quotaWatch === 'auto', click: () => setWatchMode('auto') },
-    ],
+  const activeIds = {};
+  const stranded = [];
+  for (const p of Object.values(PROVIDERS)) {
+    const active = activeAccount(reg, p.id);
+    if (active) activeIds[p.id] = active.id;
+    // A folder that is active but registered nowhere leaves every radio unticked, which
+    // used to read as "nothing is set" rather than "something is set that I do not know".
+    else if (reg.accounts.some((a) => a.provider === p.id) && activeHome(p.id)) stranded.push(p.name);
+  }
+
+  const rows = trayModel({
+    providers: Object.values(PROVIDERS),
+    accounts: reg.accounts,
+    activeIds,
+    notes: trayFacts.notes,
+    alsoSignedIn: trayFacts.alsoSignedIn,
+    terminals: trayFacts.terminals,
+    watchMode: settings.quotaWatch,
+    overrideBlocking: configuredClaudeOverrides().length > 0,
+    strandedProviders: stranded,
+    update: trayFacts.update,
+    startWithWindows: app.getLoginItemSettings().openAtLogin,
   });
-  items.push({
-    label: 'Start with Windows',
-    type: 'checkbox',
-    checked: app.getLoginItemSettings().openAtLogin,
-    click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+
+  const open = (action) => showWindow(action.slice('open:'.length));
+  const items = rows.map((row) => {
+    switch (row.kind) {
+      case 'separator':
+        return { type: 'separator' };
+      case 'heading':
+      case 'status':
+        return { label: row.label, enabled: false };
+      case 'account':
+        return {
+          label: row.label,
+          type: 'radio',
+          checked: row.checked,
+          click: () => switchDefaultTo(row.accountId),
+        };
+      case 'submenu':
+        return {
+          label: row.label,
+          submenu: row.items.map((item) => ({
+            label: item.label,
+            click: () => openTerminal(item.bin, item.accountId),
+          })),
+        };
+      case 'watch':
+        return {
+          label: row.label,
+          submenu: [
+            ...row.modes.map((m) => ({ label: m.label, type: 'radio', checked: m.checked, click: () => setWatchMode(m.id) })),
+            { type: 'separator' },
+            { label: 'Set up lanes...', click: () => showWindow('lanes') },
+          ],
+        };
+      case 'checkbox':
+        return {
+          label: row.label,
+          type: 'checkbox',
+          checked: row.checked,
+          click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+        };
+      default:
+        return {
+          label: row.label,
+          click: row.action === 'quit'
+            ? () => { quitting = true; app.quit(); }
+            : () => open(row.action),
+        };
+    }
   });
-  items.push({ type: 'separator' });
-  items.push({ label: 'Quit', click: () => { quitting = true; app.quit(); } });
   return Menu.buildFromTemplate(items);
+}
+
+/**
+ * A tray click must never take the app down, so a failure is shown rather than thrown.
+ *
+ * The registry is read here rather than trusted from when the menu was built: it may have
+ * been rebuilt, or changed from the CLI, in between. And Electron moves the tick when the
+ * item is clicked, before this runs, so a failure has to put the menu back or it is left
+ * asserting a default that was never set.
+ */
+function switchDefaultTo(accountId) {
+  try {
+    setActive(registry(), accountId);
+    refresh();
+  } catch (e) {
+    refresh();
+    dialog.showErrorBox('Switch failed', String(e.message || e));
+  }
+}
+
+function openTerminal(bin, accountId) {
+  try {
+    openTerminalOn(bin, accountId);
+  } catch (e) {
+    dialog.showErrorBox('Could not open a terminal', String(e.message || e));
+  }
 }
 
 function trayTooltip() {
@@ -302,12 +406,25 @@ function trayTooltip() {
   return parts.length ? `Switchboard\n${parts.join('\n')}` : 'Switchboard';
 }
 
+let factsSignature = null;
+let factsInFlight = false;
+
+/** Which accounts exist, cheaply, so a change to them can be noticed. */
+function accountSignature() {
+  return registry().accounts.map((a) => `${a.id}:${a.home}`).sort().join('|');
+}
+
 function refresh() {
   if (tray) {
     tray.setContextMenu(buildTrayMenu());
     tray.setToolTip(trayTooltip());
   }
   if (win) win.webContents.send('sb:refresh');
+  // The terminal list and the sign-in lines are built from the accounts, so an account
+  // added or removed anywhere in the app leaves them wrong. Noticing here covers every
+  // path without each one having to remember. refreshTrayFacts ends by calling back into
+  // refresh, and by then the signature matches, so this does not loop.
+  if (!factsInFlight && accountSignature() !== factsSignature) refreshTrayFacts();
 }
 
 function setWatchMode(mode) {
@@ -354,6 +471,15 @@ async function runQuotaWatch() {
       ]);
     }));
 
+    // The watch has just read sign-in and usage for these accounts; the menu says what
+    // they mean, without a reading of its own.
+    const notes = {};
+    for (const a of reg.accounts) {
+      if (!(a.id in loginStates) && !(a.id in snapshots)) continue;
+      notes[a.id] = accountNote(loginStates[a.id], snapshots[a.id]);
+    }
+    trayFacts.notes = notes;
+
     const pinPresent = configuredClaudeOverrides().length > 0;
 
     // Unify decision: per provider
@@ -367,7 +493,7 @@ async function runQuotaWatch() {
       
       if (providerLanes.length > 0) {
         // Lane-driven routing
-        const { selectLane } = await import('../core/lanes.js');
+        const { selectLane, worthSwitchingTo } = await import('../core/lanes.js');
         const context = {
           now: Date.now(),
           loginStates,
@@ -377,8 +503,12 @@ async function runQuotaWatch() {
           requirements: { harness: p }
         };
         const selected = selectLane(providerLanes, context);
-        
-        if (selected && active && selected.lane.accountId !== active.id) {
+
+        // Only a lane we can actually vouch for may take over the machine default. A
+        // last-resort lane is one whose usage could not be read, and pointing every new
+        // terminal on the machine at an account on that basis is far more than the one
+        // run the last-resort slot was meant to cover.
+        if (worthSwitchingTo(selected) && active && selected.lane.accountId !== active.id) {
           // The top healthy lane doesn't match the current active default. Switch it.
           if (p === 'claude' && pinPresent) {
              switchDecisions.push({ kind: 'pin-blocked', provider: p });
@@ -485,7 +615,10 @@ app.whenReady().then(() => {
 
   createWindow();
 
-  // Quota watch: first pass shortly after startup, then every five minutes.
+  refreshTrayFacts();
+
+  // Quota watch: first pass shortly after startup, then every five minutes. Each pass
+  // ends by refreshing the menu, which is what keeps the account notes current.
   setTimeout(runQuotaWatch, 20 * 1000);
   setInterval(runQuotaWatch, 5 * 60 * 1000);
 
@@ -493,6 +626,8 @@ app.whenReady().then(() => {
   const updateCheck = async () => {
     try {
       const r = await checkAppUpdate({ repo: effectiveUpdateRepo(), currentVersion: app.getVersion() });
+      trayFacts.update = r.available ? r.tag : null;
+      refresh();
       if (r.available) win?.webContents.send('sb:updateAvailable', { tag: r.tag, assetUrl: r.assetUrl ?? null });
     } catch { /* checked again next interval */ }
   };
@@ -728,7 +863,7 @@ ipcMain.handle('sb:mcpState', async () => {
   // Only ask about clients that are actually here; reading a config for a tool that is
   // not installed would report nothing anyway and just muddies the panel.
   const usable = clients.filter((c) => c.available).map((c) => c.id);
-  return { servers: registrationMatrix(yourServers(reg, usable), usable), local: reg.servers, clients };
+  return { servers: registrationMatrix(activeServers(reg, usable), usable), local: reg.servers, clients };
 });
 
 /** The browse screen: the whole catalogue, filtered, with the categories to filter by. */
@@ -743,8 +878,10 @@ ipcMain.handle('sb:mcpBrowse', async (_e, { query = '', category = '' } = {}) =>
     total: all.length,
     matched: matched.length,
     categories: categoriesOf(all),
-    // Cap what crosses the wire; nobody scrolls past this, and the search box is right there.
-    servers: registrationMatrix(matched.slice(0, 60), usable),
+    // The catalogue ships with the application and is a few dozen rows, so it is sent
+    // whole. It was once capped at sixty, which hid four servers behind a search box on a
+    // screen whose whole job is to show what is available.
+    servers: registrationMatrix(matched, usable),
   };
 });
 
@@ -763,12 +900,9 @@ ipcMain.handle('sb:mcpRemove', (_e, name) => {
 });
 
 // The renderer sends a server name, never a command or a url. The definition is resolved
-// here from the catalogue or the local registry, so a renderer cannot invent one.
-function resolveServer(name) {
-  const found = allServers(loadServers()).find((s) => s.name === name);
-  if (!found) throw new Error(`no such server: ${name}`);
-  return found;
-}
+// from the catalogue, the local registry, or the clients' own configs, so a renderer
+// cannot invent one.
+const resolveServer = (name) => resolveServerByName(name);
 
 ipcMain.handle('sb:mcpRegister', (_e, clientId, name) => registerServer(clientId, resolveServer(name)));
 
@@ -840,14 +974,17 @@ ipcMain.handle('sb:terminals', async () => {
   return terminalChips(rows);
 });
 
-ipcMain.handle('sb:openTerminal', (_e, bin, accountId = null) => {
-  // Only a bin from the tool table can ever be run, and only an account that belongs
-  // to that tool: the renderer names things, it never supplies a command or a path.
+/**
+ * Open a terminal on one CLI, optionally pinned to one account.
+ *
+ * Only a bin from the tool table can ever be run, and only an account that belongs to
+ * that tool: a caller names things, it never supplies a command or a path. With no
+ * account named the terminal inherits the machine defaults; named, it is pointed at that
+ * account's folder through its own environment, leaving the machine default alone.
+ */
+function openTerminalOn(bin, accountId = null) {
   const tool = TOOLS.find((t) => t.bin === bin);
   if (!tool) throw new Error('unknown terminal target');
-  // No account named: inherit the machine defaults, so the terminal opens on whatever
-  // account is currently active. Named: point THIS terminal at that account's folder
-  // through its own environment, leaving the machine default alone.
   let env = { ...process.env };
   if (accountId) {
     const account = registry().accounts.find((a) => a.id === accountId);
@@ -857,7 +994,9 @@ ipcMain.handle('sb:openTerminal', (_e, bin, accountId = null) => {
   }
   spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', bin], { detached: true, stdio: 'ignore', windowsHide: false, env }).unref();
   return { ok: true };
-});
+}
+
+ipcMain.handle('sb:openTerminal', (_e, bin, accountId = null) => openTerminalOn(bin, accountId));
 
 /**
  * Quota cache. The usage endpoint rate-limits per token aggressively, so the app

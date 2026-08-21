@@ -20,8 +20,14 @@ import {
   cleanCliError,
   registerServer,
   dedupeServers,
-  yourServers,
+  activeServers,
+  registeredServers,
+  resolveServerByName,
+  canRegister,
+  SUGGESTED,
   parseCodexServerNames,
+  parseCodexServerEntries,
+  parseJsonServerEntries,
   parseJsonServerNames,
   upsertJsonServer,
   deleteJsonServer,
@@ -251,6 +257,215 @@ test('categories are counted and ordered by size', () => {
   ]);
   assert.deepEqual(cats[0], { name: 'devops', count: 2 });
   assert.ok(cats.some((c) => c.name === 'other'), 'a missing category is bucketed, not dropped');
+});
+
+// ---- Suggestions: a filter on the browse screen, not a list of what you have ----
+
+test('suggestions sort to the top of the browse list', () => {
+  const rows = browseServers({ servers: [] });
+  const firstOrdinary = rows.findIndex((r) => !r.featured);
+  assert.ok(firstOrdinary > 0, 'something is suggested');
+  assert.ok(
+    rows.slice(0, firstOrdinary).every((r) => r.featured),
+    'every suggestion comes before the first ordinary catalogue entry',
+  );
+  assert.ok(rows.slice(firstOrdinary).every((r) => !r.featured), 'and none appear below it');
+});
+
+test('the suggested filter is a category of its own, listed first', () => {
+  const cats = categoriesOf(browseServers({ servers: [] }));
+  assert.equal(cats[0].name, SUGGESTED, 'suggestions are the first thing offered');
+  assert.equal(cats[0].count, FEATURED.length);
+  assert.equal(cats.filter((c) => c.name === SUGGESTED).length, 1, 'and appear once');
+});
+
+test('filtering by suggested returns the hand-checked list and nothing else', () => {
+  const rows = searchCatalog(browseServers({ servers: [] }), { category: SUGGESTED });
+  assert.equal(rows.length, FEATURED.length);
+  assert.ok(rows.every((r) => r.featured));
+});
+
+test('a locally overridden suggestion is still suggested', () => {
+  const rows = browseServers({ servers: [{ name: 'atlassian', url: 'https://mine.example.com/mcp' }] });
+  const mine = rows.find((r) => r.name === 'atlassian');
+  assert.equal(mine.url, 'https://mine.example.com/mcp', 'the local address wins');
+  assert.ok(mine.featured, 'and it keeps its place among the suggestions');
+});
+
+// ---- The active list: what is switched on, and only that ----
+
+const nothingRegistered = () => [];
+const registeredIn = (map) => (id) => map[id] ?? [];
+
+test('nothing registered means an empty active list, suggestions included', () => {
+  const rows = activeServers({ servers: [] }, ['claude', 'codex'], nothingRegistered);
+  assert.deepEqual(rows, [], 'a suggestion is not something you have');
+});
+
+test('a server added by hand is listed before it is registered anywhere', () => {
+  const mine = { name: 'my-tracker', url: 'https://mcp.example.com/mcp' };
+  const rows = activeServers({ servers: [mine] }, ['claude'], nothingRegistered);
+  assert.deepEqual(rows.map((r) => r.name), ['my-tracker']);
+});
+
+test('a registered suggestion is described in the curated wording', () => {
+  const rows = activeServers({ servers: [] }, ['codex'], registeredIn({
+    codex: [{ name: 'atlassian', url: 'https://mcp.atlassian.com/v1/mcp' }],
+  }));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].label, 'Atlassian (Jira, Confluence)', 'not the bare name from the config');
+  assert.equal(rows[0].note, 'Registers itself automatically and needs no client secret.');
+});
+
+// Every client on this machine had servers Switchboard has never heard of. Dropping them
+// was survivable while the tab was a shortlist; a tab called "Active servers" that hides
+// five of the six things actually running is just wrong.
+test('a server only the client knows about is still listed', () => {
+  const rows = activeServers({ servers: [] }, ['junie'], registeredIn({
+    junie: [{ name: 'unifi-home', command: 'C:\\bin\\unifi-mcp-server.exe' }],
+  }));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].name, 'unifi-home');
+  assert.equal(rows[0].command, 'C:\\bin\\unifi-mcp-server.exe', 'so the row can say what it runs');
+  assert.ok(rows[0].discovered, 'and be marked as found in a client, not chosen here');
+});
+
+test('one server registered in two clients is one row', () => {
+  const entry = { name: 'phpstorm', url: 'http://127.0.0.1:64410/stream' };
+  const rows = activeServers({ servers: [] }, ['codex', 'junie'], registeredIn({ codex: [entry], junie: [entry] }));
+  assert.deepEqual(rows.map((r) => r.name), ['phpstorm']);
+});
+
+test('the active list is ordered by name, not by which client was read first', () => {
+  const rows = activeServers({ servers: [] }, ['codex', 'junie'], registeredIn({
+    codex: [{ name: 'zed-tool', url: 'https://z.example.com/mcp' }, { name: 'atlassian', url: 'https://mcp.atlassian.com/v1/mcp' }],
+    junie: [{ name: 'middle', url: 'https://m.example.com/mcp' }],
+  }));
+  assert.deepEqual(
+    rows.map((r) => r.label ?? r.name),
+    ['Atlassian (Jira, Confluence)', 'middle', 'zed-tool'],
+    'sorted by the name shown on screen, ignoring case',
+  );
+});
+
+// ---- Turning a name back into an address ----
+
+// Every browse row outside the six suggestions failed with "no such server" when clicked,
+// because resolution looked at the suggestions and the local file but never the catalogue.
+test('any catalogue server resolves by name, not just the suggestions', () => {
+  const rows = browseServers({ servers: [] });
+  for (const row of rows) {
+    const found = resolveServerByName(row.name, { servers: [] }, [], nothingRegistered);
+    assert.equal(found.url, row.url, `${row.name} must resolve to its own address`);
+  }
+});
+
+test('a server found in a client config resolves too, so it can be removed again', () => {
+  const found = resolveServerByName('unifi-home', { servers: [] }, ['junie'], registeredIn({
+    junie: [{ name: 'unifi-home', command: 'C:\\bin\\unifi-mcp-server.exe' }],
+  }));
+  assert.equal(found.name, 'unifi-home');
+});
+
+test('an invented name still resolves to nothing', () => {
+  assert.throws(
+    () => resolveServerByName('not-a-real-server', { servers: [] }, [], nothingRegistered),
+    /no such server/,
+  );
+});
+
+// ---- What Switchboard can and cannot write ----
+
+test('only a plain https server with a boring name can be registered', () => {
+  assert.ok(canRegister({ name: 'sentry', url: 'https://mcp.sentry.dev/mcp' }));
+  assert.ok(!canRegister({ name: 'unifi-home', command: 'C:\\bin\\unifi.exe' }), 'no address to write');
+  assert.ok(!canRegister({ name: 'phpstorm', url: 'http://127.0.0.1:64410/stream' }), 'not https');
+  assert.ok(!canRegister({ name: 'MCP_DOCKER', url: 'https://example.com/mcp' }), 'not a usable config key');
+});
+
+test('the matrix says whether a row can be offered to other clients', () => {
+  const rows = registrationMatrix([
+    { name: 'sentry', url: 'https://mcp.sentry.dev/mcp' },
+    { name: 'unifi-home', command: 'C:\\bin\\unifi.exe' },
+  ], []);
+  assert.equal(rows[0].addable, true);
+  assert.equal(rows[1].addable, false);
+});
+
+// A local server has nothing to sign in to, so the "registered, not signed in yet" warning
+// was a warning about nothing: it can never turn green.
+test('a server with no remote address reads as on, never as awaiting sign-in', () => {
+  const read = {
+    names: () => ['unifi-home', 'phpstorm', 'sentry'],
+    auth: () => ['https://mcp.sentry.dev/mcp'],
+  };
+  const rows = registrationMatrix([
+    { name: 'unifi-home', command: 'C:\\bin\\unifi.exe' },
+    { name: 'phpstorm', url: 'http://127.0.0.1:64410/stream' },
+    { name: 'sentry', url: 'https://mcp.sentry.dev/mcp' },
+  ], ['claude'], read);
+  assert.equal(rows[0].state.claude, 'on', 'a program the client starts');
+  assert.equal(rows[1].state.claude, 'on', 'a loopback address');
+  assert.equal(rows[2].state.claude, 'ready', 'a remote server that is signed in');
+});
+
+test('a remote server the client has not signed in to still reports it', () => {
+  const rows = registrationMatrix(
+    [{ name: 'sentry', url: 'https://mcp.sentry.dev/mcp' }],
+    ['claude'],
+    { names: () => ['sentry'], auth: () => [] },
+  );
+  assert.equal(rows[0].state.claude, 'needs-auth');
+});
+
+// ---- Reading a client's own config ----
+
+test('json entries carry the address, and never the environment', () => {
+  const text = JSON.stringify({
+    mcpServers: {
+      atlassian: { url: 'https://mcp.atlassian.com/v1/mcp' },
+      'unifi-home': { command: 'C:\\bin\\unifi.exe', env: { UNIFI_API_KEY: 'a-secret' }, args: ['--x'] },
+    },
+  });
+  const rows = parseJsonServerEntries(text, 'mcpServers');
+  assert.deepEqual(rows, [
+    { name: 'atlassian', url: 'https://mcp.atlassian.com/v1/mcp' },
+    { name: 'unifi-home', command: 'C:\\bin\\unifi.exe' },
+  ]);
+  assert.ok(!JSON.stringify(rows).includes('a-secret'), 'API keys are not read out of a config');
+});
+
+test('a broken or unexpected json config reads as no servers', () => {
+  assert.deepEqual(parseJsonServerEntries('{not json', 'mcpServers'), []);
+  assert.deepEqual(parseJsonServerEntries('{"mcpServers": []}', 'mcpServers'), []);
+  assert.deepEqual(parseJsonServerEntries('{}', 'mcpServers'), []);
+});
+
+test('codex entries take the address from the server table, not its sub-tables', () => {
+  const toml = [
+    '[mcp_servers.node_repl]',
+    '  command = "C:\\\\tools\\\\node_repl.exe"',
+    '',
+    '  [mcp_servers.node_repl.env]',
+    '    CODEX_HOME = "C:\\\\tools\\\\.codex"',
+    '    url = "https://not-the-server.example.com/mcp"',
+    '',
+    '[mcp_servers.atlassian]',
+    '  url = "https://mcp.atlassian.com/v1/mcp"',
+    '',
+    '[shell_environment_policy.set]',
+    '  command = "ignored"',
+  ].join('\n');
+  const rows = parseCodexServerEntries(toml);
+  assert.deepEqual(rows, [
+    { name: 'node_repl', command: 'C:\\tools\\node_repl.exe' },
+    { name: 'atlassian', url: 'https://mcp.atlassian.com/v1/mcp' },
+  ]);
+});
+
+test('codex names still come out of the entry reader unchanged', () => {
+  const toml = '[mcp_servers.foo]\n[mcp_servers.foo.env]\nA = "1"\n[mcp_servers."bar".env]\nB = "2"\n';
+  assert.deepEqual(parseCodexServerNames(toml), ['foo', 'bar']);
 });
 
 // The dialects conflict in ways that are destructive to get wrong, so the command

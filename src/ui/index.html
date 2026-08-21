@@ -1746,10 +1746,15 @@ async function renderHealth() {
  * MCP servers. A server is a name and an https address; the client it is registered with
  * does its own sign-in afterwards. Switchboard stores no token and proxies nothing.
  *
- * Two views, because the numbers do not fit on one screen: "Your servers" is the handful
- * you use, with a chip per client, and "Browse" is the whole catalogue, one action a row.
+ * Two views. "Active servers" is what is switched on right now, with a chip per client,
+ * and "Browse" is the whole catalogue, suggestions first, one action a row.
+ *
+ * They were once "Your servers" and "Browse", and the first list mixed six suggestions in
+ * with the servers actually in use. It read as a list of what you had, so the suggestions
+ * looked like things already running, and there was no plain way to see what was really
+ * on. Suggestions moved to Browse, under their own filter.
  */
-let mcpView = 'yours';
+let mcpView = 'active';
 let mcpQuery = '';
 let mcpCategory = '';
 let mcpSearchTimer = null;
@@ -1765,7 +1770,7 @@ const MCP_CHIP = {
 
 function mcpSubtabs(onPick) {
   const bar = el('div', 'subtabs');
-  for (const [id, label] of [['yours', 'Your servers'], ['browse', 'Browse']]) {
+  for (const [id, label] of [['active', 'Active servers'], ['browse', 'Browse']]) {
     const b = el('button', 'subtab' + (mcpView === id ? ' on' : ''), label);
     b.addEventListener('click', () => { mcpView = id; onPick(); });
     bar.appendChild(b);
@@ -1773,16 +1778,32 @@ function mcpSubtabs(onPick) {
   return bar;
 }
 
+/**
+ * Why a server that is not registered here cannot be added, in one sentence. Switchboard
+ * writes remote https addresses and nothing else, so a server the client starts itself,
+ * or one on a loopback address, has to be set up inside that client.
+ */
+function mcpWhyNotAddable(server, client) {
+  if (!server.url) {
+    return (server.label || server.name) + ' is a program the client starts itself, so it has to be set up inside ' + client.name + '.';
+  }
+  return 'Switchboard adds remote https servers only, so ' + (server.label || server.name) + ' has to be set up inside ' + client.name + '.';
+}
+
 /** One client chip. Clicking toggles registration, then re-reads the client afterwards. */
 function mcpChip(server, client, onDone) {
   const state = (server.state && server.state[client.id]) || 'off';
   // A server that cannot work in this client is shown greyed rather than hidden, so the
-  // limitation is visible instead of looking like an oversight.
+  // limitation is visible instead of looking like an oversight. The same goes for one
+  // Switchboard has no way to write: offering a button that can only fail is worse.
   const usable = !Array.isArray(server.only) || server.only.includes(client.id);
-  if (!usable && state === 'off') {
+  const writable = server.addable !== false;
+  if ((!usable || !writable) && state === 'off') {
     const dead = el('button', 'btn', '&ndash; ' + esc(client.name));
     dead.disabled = true;
-    dead.title = (server.caveat || (server.label || server.name) + ' cannot be used from ' + client.name + '.');
+    dead.title = !usable
+      ? (server.caveat || (server.label || server.name) + ' cannot be used from ' + client.name + '.')
+      : mcpWhyNotAddable(server, client);
     return dead;
   }
   const look = MCP_CHIP[state] || MCP_CHIP.off;
@@ -1830,9 +1851,16 @@ function mcpRow(server, clients, onDone, opts) {
   const row = el('div', 'hc ' + level);
   row.appendChild(el('div', 'hi', MARK[level] || 'i'));
   const bits = [];
-  bits.push(esc(server.description ? server.description.slice(0, 150) : server.url));
+  // A server found in a client's own config has no catalogue description. Its address is
+  // the next most useful thing, and for one the client starts itself, the program it runs.
+  if (server.description) bits.push(esc(server.description.slice(0, 150)));
+  else if (server.url) bits.push(esc(server.url));
+  else if (server.command) bits.push('Started by the client: ' + esc(server.command));
   if (server.note) bits.push(esc(server.note));
   if (server.caveat) bits.push(esc(server.caveat));
+  // Browse sorts the suggestions to the top, and saying so is what makes that visible as
+  // a group rather than an unexplained order.
+  if (opts.showCategory && server.featured) bits.push('suggested');
   if (opts.showCategory && server.category) bits.push(esc(server.category));
   const title = esc(server.label || server.title || server.name);
   row.appendChild(el('div', 'hm', title + '<span>' + bits.join(' &middot; ') + '</span>'));
@@ -1871,6 +1899,18 @@ async function renderMcp() {
   }
 
   if (!usable.length) panel.appendChild(el('div', 'empty', 'No supported client found on this machine.'));
+
+  // With suggestions moved to Browse, this list is empty on a machine that has never
+  // registered anything, so it has to say where to go rather than showing a blank page.
+  if (!servers.length && usable.length) {
+    const row = el('div', 'hc info');
+    row.appendChild(el('div', 'hi', 'i'));
+    row.appendChild(el('div', 'hm', 'No servers switched on<span>Nothing is registered with a client yet. Browse the catalogue to add one, or add your own below.</span>'));
+    const go = el('button', 'btn primary', 'Browse');
+    go.addEventListener('click', () => { mcpView = 'browse'; renderMcp(); });
+    row.appendChild(go);
+    panel.appendChild(row);
+  }
 
   const localNames = new Set(local.map((s) => s.name));
   for (const s of servers) {
@@ -1938,10 +1978,12 @@ async function renderMcpBrowse(panel, clients) {
       for (const c of data.categories) cat.appendChild(new Option(c.name + ' (' + c.count + ')', c.name));
       cat.value = mcpCategory;
     }
-    const shown = data.servers.length;
-    count.textContent = shown < data.matched
-      ? 'Showing ' + shown + ' of ' + data.matched + ' matches (' + data.total + ' in total). Narrow the search to see the rest.'
-      : data.matched + ' of ' + data.total + ' servers';
+    // The whole catalogue is sent, so this is a plain count and never an apology for a
+    // cap. It used to read "Showing 60 of 64 matches" with an empty search box.
+    const filtered = Boolean(mcpQuery.trim() || mcpCategory);
+    count.textContent = filtered
+      ? data.matched + ' of ' + data.total + ' servers match'
+      : data.total + ' servers';
     list.replaceChildren(...data.servers.map((s) => mcpRow(s, clients, paint, { showCategory: true })));
   };
 
