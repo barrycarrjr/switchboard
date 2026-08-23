@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexQuota, providerQuota } from '../core/quota.js';
+import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexSessionQuota, codexAccountQuota, codexLiveRateLimits, fetchCodexQuota, readCodexAuth, providerQuota } from '../core/quota.js';
 
 test('toExactPercent reads every value as a percent, clamps, and passes null through', () => {
   assert.equal(toExactPercent(34), 34);
@@ -133,7 +133,7 @@ test('accountQuota reports unknowns instead of guessing, and names auth failures
   assert.deepEqual(await accountQuota(dir, failWith(429)), { error: 'rate-limited' });
 });
 
-/* Codex: usage comes from the account's own session logs, not an endpoint. */
+/* Codex: a live endpoint when the sign-in allows it, the account's own session logs when it does not. */
 
 function codexHome(days = [['2026', '08', '19']]) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-codex-'));
@@ -196,7 +196,7 @@ test('mapCodexRateLimits keeps window keys unique and hides credits nobody has',
   assert.deepEqual(mapCodexRateLimits(null), []);
 });
 
-test('codexQuota reads the newest session log and stamps when it was sampled', () => {
+test('codexSessionQuota reads the newest session log and stamps when it was sampled', () => {
   const home = codexHome([['2026', '08', '18'], ['2026', '08', '19']]);
   writeSession(home, ['2026', '08', '18'], 'rollout-2026-08-18T09-00-00-old.jsonl', [
     tokenCount({ ...LIMITS, primary: { used_percent: 1, window_minutes: 10080 } }, '2026-08-18T09:00:00.000Z'),
@@ -207,7 +207,7 @@ test('codexQuota reads the newest session log and stamps when it was sampled', (
   ]);
 
   const now = Date.parse('2026-08-19T22:00:00.000Z');
-  const q = codexQuota(home, now);
+  const q = codexSessionQuota(home, now);
   assert.equal(q.error, undefined);
   assert.equal(q.source, 'session-log');
   assert.equal(q.plan, 'plus');
@@ -216,18 +216,18 @@ test('codexQuota reads the newest session log and stamps when it was sampled', (
   assert.equal(q.windows[0].usedPercent, 6);
 
   // The same snapshot read a week later is the same numbers, honestly labelled old.
-  assert.equal(codexQuota(home, now + 3 * 24 * 60 * 60 * 1000).stale, true);
+  assert.equal(codexSessionQuota(home, now + 3 * 24 * 60 * 60 * 1000).stale, true);
 });
 
-test('codexQuota falls back to an older log, and says so when there is none', () => {
+test('codexSessionQuota falls back to an older log, and says so when there is none', () => {
   const home = codexHome([['2026', '08', '18'], ['2026', '08', '19']]);
   writeSession(home, ['2026', '08', '18'], 'rollout-a.jsonl', [tokenCount(LIMITS, '2026-08-18T09:00:00.000Z')]);
   // A newer session that never got a rate-limit reply (a run that failed early).
   writeSession(home, ['2026', '08', '19'], 'rollout-b.jsonl', [{ timestamp: '2026-08-19T09:00:00.000Z', type: 'session_meta' }]);
-  assert.equal(codexQuota(home).sampledAt, Date.parse('2026-08-18T09:00:00.000Z'));
+  assert.equal(codexSessionQuota(home).sampledAt, Date.parse('2026-08-18T09:00:00.000Z'));
 
-  assert.deepEqual(codexQuota(codexHome([])), { error: 'no-usage-data' });
-  assert.deepEqual(codexQuota(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-empty-'))), { error: 'no-usage-data' });
+  assert.deepEqual(codexSessionQuota(codexHome([])), { error: 'no-usage-data' });
+  assert.deepEqual(codexSessionQuota(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-empty-'))), { error: 'no-usage-data' });
 });
 
 test('a truncated or oversized line is skipped, never half-parsed into a number', () => {
@@ -237,7 +237,7 @@ test('a truncated or oversized line is skipped, never half-parsed into a number'
     JSON.stringify(tokenCount(LIMITS, '2026-08-19T10:00:00.000Z')),
     '{"timestamp":"2026-08-19T11:00:00.000Z","payload":{"rate_limits":{"primary":{"used_perc',
   ].join('\n') + '\n');
-  const q = codexQuota(home);
+  const q = codexSessionQuota(home);
   assert.equal(q.sampledAt, Date.parse('2026-08-19T10:00:00.000Z'));
 });
 
@@ -247,4 +247,114 @@ test('providerQuota routes by tool and refuses to invent one for the rest', asyn
   assert.equal((await providerQuota('codex', home)).source, 'session-log');
   assert.deepEqual(await providerQuota('gemini', home), { error: 'unsupported' });
   assert.deepEqual(await providerQuota('claude', fs.mkdtempSync(path.join(os.tmpdir(), 'sb-c-'))), { error: 'no-credentials' });
+});
+
+/* The live source: the same account's ChatGPT sign-in, asked directly. */
+
+const LIVE = {
+  plan_type: 'plus',
+  rate_limit: {
+    primary_window: { used_percent: 75, limit_window_seconds: 604800, reset_at: 1788123384 },
+    secondary_window: null,
+  },
+  credits: { has_credits: false, unlimited: false, balance: '0' },
+};
+
+function codexHomeWithAuth(tokens) {
+  const dir = codexHome([]);
+  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens }));
+  return dir;
+}
+
+test('readCodexAuth reads the vendor credential file and tolerates absence', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-cx-'));
+  assert.equal(readCodexAuth(dir), null);
+  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ tokens: { access_token: 'tok-1', account_id: 'acct-9' } }));
+  assert.deepEqual(readCodexAuth(dir), { token: 'tok-1', accountId: 'acct-9' });
+  // An API-key sign-in has no ChatGPT subscription behind it, so there is nothing to ask.
+  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ tokens: { account_id: 'acct-9' } }));
+  assert.equal(readCodexAuth(dir), null);
+  fs.writeFileSync(path.join(dir, 'auth.json'), 'not json');
+  assert.equal(readCodexAuth(dir), null);
+});
+
+test('codexLiveRateLimits states the same windows as a session log, in the log\'s units', () => {
+  const limits = codexLiveRateLimits(LIVE);
+  assert.equal(limits.primary.window_minutes, 10080);
+  assert.equal(limits.primary.used_percent, 75);
+  assert.equal(limits.primary.resets_at, 1788123384);
+  assert.equal(limits.secondary, null);
+  assert.equal(limits.plan_type, 'plus');
+
+  const windows = mapCodexRateLimits(limits);
+  assert.deepEqual(windows.map((w) => [w.key, w.label, w.usedPercent]), [['week', 'Week', 75]]);
+  assert.equal(windows[0].resetsAt, 1788123384000);
+  assert.deepEqual(codexLiveRateLimits({}), { primary: null, secondary: null, credits: null, plan_type: null });
+});
+
+test('a window whose length the vendor did not state is not filed as a week', () => {
+  const windows = mapCodexRateLimits({ primary: { used_percent: 12, window_minutes: null } });
+  assert.deepEqual(windows.map((w) => [w.key, w.label]), [['usage', 'Usage']]);
+});
+
+test('fetchCodexQuota sends the bearer token and the account it belongs to', async () => {
+  let seen = null;
+  const fakeFetch = async (url, init) => {
+    seen = { url, init };
+    return { ok: true, json: async () => LIVE };
+  };
+  const live = await fetchCodexQuota({ token: 'tok-abc', accountId: 'acct-9' }, fakeFetch);
+  assert.equal(live.plan, 'plus');
+  assert.equal(live.windows[0].usedPercent, 75);
+  assert.match(seen.url, /wham\/usage/);
+  assert.equal(seen.init.headers.authorization, 'Bearer tok-abc');
+  assert.equal(seen.init.headers['chatgpt-account-id'], 'acct-9');
+
+  // A reply we cannot read is a failure, never an empty card presented as a reading.
+  await assert.rejects(fetchCodexQuota({ token: 't' }, async () => ({ ok: true, json: async () => ({}) })));
+});
+
+test('codexAccountQuota prefers the live reading over the snapshot', async () => {
+  const home = codexHomeWithAuth({ access_token: 'tok-1', account_id: 'acct-9' });
+  fs.mkdirSync(path.join(home, 'sessions', '2026', '08', '19'), { recursive: true });
+  writeSession(home, ['2026', '08', '19'], 'rollout-live.jsonl', [tokenCount(LIMITS, '2026-08-19T10:00:00.000Z')]);
+
+  const q = await codexAccountQuota(home, async () => ({ ok: true, json: async () => LIVE }));
+  assert.equal(q.source, 'token');
+  assert.equal(q.vendor, 'OpenAI');
+  assert.equal(q.plan, 'plus');
+  assert.equal(q.windows[0].usedPercent, 75);
+  assert.equal(q.sampledAt, undefined);
+});
+
+test('a refused live reading keeps the snapshot and says why it is standing in', async () => {
+  const home = codexHomeWithAuth({ access_token: 'stale-token' });
+  fs.mkdirSync(path.join(home, 'sessions', '2026', '08', '19'), { recursive: true });
+  writeSession(home, ['2026', '08', '19'], 'rollout-old.jsonl', [tokenCount(LIMITS, '2026-08-19T10:00:00.000Z')]);
+  const failWith = (status) => async () => ({ ok: false, status, json: async () => ({}) });
+
+  const stale = await codexAccountQuota(home, failWith(401));
+  assert.equal(stale.source, 'session-log');
+  assert.equal(stale.fallbackReason, 'auth');
+  assert.equal(stale.windows[0].usedPercent, 6);
+  assert.equal((await codexAccountQuota(home, failWith(429))).fallbackReason, 'rate-limited');
+  assert.equal((await codexAccountQuota(home, failWith(500))).fallbackReason, 'unavailable');
+  // Offline is the same story: the numbers on file are still the numbers on file.
+  assert.equal((await codexAccountQuota(home, async () => { throw new Error('offline'); })).fallbackReason, 'unavailable');
+});
+
+test('codexAccountQuota names the failure when there is no snapshot to fall back on', async () => {
+  const home = codexHomeWithAuth({ access_token: 'stale-token' });
+  const failWith = (status) => async () => ({ ok: false, status, json: async () => ({}) });
+  assert.deepEqual(await codexAccountQuota(home, failWith(401)), { error: 'auth' });
+  assert.deepEqual(await codexAccountQuota(home, failWith(429)), { error: 'rate-limited' });
+  // No sign-in at all and nothing recorded: run it once, rather than a wrong reason.
+  assert.deepEqual(await codexAccountQuota(codexHome([])), { error: 'no-usage-data' });
+});
+
+test('providerQuota reads Codex live when the account can be asked', async () => {
+  const home = codexHomeWithAuth({ access_token: 'tok-1' });
+  const q = await providerQuota('codex', home, { fetchImpl: async () => ({ ok: true, json: async () => LIVE }) });
+  assert.equal(q.source, 'token');
+  assert.equal(q.vendor, 'OpenAI');
 });

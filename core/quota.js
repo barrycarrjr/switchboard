@@ -263,7 +263,7 @@ export async function accountQuota(
   let tokenError = null;
   if (token) {
     try {
-      return { windows: await fetchClaudeQuota(token, fetchImpl), source: 'token' };
+      return { windows: await fetchClaudeQuota(token, fetchImpl), source: 'token', vendor: 'Anthropic' };
     } catch (e) {
       // 401/403 means the stored access token is stale; the vendor CLI refreshes it
       // on its next real use. 429 means we asked too often; callers should serve
@@ -296,17 +296,41 @@ export async function accountQuota(
 /* ------------------------------------------------------------------------- *
  * Codex
  *
- * OpenAI publishes no usage endpoint for Codex subscriptions, but the CLI writes
- * every rate-limit reply it receives into that account's own session log. Reading
- * the newest one is a real answer with a real timestamp, which is worth more than
- * a blank card, as long as the timestamp is shown rather than passed off as live.
+ * Two sources, same ladder as Claude. The account's own ChatGPT sign-in can ask
+ * OpenAI what it has spent, which is a live answer costing nothing. When that is
+ * refused (a token the CLI has not refreshed in a while) or the machine is offline,
+ * the CLI's own session log still holds every rate-limit reply it has received, so
+ * the newest one is a real answer with a real timestamp. A snapshot is worth more
+ * than a blank card as long as its age is shown rather than passed off as live.
  * ------------------------------------------------------------------------- */
+
+const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 
 /** How old a session snapshot may be before it is called stale rather than current. */
 export const CODEX_STALE_MS = 24 * 60 * 60 * 1000;
 
 const CODEX_TAIL_BYTES = 256 * 1024;
 const CODEX_FILES_SCANNED = 8;
+
+/**
+ * Read the ChatGPT access token from a Codex config home, transiently. The token is
+ * returned to the caller for one request and never stored, logged or rewritten: the
+ * CLI owns auth.json, and refreshing it here could rotate the refresh token out from
+ * under the CLI and sign the account out. An expired token is left to expire.
+ */
+export function readCodexAuth(home) {
+  try {
+    const tokens = JSON.parse(fs.readFileSync(path.join(home, 'auth.json'), 'utf8'))?.tokens;
+    const token = tokens?.access_token;
+    if (typeof token !== 'string' || token.length === 0) return null;
+    return {
+      token,
+      accountId: typeof tokens.account_id === 'string' && tokens.account_id.length > 0 ? tokens.account_id : null,
+    };
+  } catch {
+    return null;
+  }
+}
 
 // Codex reports 6.0 meaning six percent, so it shares toExactPercent above.
 
@@ -329,7 +353,10 @@ export function mapCodexRateLimits(limits) {
   const push = (w) => {
     if (!w || w.used_percent == null) return;
     const minutes = Number(w.window_minutes);
-    let key = Number.isFinite(minutes) && minutes <= 1440 ? 'session' : 'week';
+    // A window whose length the vendor did not state is not filed as a week anyway:
+    // the lane rules read these keys by name, so a guess there becomes a wrong rule.
+    const known = Number.isFinite(minutes) && minutes > 0;
+    let key = !known ? 'usage' : minutes <= 1440 ? 'session' : 'week';
     while (used.has(key)) key += '2';
     used.add(key);
     windows.push({
@@ -352,6 +379,58 @@ export function mapCodexRateLimits(limits) {
     });
   }
   return windows;
+}
+
+/**
+ * The live endpoint and the session log describe the same windows in different units:
+ * the endpoint counts seconds and calls the reset `reset_at`, the log counts minutes
+ * and calls it `resets_at`. Normalizing here means one mapper, one set of window keys
+ * and one label table serve both, so the card cannot say two different things
+ * depending on which source answered.
+ */
+export function codexLiveRateLimits(body) {
+  const window = (w) => {
+    if (!w || w.used_percent == null) return null;
+    const seconds = Number(w.limit_window_seconds);
+    return {
+      used_percent: w.used_percent,
+      window_minutes: Number.isFinite(seconds) && seconds > 0 ? seconds / 60 : null,
+      resets_at: w.reset_at ?? null,
+    };
+  };
+  const limit = body?.rate_limit ?? {};
+  return {
+    primary: window(limit.primary_window),
+    secondary: window(limit.secondary_window),
+    credits: body?.credits ?? null,
+    plan_type: body?.plan_type ?? null,
+  };
+}
+
+/**
+ * Ask OpenAI what this Codex sign-in has spent. Throws on any non-OK response, and on
+ * a reply carrying no recognizable window, so that callers fall back to the last
+ * session snapshot instead of showing an empty card as though it were a reading.
+ */
+export async function fetchCodexQuota(auth, fetchImpl = fetch) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const headers = { authorization: `Bearer ${auth.token}`, originator: 'codex_cli_rs' };
+    if (auth.accountId) headers['chatgpt-account-id'] = auth.accountId;
+    const resp = await fetchImpl(CODEX_USAGE_URL, { headers, signal: controller.signal });
+    if (!resp.ok) {
+      const err = new Error(`codex usage endpoint returned ${resp.status}`);
+      err.status = resp.status;
+      throw err;
+    }
+    const body = await resp.json();
+    const windows = mapCodexRateLimits(codexLiveRateLimits(body));
+    if (windows.length === 0) throw new Error('codex usage endpoint returned no recognized window');
+    return { windows, plan: body?.plan_type ?? null };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Read the last whole lines of a file without pulling a long session into memory. */
@@ -425,10 +504,10 @@ export function lastRateLimitsIn(file) {
 }
 
 /**
- * Quota for one registered Codex account, from that account's own session logs.
- * Never throws; an account that has not run yet reports that, rather than zero.
+ * The snapshot source: the newest rate-limit reply this account's own session logs
+ * hold. Never throws; an account that has not run yet reports that, rather than zero.
  */
-export function codexQuota(home, now = Date.now()) {
+export function codexSessionQuota(home, now = Date.now()) {
   for (const file of findCodexSessionFiles(home)) {
     const hit = lastRateLimitsIn(file);
     if (!hit) continue;
@@ -447,6 +526,33 @@ export function codexQuota(home, now = Date.now()) {
 }
 
 /**
+ * Quota for one registered Codex account. Never throws; unknown is reported, not
+ * guessed. Ladder: the account's own ChatGPT sign-in, then the newest session
+ * snapshot (kept, but labelled with why it is standing in), then honest
+ * unavailability. A live reading that fails must never erase a snapshot that exists.
+ */
+export async function codexAccountQuota(home, fetchImpl = fetch, now = Date.now()) {
+  const auth = readCodexAuth(home);
+  let tokenError = null;
+  if (auth) {
+    try {
+      const live = await fetchCodexQuota(auth, fetchImpl);
+      return { windows: live.windows, source: 'token', plan: live.plan, vendor: 'OpenAI' };
+    } catch (e) {
+      // 401/403 means the stored token is stale; the CLI refreshes it on its next
+      // real use, which is why the card says to run Codex once. 429 means we asked
+      // too often. Everything else (offline, endpoint moved) is plain unavailable.
+      if (e.status === 401 || e.status === 403) tokenError = { error: 'auth' };
+      else if (e.status === 429) tokenError = { error: 'rate-limited' };
+      else tokenError = { error: 'unavailable' };
+    }
+  }
+  const snapshot = codexSessionQuota(home, now);
+  if (!snapshot.error) return tokenError ? { ...snapshot, fallbackReason: tokenError.error } : snapshot;
+  return tokenError ?? snapshot;
+}
+
+/**
  * Usage for any account, routed by what its vendor actually exposes. A provider with
  * no usable source says so once, here, instead of every caller inventing an answer.
  */
@@ -458,6 +564,6 @@ export async function providerQuota(provider, home, {
   allowDesktopFallback = true,
 } = {}) {
   if (provider === 'claude') return accountQuota(home, fetchImpl, usageSource, now, desktopProfile, allowDesktopFallback);
-  if (provider === 'codex') return codexQuota(home, now);
+  if (provider === 'codex') return codexAccountQuota(home, fetchImpl, now);
   return { error: 'unsupported' };
 }

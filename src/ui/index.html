@@ -126,6 +126,7 @@
   .quota-value strong{display:block;font-size:.82rem;color:var(--ink)}
   .quota-source{display:flex;align-items:baseline;gap:6px;border:1px solid var(--line);border-radius:6px;background:#f7f9fb;color:var(--muted);font-size:.74rem;line-height:1.4;margin-top:7px;padding:5px 7px}
   .quota-source strong{flex:0 0 auto;color:var(--info)}
+  .quota-source .btn{flex:0 0 auto;align-self:center;margin-left:auto;font-size:.72rem;padding:2px 8px}
   .quota-source.warn{background:var(--warn-bg);border-color:#ead69e}
   .quota-source.warn strong{color:var(--warn)}
   .signin-status{display:flex;align-items:center;gap:7px;min-width:0;color:var(--muted);font-size:.76rem;line-height:1.4;flex-wrap:wrap}
@@ -347,12 +348,15 @@ function quotaProblemLabel(code) {
   })[code] || 'failed';
 }
 
-function quotaSourceRow(q) {
+function quotaSourceRow(q, onRefresh = null) {
   const observedAt = Number(q.observedAt) || null;
   const sampledAt = Number(q.sampledAt) || null;
   const cached = q.cached === true;
   const refreshError = q.refreshError || null;
   const fallbackReason = q.fallbackReason || null;
+  // Each vendor names its own endpoint, so the row says who was asked rather than
+  // assuming the reading came from the one provider that had an endpoint first.
+  const endpoint = q.vendor ? `${q.vendor} usage` : 'Provider usage';
   let kind = 'Current';
   let detail = 'Usage source not identified';
   let warn = false;
@@ -360,14 +364,14 @@ function quotaSourceRow(q) {
   if (q.source === 'token') {
     if (refreshError) {
       kind = 'Last known';
-      detail = `Anthropic usage · checked ${fmtAccountTime(observedAt)} · refresh ${quotaProblemLabel(refreshError)}`;
+      detail = `${endpoint} · checked ${fmtAccountTime(observedAt)} · refresh ${quotaProblemLabel(refreshError)}`;
       warn = true;
     } else if (cached) {
       kind = 'Cached';
-      detail = `Anthropic usage · checked ${fmtAccountTime(observedAt)}`;
+      detail = `${endpoint} · checked ${fmtAccountTime(observedAt)}`;
     } else {
       kind = 'Live';
-      detail = `Anthropic usage · checked ${observedAt ? fmtAccountTime(observedAt) : 'just now'}`;
+      detail = `${endpoint} · checked ${observedAt ? fmtAccountTime(observedAt) : 'just now'}`;
     }
   } else if (q.source === 'desktop') {
     if (refreshError) kind = 'Last known snapshot';
@@ -384,12 +388,17 @@ function quotaSourceRow(q) {
   } else if (q.source === 'session-log') {
     if (refreshError) kind = 'Last known snapshot';
     else if (q.stale) kind = 'Stale snapshot';
+    else if (fallbackReason) kind = 'Snapshot fallback';
     else if (cached) kind = 'Cached snapshot';
     else kind = 'Snapshot';
     detail = `Last session for this account · sampled ${fmtAccountTime(sampledAt)}`;
+    // A snapshot only moves when the tool itself runs, so say that outright rather
+    // than leaving "stale" as a fact with no remedy attached to it.
+    if (q.stale || fallbackReason || refreshError) detail += ' · run Codex once to refresh';
     if (cached && observedAt) detail += ` · checked ${fmtAccountTime(observedAt)}`;
+    if (fallbackReason) detail += ` · live check ${quotaProblemLabel(fallbackReason)}`;
     if (refreshError) detail += ` · refresh ${quotaProblemLabel(refreshError)}`;
-    warn = Boolean(q.stale || refreshError);
+    warn = Boolean(q.stale || fallbackReason || refreshError);
   } else if (cached) {
     kind = 'Cached';
     detail = `Checked ${fmtAccountTime(observedAt)}`;
@@ -399,10 +408,19 @@ function quotaSourceRow(q) {
   const source = el('div', 'quota-source' + (warn ? ' warn' : ''));
   source.appendChild(el('strong', null, esc(kind)));
   source.appendChild(document.createTextNode(detail));
+  // Offered only where the number on show might not be current. A live reading that
+  // just arrived needs no button, and one there would imply the figures are in doubt.
+  if (onRefresh && (warn || q.source !== 'token')) {
+    const again = el('button', 'btn', 'Check again');
+    again.type = 'button';
+    again.title = 'Ask the provider for a fresh reading now';
+    again.addEventListener('click', onRefresh);
+    source.appendChild(again);
+  }
   return source;
 }
 
-function renderUsageWindows(host, summary, q) {
+function renderUsageWindows(host, summary, q, onRefresh = null) {
   const windows = Array.isArray(q.windows) ? q.windows : [];
   if (!windows.length) {
     showUsageState(host, summary, {
@@ -468,7 +486,7 @@ function renderUsageWindows(host, summary, q) {
     }
     grid.appendChild(metric);
   }
-  host.replaceChildren(grid, quotaSourceRow(q));
+  host.replaceChildren(grid, quotaSourceRow(q, onRefresh));
   host.setAttribute('aria-busy', 'false');
   return true;
 }
@@ -818,7 +836,7 @@ function accountCard(p, account) {
         });
         return;
       }
-      if (!renderUsageWindows(usage.content, usage.summary, q)) {
+      if (!renderUsageWindows(usage.content, usage.summary, q, retry.onClick)) {
         const box = usage.content.querySelector('.usage-state');
         const actionRow = el('div', 'usage-state-actions');
         const retryButton = el('button', 'btn', 'Retry');

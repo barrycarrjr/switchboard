@@ -26,7 +26,8 @@ a supported API or an upstream T3 change.
   processes. It does not own tasks or running sessions.
 - The automatic quota watcher considers Claude accounts only. It can change the
   Claude default, but it cannot replace a running Claude process.
-- Claude quota is observable. Codex usage is a timestamped session-log snapshot.
+- Claude and Codex quota are both observable live from each account's own sign-in;
+  Codex falls back to a timestamped session-log snapshot when that check is refused.
   Gemini and Qwen do not expose usable quota data.
 - T3 Code owns its provider instances and active threads. Switchboard cannot change
   an existing T3 thread merely by changing `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.

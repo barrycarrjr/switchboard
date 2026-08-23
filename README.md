@@ -37,11 +37,13 @@ For deep-dives into architecture, guides, and full command references, see the *
   (LM Studio) keeps its plain button.
 - No secrets are stored. Quota display reads each account's own credentials file
   transiently and calls the vendor usage endpoint; tokens are never persisted or logged.
-- Usage is shown wherever the vendor gives an honest source. Claude reads the account's
-  own usage endpoint. Codex has no such endpoint, so Switchboard reads the rate-limit
-  reply the CLI already recorded in that account's session log, and always shows when
-  the snapshot was taken rather than passing it off as live. Gemini and Qwen publish
-  nothing, and the card says so instead of showing an empty bar.
+- Usage is shown wherever the vendor gives an honest source. Claude and Codex both read
+  the account's own sign-in and ask the vendor what that account has spent. When a Codex
+  check is refused, usually a token its CLI has not refreshed in a while, Switchboard
+  falls back to the rate-limit reply the CLI already recorded in that account's session
+  log, says why it is standing in, and always shows when the snapshot was taken rather
+  than passing it off as live. Gemini and Qwen publish nothing, and the card says so
+  instead of showing an empty bar.
 - Installs and updates delegate to vendor mechanisms (winget, npm). Nothing is bundled.
 - Execution Lanes enable intelligent failover. By running tasks through `switchboard run`, the CLI automatically routes your task to an account with available quota. If a provider limit is hit mid-session, Switchboard securely transfers the context to the next available lane without leaking secrets.
 
