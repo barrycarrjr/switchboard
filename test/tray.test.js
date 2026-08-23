@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { trayModel, accountNote, whenBack, WATCH_MODES } from '../core/tray.js';
+import { trayModel, trayTooltip, accountNote, whenBack, WATCH_MODES, TOOLTIP_LIMIT } from '../core/tray.js';
 
 /**
  * The tray menu is the part of Switchboard most people see most days, and until the rows
@@ -233,4 +233,59 @@ test('an empty machine still offers the way out of being empty', () => {
   assert.equal(kinds(rows, 'heading').length, 0, 'no empty tool headings');
   assert.ok(kinds(rows, 'warning').some((r) => r.action === 'open:accounts'));
   assert.ok(labels(rows).includes('Quit'), 'and the menu still works');
+});
+
+// ---- The hover text ----
+//
+// The complaint that started this: hovering the tray showed which account each tool was
+// set to and nothing else, while the menu one click away said one of the Claude accounts
+// was out of quota. Two descriptions of the same machine, and the shorter one was the one
+// shown without asking.
+
+const tip = (over = {}) => trayTooltip({
+  providers: PROVIDERS,
+  accounts: ACCOUNTS,
+  activeIds: { claude: 'claude-account-2', codex: 'codex-default' },
+  ...over,
+});
+
+test('the hover names the account each tool is set to', () => {
+  assert.equal(tip(), 'Switchboard\nClaude Code: Secondary\nCodex: Default');
+});
+
+test('the state of the account in use is said where the account is named', () => {
+  const lines = tip({ notes: { 'claude-account-2': 'out until 7:00 PM' } }).split('\n');
+  assert.ok(lines.includes('Claude Code: Secondary, out until 7:00 PM'));
+});
+
+test('an account you are not on is still mentioned when it needs attention', () => {
+  const lines = tip({ notes: { 'claude-default': 'out of quota' } }).split('\n');
+  assert.deepEqual(lines, ['Switchboard', 'Claude Code: Secondary', 'Codex: Default', 'Main Account, out of quota']);
+});
+
+test('an account that is simply ready adds nothing to the hover', () => {
+  assert.equal(tip({ notes: { 'claude-default': null } }), tip());
+});
+
+test('what is wrong is said before what is merely worth knowing', () => {
+  const lines = tip({ update: 'v0.13.0', notes: { 'claude-default': 'out of quota' } }).split('\n');
+  assert.ok(lines.indexOf('Update available: v0.13.0') < lines.indexOf('Main Account, out of quota'));
+});
+
+test('the hover never exceeds what Windows will show, and counts what it left out', () => {
+  const many = [];
+  const providers = [];
+  for (let i = 0; i < 8; i++) {
+    providers.push({ id: `tool-${i}`, name: `A tool with a long name ${i}` });
+    many.push({ id: `acct-${i}`, provider: `tool-${i}`, label: `An account with a long label ${i}` });
+  }
+  const text = trayTooltip({ providers, accounts: many, activeIds: Object.fromEntries(providers.map((p, i) => [p.id, `acct-${i}`])) });
+  assert.ok(text.length <= TOOLTIP_LIMIT, `${text.length} characters is more than Windows shows`);
+  assert.match(text.split('\n').at(-1), /^and \d+ more$/);
+  // Every line that survived is a whole line: nothing is cut mid-word.
+  for (const line of text.split('\n').slice(1, -1)) assert.match(line, /^A tool with a long name \d: An account with a long label \d$/);
+});
+
+test('an empty machine says so in the hover too', () => {
+  assert.equal(trayTooltip({ providers: PROVIDERS, accounts: [] }), 'Switchboard\nNo accounts set up yet, open Switchboard');
 });

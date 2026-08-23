@@ -25,7 +25,7 @@ function effectiveUpdateRepo() {
   return loadSettings().updateRepo ?? pkgMeta.updateRepo ?? null;
 }
 import { decideDefaultSwitch } from '../core/watch.js';
-import { accountNote, trayModel } from '../core/tray.js';
+import { accountNote, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
@@ -290,10 +290,10 @@ async function refreshTrayFacts() {
 }
 
 /**
- * The tray menu: `core/tray.js` decides what it says, this turns each row into a menu
- * item and attaches what it does.
+ * Everything the tray knows, gathered once. The menu and the hover text are both built
+ * from this, so the two can never end up describing different machines.
  */
-function buildTrayMenu() {
+function trayInputs() {
   const reg = registry();
   const settings = loadSettings();
   const activeIds = {};
@@ -305,8 +305,7 @@ function buildTrayMenu() {
     // used to read as "nothing is set" rather than "something is set that I do not know".
     else if (reg.accounts.some((a) => a.provider === p.id) && activeHome(p.id)) stranded.push(p.name);
   }
-
-  const rows = trayModel({
+  return {
     providers: Object.values(PROVIDERS),
     accounts: reg.accounts,
     activeIds,
@@ -318,7 +317,15 @@ function buildTrayMenu() {
     strandedProviders: stranded,
     update: trayFacts.update,
     startWithWindows: app.getLoginItemSettings().openAtLogin,
-  });
+  };
+}
+
+/**
+ * The tray menu: `core/tray.js` decides what it says, this turns each row into a menu
+ * item and attaches what it does.
+ */
+function buildTrayMenu(inputs = trayInputs()) {
+  const rows = trayModel(inputs);
 
   const open = (action) => showWindow(action.slice('open:'.length));
   const items = rows.map((row) => {
@@ -397,16 +404,6 @@ function openTerminal(bin, accountId) {
   }
 }
 
-function trayTooltip() {
-  const reg = registry();
-  const parts = [];
-  for (const p of Object.values(PROVIDERS)) {
-    const a = activeAccount(reg, p.id);
-    if (a) parts.push(`${p.name}: ${a.label}`);
-  }
-  return parts.length ? `Switchboard\n${parts.join('\n')}` : 'Switchboard';
-}
-
 let factsSignature = null;
 let factsInFlight = false;
 
@@ -417,8 +414,9 @@ function accountSignature() {
 
 function refresh() {
   if (tray) {
-    tray.setContextMenu(buildTrayMenu());
-    tray.setToolTip(trayTooltip());
+    const inputs = trayInputs();
+    tray.setContextMenu(buildTrayMenu(inputs));
+    tray.setToolTip(trayTooltip(inputs));
   }
   if (win) win.webContents.send('sb:refresh');
   // The terminal list and the sign-in lines are built from the accounts, so an account
@@ -610,8 +608,9 @@ app.whenReady().then(() => {
 
   const trayIcon = nativeImage.createFromPath(path.join(here, '..', 'assets', 'tray.png'));
   tray = new Tray(trayIcon);
-  tray.setContextMenu(buildTrayMenu());
-  tray.setToolTip(trayTooltip());
+  const startupTray = trayInputs();
+  tray.setContextMenu(buildTrayMenu(startupTray));
+  tray.setToolTip(trayTooltip(startupTray));
   tray.on('click', () => showWindow());
 
   createWindow();

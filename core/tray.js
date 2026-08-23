@@ -54,6 +54,31 @@ export const WATCH_MODES = [
   ['auto', 'Switch automatically'],
 ];
 
+/**
+ * Everything wrong that the tray can say, in the order it should be read.
+ *
+ * Each of these is something the app already knew and the tray used to keep to itself.
+ * They appear only when true, so a machine with nothing wrong sees none of them. The
+ * menu and the hover text both build from this one list, because a hover that disagrees
+ * with the menu underneath it is worse than a hover that says less.
+ */
+export function trayWarnings({ accounts = [], overrideBlocking = false, strandedProviders = [], update = null } = {}) {
+  const warnings = [];
+  if (accounts.length === 0) {
+    warnings.push({ kind: 'warning', label: 'No accounts set up yet, open Switchboard', action: 'open:accounts' });
+  }
+  if (overrideBlocking) {
+    warnings.push({ kind: 'warning', label: 'A sign-in override is blocking switching, open Health', action: 'open:health' });
+  }
+  for (const name of strandedProviders) {
+    warnings.push({ kind: 'warning', label: `${name} is pointed at a folder that is not registered`, action: 'open:accounts' });
+  }
+  if (update) {
+    warnings.push({ kind: 'warning', label: `Update available: ${update}`, action: 'open:about' });
+  }
+  return warnings;
+}
+
 export function trayModel({
   providers = [],
   accounts = [],
@@ -71,21 +96,7 @@ export function trayModel({
 } = {}) {
   const rows = [];
 
-  // Each of these is something the app already knew and the tray used to keep to itself.
-  // They appear only when true, so a machine with nothing wrong sees none of them.
-  const warnings = [];
-  if (accounts.length === 0) {
-    warnings.push({ kind: 'warning', label: 'No accounts set up yet, open Switchboard', action: 'open:accounts' });
-  }
-  if (overrideBlocking) {
-    warnings.push({ kind: 'warning', label: 'A sign-in override is blocking switching, open Health', action: 'open:health' });
-  }
-  for (const name of strandedProviders) {
-    warnings.push({ kind: 'warning', label: `${name} is pointed at a folder that is not registered`, action: 'open:accounts' });
-  }
-  if (update) {
-    warnings.push({ kind: 'warning', label: `Update available: ${update}`, action: 'open:about' });
-  }
+  const warnings = trayWarnings({ accounts, overrideBlocking, strandedProviders, update });
   if (warnings.length) rows.push(...warnings, { kind: 'separator' });
 
   for (const provider of providers) {
@@ -150,4 +161,59 @@ export function trayModel({
   rows.push({ kind: 'checkbox', label: 'Start with Windows', checked: startWithWindows, action: 'startup' });
   rows.push({ kind: 'command', label: 'Quit', action: 'quit' });
   return rows;
+}
+
+/**
+ * Windows shows at most 127 characters of tray tooltip and cuts whatever follows
+ * without saying so, which is why the text below is fitted here rather than there.
+ */
+export const TOOLTIP_LIMIT = 127;
+
+/**
+ * The hover text: what each tool is set to, and anything about that which is not
+ * simply ready.
+ *
+ * It takes the same input as the menu and says the same things in the same words,
+ * because a hover that disagrees with the menu underneath it is worse than one that
+ * says less. What cannot be fitted is counted rather than quietly dropped, so the
+ * hover never passes off a part as the whole. Tools with one machine-wide sign-in are
+ * left to the menu on purpose: they are lines that never change, and they would crowd
+ * out the ones that do.
+ */
+export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
+  const { providers = [], accounts = [], activeIds = {}, notes = {} } = options;
+  const chosen = [];
+  const attention = [];
+  for (const provider of providers) {
+    for (const account of accounts.filter((a) => a.provider === provider.id)) {
+      const note = notes[account.id];
+      const named = note ? `${account.label}, ${note}` : account.label;
+      if (activeIds[provider.id] === account.id) chosen.push(`${provider.name}: ${named}`);
+      // An account you are not on can still be the thing you needed to know about.
+      else if (note) attention.push(named);
+    }
+  }
+  const warnings = trayWarnings(options).map((w) => w.label);
+
+  const title = 'Switchboard';
+  const kept = [title];
+  let used = title.length;
+  let dropped = 0;
+  for (const line of [...chosen, ...warnings, ...attention]) {
+    if (used + 1 + line.length <= limit) {
+      kept.push(line);
+      used += 1 + line.length;
+    } else dropped += 1;
+  }
+  // Give a line back if that is what it takes to admit there are more.
+  while (dropped > 0 && kept.length > 1) {
+    const tail = `and ${dropped} more`;
+    if (used + 1 + tail.length <= limit) {
+      kept.push(tail);
+      break;
+    }
+    used -= 1 + kept.pop().length;
+    dropped += 1;
+  }
+  return kept.join('\n');
 }
