@@ -430,7 +430,7 @@ async function main() {
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> <folder>`);
       out('  remove <id>                 unregister (never deletes the folder)');
-      out('  use <id>                    switch the machine default');
+      out('  use <id>                    switch the current account');
       out('  detect                      register existing vendor folders');
       out('  providers                   installed AI tools and versions');
       out('  doctor                      health checks');

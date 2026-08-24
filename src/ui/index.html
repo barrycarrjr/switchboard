@@ -673,7 +673,7 @@ function accountCard(p, account) {
   const titleId = `account-${p.id}-${a.id}`.replace(/[^a-zA-Z0-9_-]/g, '-');
   const actions = [];
   if (!isDefault) {
-    actions.push(cardButton('Make default', async () => {
+    actions.push(cardButton('Switch to this', async () => {
       try {
         await sb.setActive(a.id);
         toast(`New terminals and apps will use ${p.name}: ${a.label}. Running processes are unchanged.`);
@@ -700,7 +700,7 @@ function accountCard(p, account) {
   const { card, name } = cardShell({
     titleId,
     title: a.label,
-    badge: isDefault ? 'DEFAULT' : null,
+    badge: isDefault ? 'CURRENT' : null,
     person: person || null,
     folder: a.home,
     actions,
@@ -1035,9 +1035,9 @@ async function renderAccounts() {
     const found = (state.candidates || []).filter((x) => x.provider === p.id);
     const active = mine.find((a) => a.id === p.activeAccountId);
     const section = toolSection(p.id, p.name, active
-      ? `Default for new sessions: ${active.label} · ${mine.length} account${mine.length === 1 ? '' : 's'}`
+      ? `New sessions use: ${active.label} · ${mine.length} account${mine.length === 1 ? '' : 's'}`
       : mine.length
-        ? `${mine.length} account${mine.length === 1 ? '' : 's'} · no registered default`
+        ? `${mine.length} account${mine.length === 1 ? '' : 's'} · the folder in use is not registered`
         : `${found.length} folder${found.length === 1 ? '' : 's'} found, none registered yet`);
 
     if (mine.length) {
@@ -1067,7 +1067,7 @@ async function renderAccounts() {
   // Nothing registered yet is the one case where the catalogue IS the page.
   if (absent.length) panel.appendChild(shelfSection(absent, present.length === 0));
 
-  panel.appendChild(el('p', 'panelnote', 'Switching changes the default for <b>new</b> terminals and newly launched tools. Running apps and pinned automation are never touched.'));
+  panel.appendChild(el('p', 'panelnote', 'Switching changes which account <b>new</b> terminals and newly launched tools use. Running apps and pinned automation are never touched.'));
 
   if (!isCurrentRender('accounts', seq)) return;
   if (!$('#ver').querySelector('button')) $('#ver').textContent = 'v' + state.version;
@@ -1476,7 +1476,7 @@ async function renderApps() {
   const add = el('button', 'addbtn', '+ Add a launcher from the Start menu');
   add.addEventListener('click', openPicker);
   panel.appendChild(add);
-  panel.appendChild(el('p', 'panelnote', 'A terminal button opens that CLI on the account named on it, and sets the account for that window only: the machine default and every other running terminal stay as they are. Where a CLI has more than one account, the arrow opens on one of the others. An app that keeps each account in its own data folder works the same way, and its arrow can add another folder. Switchboard only names the folder on the command line: signing in is still done in the app itself, and a running application is never touched.'));
+  panel.appendChild(el('p', 'panelnote', 'A terminal button opens that CLI on the account named on it, and sets the account for that window only: the current account and every other running terminal stay as they are. Where a CLI has more than one account, the arrow opens on one of the others. An app that keeps each account in its own data folder works the same way, and its arrow can add another folder. Switchboard only names the folder on the command line: signing in is still done in the app itself, and a running application is never touched.'));
   realPanel.replaceChildren(...panel.childNodes);
   fillTerminals(terminals, seq);
 }
@@ -1680,7 +1680,7 @@ async function renderAbout() {
   const whatCard = el('article', 'acct account-card');
   const { area: whatArea } = cardArea(whatCard, 'In one line', 'note-area');
   whatArea.appendChild(el('p', 'about-lead', 'It answers one question: <b>which AI account is this machine using right now?</b> And lets you change it.'));
-  whatArea.appendChild(el('div', 'qnote', 'Register multiple subscription accounts per AI tool, switch the machine default in two clicks, see each account\'s usage against its available limits, install and update the tools through their vendors\' own mechanisms, and catch the setups that silently bill the wrong thing.'));
+  whatArea.appendChild(el('div', 'qnote', 'Register multiple subscription accounts per AI tool, switch the current account in two clicks, see each account\'s usage against its available limits, install and update the tools through their vendors\' own mechanisms, and catch the setups that silently bill the wrong thing.'));
   cardNote(whatCard, 'What it never does', 'It never runs tasks, never holds sessions, never touches a running application or any GUI app\'s login, never stores your tokens, and sends no telemetry. Installs only ever run vendor mechanisms in a visible terminal.');
   what.appendChild(oneColumn(whatCard));
   panel.appendChild(what);

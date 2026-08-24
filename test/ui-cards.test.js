@@ -87,7 +87,7 @@ test('an account and a vendor-managed tool build the same card', () => {
   const account = cardShell({
     titleId: 'account-claude-1',
     title: 'Main Account',
-    badge: 'DEFAULT',
+    badge: 'CURRENT',
     person: 'account owner · max plan',
     folder: 'D:\\profiles\\one\\.claude',
     accent: true,
@@ -234,4 +234,17 @@ test('a lane whose account was unregistered says what is wrong instead of showin
   assert.equal(card.children[0].children[0].children[0].children[0].innerHTML, 'Account missing');
   assert.match(card.children[1].children[2].innerHTML, /no longer registered/);
   assert.equal(card.children[1].className, 'account-area note-area warn');
+});
+
+/**
+ * The account marked here is the one new terminals and newly launched tools will use, and
+ * "default" read as "the one it came with" rather than "the one you switched to". These
+ * assertions pin the words themselves, because nothing else in the suite renders them and a
+ * copy change is exactly the kind of thing that slides back without anyone noticing.
+ */
+test('the marked account is named as the current one, not as a default', () => {
+  assert.match(HTML, /badge: isDefault \? 'CURRENT' : null/, 'the badge names the current account');
+  assert.match(HTML, /cardButton\('Switch to this'/, 'the button says what Switchboard does');
+  assert.match(HTML, /`New sessions use: \$\{active\.label\}/, 'the section header says what the mark means');
+  assert.doesNotMatch(HTML, /'DEFAULT'|Make default|Default for new sessions/, 'no default wording is left on the accounts page');
 });
