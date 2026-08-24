@@ -340,7 +340,7 @@ function showUsageState(host, summary, { title, detail, tone = '', loading = fal
 
 function quotaProblemLabel(code) {
   return ({
-    auth: 'authorization failed',
+    auth: 'was skipped: the sign-in needs a refresh (run this account once, or Re-authenticate)',
     'rate-limited': 'was rate-limited',
     unavailable: 'was unavailable',
     'no-credentials': 'had no readable usage credential',

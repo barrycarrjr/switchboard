@@ -133,6 +133,34 @@ test('accountQuota reports unknowns instead of guessing, and names auth failures
   assert.deepEqual(await accountQuota(dir, failWith(429)), { error: 'rate-limited' });
 });
 
+// Presenting an expired token earns a guaranteed 401, and the endpoint answers
+// repeated bad credentials with hour-long lockouts that then read as "rate-limited".
+// The expiry is in the credentials file, so the call must never be made.
+test('accountQuota reports auth locally instead of presenting a token the file says has expired', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-q3-'));
+  const cred = (expiresAt) => fs.writeFileSync(
+    path.join(dir, '.credentials.json'),
+    JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt } }),
+  );
+  let calls = 0;
+  const spyFetch = async () => { calls += 1; return { ok: true, json: async () => ({ five_hour: { utilization: 5 } }) }; };
+
+  cred(1_000);
+  assert.deepEqual(await accountQuota(dir, spyFetch, null, 2_000, null, false), { error: 'auth' });
+  assert.equal(calls, 0);
+
+  // A future expiry is presented normally.
+  cred(9_000);
+  const live = await accountQuota(dir, spyFetch, null, 2_000, null, false);
+  assert.equal(live.source, 'token');
+  assert.equal(calls, 1);
+
+  // No expiry recorded means unknown, which is still worth one request, not a guess.
+  fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't' } }));
+  assert.equal((await accountQuota(dir, spyFetch, null, 2_000, null, false)).source, 'token');
+  assert.equal(calls, 2);
+});
+
 /* Codex: a live endpoint when the sign-in allows it, the account's own session logs when it does not. */
 
 function codexHome(days = [['2026', '08', '19']]) {

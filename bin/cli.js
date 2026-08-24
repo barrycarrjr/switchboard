@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { loadRegistry, saveRegistry, addAccount, removeAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, PROVIDERS, accountScopedEnv } from '../core/accounts.js';
 import { detectAll, TOOLS, toolExecutable } from '../core/providers.js';
 import { runChecks, accountLoginState } from '../core/doctor.js';
-import { providerQuota } from '../core/quota.js';
+import { sharedProviderQuota } from '../core/quota-cache.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings } from '../core/settings.js';
 import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
@@ -35,7 +35,10 @@ async function prepareLanesContext(settings, registry, overrides = {}) {
     loginStates[account.id] = await accountLoginState(account);
     const def = PROVIDERS[account.provider];
     if (def && def.quota) {
-      quotas[account.id] = await providerQuota(account.provider, account.home, { fetchImpl: fetch, usageSource: usageSources[account.id] ?? null, now });
+      // Through the shared cache: `dry-run` is what Paperclip and the Slack bridge
+      // invoke before every spawn, so uncached live calls here multiplied across
+      // every automation on the machine.
+      quotas[account.id] = await sharedProviderQuota(account, { fetchImpl: fetch, usageSource: usageSources[account.id] ?? null, now });
     }
   }
 
@@ -405,9 +408,9 @@ async function main() {
         const def = PROVIDERS[a.provider];
         if (!def.quota) continue;
         out(`${a.label} (${a.home})`);
-        const q = await providerQuota(a.provider, a.home, { usageSource: settings.usageSources[a.id] ?? null });
+        const q = await sharedProviderQuota(a, { usageSource: settings.usageSources[a.id] ?? null });
         if (q.error === 'no-credentials') out('  usage unavailable: no access credential or matching Claude Desktop sample');
-        else if (q.error === 'auth') out('  quota unavailable: stored token needs a refresh (run the CLI once on this account)');
+        else if (q.error === 'auth') out('  quota unavailable: the sign-in needs a refresh (run this account once, or re-authenticate it in Switchboard)');
         else if (q.error === 'no-usage-data') out('  no usage recorded yet: run this account once and the figures appear');
         else if (q.error) out('  quota unavailable right now');
         else {

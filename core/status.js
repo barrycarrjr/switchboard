@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { PROVIDERS, activeAccount, activeHome } from './accounts.js';
 import { accountLoginState } from './doctor.js';
-import { providerQuota } from './quota.js';
+import { sharedProviderQuota } from './quota-cache.js';
 import { readUserEnv } from './env.js';
 
 /**
@@ -28,7 +28,7 @@ export async function collectStatus({
     const accounts = await Promise.all(mine.map(async (a) => {
       const login = accountLoginState(a, now);
       const quota = def.quota && login.signedIn
-        ? await providerQuota(def.id, a.home, { fetchImpl, usageSource: usageSources[a.id] ?? null, now })
+        ? await sharedProviderQuota(a, { fetchImpl, usageSource: usageSources[a.id] ?? null, now })
         : null;
       return { id: a.id, label: a.label, home: a.home, active: active?.id === a.id, login, quota };
     }));
@@ -68,7 +68,7 @@ function ago(ms, now) {
 
 const QUOTA_REASONS = {
   'no-credentials': 'usage unavailable: no access credential or matching Claude Desktop sample',
-  auth: 'usage unavailable: the stored token needs a refresh (run the CLI once on this account)',
+  auth: 'usage unavailable: the sign-in needs a refresh (run this account once, or re-authenticate it in Switchboard)',
   'rate-limited': 'usage unavailable: the endpoint is rate-limiting checks; it returns on its own shortly',
   'no-usage-data': 'no usage recorded yet: run this account once and the figures appear',
   unsupported: 'no usage source for this tool',

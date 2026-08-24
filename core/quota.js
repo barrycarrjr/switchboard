@@ -5,17 +5,24 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const OAUTH_BETA = 'oauth-2025-04-20';
 
 /**
- * Read the OAuth access token from a Claude config home, transiently.
- * The token is returned to the caller for one request and never stored or logged.
+ * Read the OAuth access token from a Claude config home, transiently, along with
+ * the expiry the CLI stamped next to it. The token is returned to the caller for
+ * one request and never stored or logged.
  */
-export function readAccessToken(home) {
+export function readClaudeCredential(home) {
   try {
     const raw = fs.readFileSync(path.join(home, '.credentials.json'), 'utf8');
-    const token = JSON.parse(raw)?.claudeAiOauth?.accessToken;
-    return typeof token === 'string' && token.length > 0 ? token : null;
+    const oauth = JSON.parse(raw)?.claudeAiOauth;
+    const token = typeof oauth?.accessToken === 'string' && oauth.accessToken.length > 0 ? oauth.accessToken : null;
+    const expiresAt = typeof oauth?.expiresAt === 'number' && oauth.expiresAt > 0 ? oauth.expiresAt : null;
+    return { token, expiresAt };
   } catch {
-    return null;
+    return { token: null, expiresAt: null };
   }
+}
+
+export function readAccessToken(home) {
+  return readClaudeCredential(home).token;
 }
 
 /**
@@ -259,9 +266,17 @@ export async function accountQuota(
   desktopProfile = defaultClaudeDesktopProfile(),
   allowDesktopFallback = true,
 ) {
-  const token = readAccessToken(home);
+  const { token, expiresAt } = readClaudeCredential(home);
   let tokenError = null;
-  if (token) {
+  if (token && expiresAt != null && expiresAt <= now) {
+    // A token the file itself says has expired earns a guaranteed 401, and the
+    // endpoint answers repeated bad credentials with hour-long lockouts that hide
+    // the real problem behind "rate-limited" (this exact loop kept an account
+    // unreadable for three days on 2026-08-24). The expiry is on disk, so say
+    // "auth" without spending a request. The vendor CLI refreshes the token on
+    // its next real use; until then the desktop fallback below still applies.
+    tokenError = { error: 'auth' };
+  } else if (token) {
     try {
       return { windows: await fetchClaudeQuota(token, fetchImpl), source: 'token', vendor: 'Anthropic' };
     } catch (e) {

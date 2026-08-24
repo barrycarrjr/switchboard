@@ -7,6 +7,7 @@ import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, d
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
 import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
 import { providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
+import { sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
@@ -1122,6 +1123,9 @@ async function cachedQuota(account, force = false) {
     const isCurrent = quotaInflight.get(account.id) === flight;
     if (!result.error) {
       if (isCurrent) quotaCache.set(account.id, { key, at: completedAt, lastAttemptAt: completedAt, lastError: null, result });
+      // Shared with the CLI (and through it Paperclip and the Slack bridge), so the
+      // app's five-minute watch is the one caller that actually spends requests.
+      writeSharedQuota(account.id, sharedQuotaKey(account.provider, account.home), result, completedAt);
       return { ...result, observedAt: completedAt, cached: false };
     }
     // A failed forced refresh must not erase the last known good reading.
