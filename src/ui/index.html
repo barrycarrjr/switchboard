@@ -544,11 +544,15 @@ function cardShell({ titleId, title, badge = null, person = null, folder = null,
   return { card, name };
 }
 
-function cardButton(label, onClick, { primary = false, ghost = false, title = null } = {}) {
+function cardButton(label, onClick, { primary = false, ghost = false, title = null, disabled = false } = {}) {
   const button = el('button', 'btn' + (primary ? ' primary' : '') + (ghost ? ' ghost' : ''), esc(label));
   button.type = 'button';
+  // A disabled button keeps its title, so hovering it still says why it cannot be used.
+  // The handler is left off rather than trusting the browser to swallow the click, so
+  // the action cannot run even if something else on the page triggers the button.
   if (title) button.title = title;
-  button.addEventListener('click', onClick);
+  if (disabled) button.disabled = true;
+  else button.addEventListener('click', onClick);
   return button;
 }
 
@@ -646,6 +650,23 @@ async function addToolAccount(p) {
   }
 }
 
+/**
+ * Why "Switch to this" is refused, or null when the switch may go ahead.
+ *
+ * An account with no usable login gives every new terminal a folder that cannot run
+ * anything, and the usage watch already refuses to make such an account the default on
+ * its own. Offering the same switch by hand contradicted that, and with the watch on
+ * "auto" the switch was undone within the minute anyway.
+ *
+ * A status that could not be read is not a refusal. Only a confirmed signed-out account
+ * is blocked, so a check that fails to run never strands anyone on one account.
+ */
+function switchBlockedReason(label, login) {
+  if (login?.signedIn !== false) return null;
+  const detail = String(login.detail || 'Not signed in').replace(/\.+$/, '');
+  return `${detail}. Sign ${label} in before making it the default.`;
+}
+
 /** One registered account: the only card here that can switch, rename and report usage. */
 function accountCard(p, account) {
   const a = account;
@@ -689,6 +710,7 @@ function accountCard(p, account) {
   const titleId = `account-${p.id}-${a.id}`.replace(/[^a-zA-Z0-9_-]/g, '-');
   const actions = [];
   if (!isDefault) {
+    const blocked = switchBlockedReason(a.label, login);
     actions.push(cardButton('Switch to this', async () => {
       try {
         await sb.setActive(a.id);
@@ -696,7 +718,11 @@ function accountCard(p, account) {
       } catch (e) {
         toast('Switch failed: ' + (e.message || e));
       }
-    }, { primary: true, title: `Use ${a.label} for new ${p.name} sessions` }));
+    }, {
+      primary: true,
+      disabled: Boolean(blocked),
+      title: blocked ?? `Use ${a.label} for new ${p.name} sessions`,
+    }));
   }
   const rename = cardButton('Rename', () => startRename());
   rename.setAttribute('aria-label', `Rename ${a.label}`);

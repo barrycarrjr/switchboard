@@ -727,8 +727,19 @@ ipcMain.handle('sb:configImport', async () => {
   return { ok: true, filePath, backupPath, summary, warnings };
 });
 
-ipcMain.handle('sb:setActive', (_e, id) => {
+ipcMain.handle('sb:setActive', async (_e, id) => {
   const reg = registry();
+  const chosen = reg.accounts.find((a) => a.id === id);
+  if (!chosen) throw new Error(`no such account: ${id}`);
+  // The button for a signed-out account is disabled, but a card drawn before the login
+  // went stale could still send this. The usage watch refuses the same switch, so the
+  // deliberate one is refused too rather than pointing new terminals at a dead folder.
+  // The cached reading is keyed to the credential file, so this costs nothing when the
+  // sign-in has not moved since the page was drawn.
+  const login = await cachedLoginState(chosen);
+  if (login?.signedIn === false) {
+    throw new Error(`${chosen.label} is not signed in. Sign it in first, then switch.`);
+  }
   const account = setActive(reg, id);
   refresh();
   return { ok: true, account };

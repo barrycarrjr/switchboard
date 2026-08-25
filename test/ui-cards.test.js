@@ -248,3 +248,56 @@ test('the marked account is named as the current one, not as a default', () => {
   assert.match(HTML, /`New sessions use: \$\{active\.label\}/, 'the section header says what the mark means');
   assert.doesNotMatch(HTML, /'DEFAULT'|Make default|Default for new sessions/, 'no default wording is left on the accounts page');
 });
+
+/**
+ * Switching to an account nobody is signed into hands every new terminal a folder that
+ * cannot run anything, and the usage watch already refuses to make such an account the
+ * default by itself. These pin the two halves of that: what counts as a refusal, and
+ * that a refused button really cannot act.
+ */
+test('a confirmed signed-out account cannot be made the default', () => {
+  const { switchBlockedReason } = load(['switchBlockedReason'], ['switchBlockedReason']);
+  assert.equal(
+    switchBlockedReason('Main Account', { signedIn: false, detail: 'Not signed in' }),
+    'Not signed in. Sign Main Account in before making it the default.',
+  );
+  assert.equal(
+    switchBlockedReason('Main Account', { signedIn: false, detail: 'Claude is using API-key authentication, not this Claude subscription login' }),
+    'Claude is using API-key authentication, not this Claude subscription login. Sign Main Account in before making it the default.',
+    'the reason names what is actually wrong, not just "signed out"',
+  );
+});
+
+test('a sign-in that could not be read still allows the switch', () => {
+  const { switchBlockedReason } = load(['switchBlockedReason'], ['switchBlockedReason']);
+  assert.equal(switchBlockedReason('Secondary', { signedIn: true, detail: 'Signed in' }), null);
+  assert.equal(
+    switchBlockedReason('Secondary', { signedIn: null, detail: 'Sign-in status unavailable' }),
+    null,
+    'an unreachable check is not evidence of being signed out',
+  );
+  assert.equal(switchBlockedReason('Secondary', undefined), null, 'nor is a card drawn before any reading arrived');
+});
+
+test('the account card puts that refusal on the switch button', () => {
+  assert.match(HTML, /const blocked = switchBlockedReason\(a\.label, login\);/, 'the card asks before offering the switch');
+  assert.match(HTML, /disabled: Boolean\(blocked\)/, 'a refused switch is disabled, not merely explained');
+  assert.match(HTML, /title: blocked \?\?/, 'the reason becomes the hover text');
+});
+
+test('a disabled card button says why and cannot be clicked', () => {
+  const { cardButton } = load(['cardButton'], ['cardButton']);
+  let ran = 0;
+
+  const live = cardButton('Switch to this', () => { ran += 1; }, { primary: true, title: 'Use Secondary for new Claude Code sessions' });
+  live.click();
+  assert.equal(ran, 1);
+  assert.ok(!live.disabled, 'a usable button is left alone');
+
+  const blocked = cardButton('Switch to this', () => { ran += 1; }, { primary: true, disabled: true, title: 'Not signed in. Sign Main Account in before making it the default.' });
+  blocked.click();
+  assert.equal(ran, 1, 'the handler never runs');
+  assert.equal(blocked.disabled, true);
+  assert.equal(blocked.title, 'Not signed in. Sign Main Account in before making it the default.', 'hovering it says why');
+  assert.equal(blocked.className, 'btn primary', 'it stays the same button, only unusable');
+});
