@@ -79,6 +79,18 @@ export function childStdio(stdoutIsTty) {
   return ['inherit', stdoutIsTty ? 'inherit' : 'pipe', 'pipe'];
 }
 
+// Whether the harness gets a console window of its own on Windows. A caller with no
+// terminal is an automated one (a Slack bridge, a scheduled run, anything started from a
+// hidden launcher), and this process is an Electron binary running as node, so it has no
+// console for the child to inherit: Windows hands the child a brand new one and shows it.
+// That is a command window popping onto the desktop every time a bot answers a message.
+// Hiding it there is the whole fix. A person who typed the command keeps their window,
+// because the harness renders its interface into that terminal's console and taking it
+// away would break interactive runs.
+export function childWindowsHide(stdoutIsTty) {
+  return !stdoutIsTty;
+}
+
 // Missing harness returns null so the caller can refuse to run rather than guess. The
 // handoff prompt is APPENDED, because a headless form can need a subcommand and flags
 // (`codex exec - <prompt>`) and replacing the argv with the bare prompt would not run.

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseRunArgs, parseRunSpec, loadRunSpec, resolveSpecArgv, childStdio } from '../core/runargs.js';
+import { parseRunArgs, parseRunSpec, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide } from '../core/runargs.js';
 
 test('parseRunArgs steals its own flags and leaves the rest to the child', () => {
   const parsed = parseRunArgs(['--provider', 'anthropic', '--account', 'acct1', '--no-fallback', '--yes', '--quiet', '--spec', 'spec.json', '-p', 'hello']);
@@ -117,4 +117,12 @@ test('childStdio leaves a terminal alone and only captures stdout for an automat
   // own interface; capturing it would silently downgrade every hand-typed run.
   assert.deepEqual(childStdio(true), ['inherit', 'inherit', 'pipe']);
   assert.deepEqual(childStdio(false), ['inherit', 'pipe', 'pipe']);
+});
+
+test('childWindowsHide keeps a console window off an automated run and leaves a typed one alone', () => {
+  // Without this, a bot answering a Slack message pops a command window onto the desktop:
+  // switchboard runs as an Electron binary in node mode, which has no console of its own,
+  // so Windows gives the harness a fresh one and shows it.
+  assert.equal(childWindowsHide(false), true);
+  assert.equal(childWindowsHide(true), false);
 });

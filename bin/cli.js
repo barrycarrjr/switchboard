@@ -9,7 +9,7 @@ import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings } from '../core/settings.js';
 import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
 import { readHandoff, generateHandoffPrompt } from '../core/handoff.js';
-import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio } from '../core/runargs.js';
+import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide } from '../core/runargs.js';
 import readline from 'node:readline/promises';
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -189,7 +189,7 @@ async function main() {
           // streaming caller still sees the same bytes at the same time.
           stdio: childStdio(Boolean(process.stdout.isTTY)),
           env: childEnv,
-          windowsHide: false
+          windowsHide: childWindowsHide(Boolean(process.stdout.isTTY))
         };
 
         if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable)) {
