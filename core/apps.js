@@ -23,7 +23,13 @@ export const APPS = [
   // the package by id), but an activation cannot carry arguments, so opening on a
   // chosen account has to run the program file itself.
   { id: 'claude-desktop', name: 'Claude Desktop', url: 'https://claude.ai/download', startAppsMatch: /^Claude$/, packagedExe: 'app/Claude.exe', install: { via: 'winget', cmd: 'winget install --id Anthropic.Claude -e' } },
-  { id: 't3code', name: 'T3 Code', url: 'https://t3.codes', startAppsMatch: /^T3 Code/, exePaths: () => [path.join(process.env.LOCALAPPDATA || '', 'Programs', 'T3 Code', 'T3 Code.exe')], install: { via: 'winget', cmd: 'winget install --id T3Tools.T3Code -e' } },
+  // The alpha installs under Programs\t3code with "(Alpha)" in the exe name; the plain
+  // names are kept for when the app leaves alpha.
+  { id: 't3code', name: 'T3 Code', url: 'https://t3.codes', startAppsMatch: /^T3 Code/, exePaths: () => [
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'T3 Code', 'T3 Code.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 't3code', 'T3 Code.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 't3code', 'T3 Code (Alpha).exe'),
+  ], install: { via: 'winget', cmd: 'winget install --id T3Tools.T3Code -e' } },
   // OpenAI shipped Codex inside the app that used to be ChatGPT: the window says Codex,
   // while the Store listing and the Start menu entry still say ChatGPT, so both names
   // count as a hit. The id stays 'chatgpt' because it keys the saved card order.

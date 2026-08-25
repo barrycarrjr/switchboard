@@ -177,7 +177,11 @@
   .prov[draggable="true"]{cursor:grab}
   .prov.dragging{opacity:.45}
   .prov.dragover{box-shadow:0 -2px 0 0 var(--accent)}
-  .prov .pi{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff;flex:0 0 auto}
+  .prov .pi{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff;flex:0 0 auto;position:relative}
+  /* The JetBrains-style corner dot: green means a process of this app is running right now. */
+  .prov.running .pi::after{content:"";position:absolute;right:-4px;bottom:-4px;width:9px;height:9px;border-radius:50%;background:var(--ok);border:2px solid var(--card)}
+  .prov .runstate{color:var(--ok);font-weight:600}
+  .prov .runstate.off{color:var(--muted);font-weight:400}
   .prov .pm{flex:1;min-width:0}
   .prov .pm b{font-size:.9rem;display:block}
   .prov .pm .ext{color:var(--muted);cursor:pointer;font-size:.85em;margin-left:4px}
@@ -264,6 +268,18 @@
       <input id="picker-filter" placeholder="Type to filter&hellip;" style="font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px">
       <div id="picker-list" style="overflow-y:auto;flex:1"></div>
       <button class="btn" id="picker-close" style="align-self:flex-end">Cancel</button>
+    </div>
+  </div>
+  <div id="bridgeModal" style="display:none;position:fixed;inset:0;background:rgba(20,25,35,.45);z-index:6">
+    <div style="background:var(--card);border-radius:10px;max-width:380px;margin:90px auto;padding:16px;display:flex;flex-direction:column;gap:9px">
+      <b style="font-size:.95rem">Watch a background process</b>
+      <span style="font-size:.8rem;color:var(--muted)">For a bridge, bot, or worker that runs without a window. Switchboard marks it running while any process&rsquo;s command line contains the match text, so use something unique to it, such as the path of the script it runs.</span>
+      <input id="bridgeName" placeholder="Name, e.g. Slack bridge" style="font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px">
+      <input id="bridgeMatch" placeholder="Command-line text, e.g. claude-slack-bridge" style="font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px">
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" id="bridgeCancel">Cancel</button>
+        <button class="btn primary" id="bridgeSave">Watch it</button>
+      </div>
     </div>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -1401,7 +1417,7 @@ async function renderApps() {
     });
     row.appendChild(el('div', 'pi', esc(a.name[0])));
     row.lastChild.style.background = APP_COLORS[a.id] || '#5b6675';
-    const apm = el('div', 'pm', `<b>${esc(a.name)}${a.url ? ` <a class="ext" title="Vendor site">&#8599;</a>` : ''}</b><span>${a.installed ? 'Installed' : 'Not installed'}${a.custom ? ' &middot; custom launcher' : ''}</span>`);
+    const apm = el('div', 'pm', `<b>${esc(a.name)}${a.url ? ` <a class="ext" title="Vendor site">&#8599;</a>` : ''}</b><span>${a.installed ? 'Installed' : 'Not installed'}${a.custom ? ' &middot; custom launcher' : ''}<span class="runstate"></span></span>`);
     if (a.url) apm.querySelector('.ext').addEventListener('click', () => sb.openExternal(a.url));
     row.appendChild(apm);
     if (a.installed) {
@@ -1476,9 +1492,89 @@ async function renderApps() {
   const add = el('button', 'addbtn', '+ Add a launcher from the Start menu');
   add.addEventListener('click', openPicker);
   panel.appendChild(add);
-  panel.appendChild(el('p', 'panelnote', 'A terminal button opens that CLI on the account named on it, and sets the account for that window only: the current account and every other running terminal stay as they are. Where a CLI has more than one account, the arrow opens on one of the others. An app that keeps each account in its own data folder works the same way, and its arrow can add another folder. Switchboard only names the folder on the command line: signing in is still done in the app itself, and a running application is never touched.'));
+
+  panel.appendChild(el('div', 'grouphead', 'Bridges'));
+  let bridges = [];
+  try { bridges = await sb.bridges(); } catch { /* drawn empty; the poll below fills states in */ }
+  if (!isCurrentRender('apps', seq)) return;
+  if (!bridges.length) {
+    panel.appendChild(el('div', 'empty', 'Nothing watched yet. A bridge or bot that works in the background has no window to look for, so watch it here to see at a glance whether it is alive.'));
+  }
+  for (const b of bridges) {
+    const row = el('div', 'prov');
+    row.dataset.bridgeId = b.id;
+    row.appendChild(el('div', 'pi', esc(b.label[0].toUpperCase())));
+    row.lastChild.style.background = '#33404f';
+    row.title = `Marked running while a process command line contains: ${b.match}`;
+    row.appendChild(el('div', 'pm', `<b>${esc(b.label)}</b><span class="runstate">Checking&hellip;</span>`));
+    attachMenu(row, [{ label: 'Stop watching', danger: true, onClick: async () => { await sb.removeBridge(b.id); renderApps(); } }]);
+    panel.appendChild(row);
+  }
+  const addBridge = el('button', 'addbtn', '+ Watch a background process');
+  addBridge.addEventListener('click', openBridgeModal);
+  panel.appendChild(addBridge);
+
+  panel.appendChild(el('p', 'panelnote', 'A terminal button opens that CLI on the account named on it, and sets the account for that window only: the current account and every other running terminal stay as they are. Where a CLI has more than one account, the arrow opens on one of the others. An app that keeps each account in its own data folder works the same way, and its arrow can add another folder. Switchboard only names the folder on the command line: signing in is still done in the app itself, and a running application is never touched. A green dot on an app means a process of it is running right now.'));
   realPanel.replaceChildren(...panel.childNodes);
   fillTerminals(terminals, seq);
+  watchRunning(seq);
+}
+
+/** What a bridge row says for each answer the poll can give. Pure for tests. */
+function bridgeStateView(running) {
+  if (running === true) return { text: 'Running', cls: 'runstate' };
+  if (running === false) return { text: 'Not running', cls: 'runstate off' };
+  return { text: 'State unknown', cls: 'runstate off' };
+}
+
+/**
+ * Keep the running dots honest while the panel is on screen. One timer at a time;
+ * it stops itself as soon as another render begins or the person leaves the tab.
+ */
+let runningTimer = null;
+function watchRunning(seq) {
+  clearInterval(runningTimer);
+  const tick = async () => {
+    if (!isCurrentRender('apps', seq) || !$('#tab-apps').classList.contains('on')) { clearInterval(runningTimer); return; }
+    let r;
+    try { r = await sb.running(); } catch { return; }
+    if (!isCurrentRender('apps', seq)) return;
+    for (const row of document.querySelectorAll('#tab-apps .prov[data-app-id]')) {
+      const on = r.apps[row.dataset.appId] === true;
+      row.classList.toggle('running', on);
+      const state = row.querySelector('.runstate');
+      if (state) state.textContent = on ? ' · Running' : '';
+      if (on) row.title = 'Running';
+      else if (row.title === 'Running') row.title = '';
+    }
+    for (const b of r.bridges) {
+      const state = document.querySelector(`#tab-apps .prov[data-bridge-id="${b.id}"] .runstate`);
+      if (!state) continue;
+      const view = bridgeStateView(r.known ? b.running : null);
+      state.textContent = view.text;
+      state.className = view.cls;
+      state.closest('.prov').classList.toggle('running', b.running === true);
+    }
+  };
+  tick();
+  runningTimer = setInterval(tick, 6000);
+}
+
+function openBridgeModal() {
+  const overlay = $('#bridgeModal');
+  const name = $('#bridgeName');
+  const match = $('#bridgeMatch');
+  overlay.style.display = 'block';
+  name.value = '';
+  match.value = '';
+  name.focus();
+  $('#bridgeCancel').onclick = () => { overlay.style.display = 'none'; };
+  $('#bridgeSave').onclick = async () => {
+    const r = await sb.addBridge({ label: name.value, match: match.value });
+    if (!r.ok) { toast(r.error); return; }
+    overlay.style.display = 'none';
+    renderApps();
+  };
 }
 
 /**
@@ -1690,7 +1786,7 @@ async function renderAbout() {
   cardNote(tourCard, 'Accounts', 'Your accounts per tool, which one is active, live quota, and one-click switching.');
   cardNote(tourCard, 'Providers', 'The AI command-line tools: detected versions, honest update checks, install, reinstall, uninstall.');
   cardNote(tourCard, 'Lanes', 'The fallback order for "switchboard run", and what each lane is allowed to spend.');
-  cardNote(tourCard, 'Apps', 'Desktop AI apps and terminals: detect, install, launch on a chosen account, plus your own Start-menu launchers.');
+  cardNote(tourCard, 'Apps', 'Desktop AI apps and terminals: detect, install, launch on a chosen account, plus your own Start-menu launchers. A green dot shows what is running, and background bridges can be watched too.');
   cardNote(tourCard, 'MCP', 'The MCP servers your clients can reach, and which client each one is registered with.');
   cardNote(tourCard, 'Health', 'Checks for billing traps, expired logins, PATH problems, and dead proxy configs, with safe one-click fixes.');
   tour.appendChild(oneColumn(tourCard));

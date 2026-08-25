@@ -44,6 +44,13 @@ For deep-dives into architecture, guides, and full command references, see the *
   log, says why it is standing in, and always shows when the snapshot was taken rather
   than passing it off as live. Gemini and Qwen publish nothing, and the card says so
   instead of showing an empty bar.
+- The Apps tab shows what is actually running. An app card gets a green corner dot while
+  a process of that app is alive, matched by its program file (or, for a Store app, the
+  package folder its processes run from) so a same-named file elsewhere never counts. A
+  background worker with no window, such as a Slack bridge, can be watched too: give it a
+  name and a piece of its command line, and its card says Running or Not running. The
+  check is a local process listing taken only while the window is open; nothing is ever
+  started or stopped.
 - Installs and updates delegate to vendor mechanisms (winget, npm). Nothing is bundled.
 - Execution Lanes enable intelligent failover. By running tasks through `switchboard run`, the CLI automatically routes your task to an account with available quota. If a provider limit is hit mid-session, Switchboard securely transfers the context to the next available lane without leaking secrets.
 

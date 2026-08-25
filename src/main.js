@@ -14,6 +14,7 @@ import { loadSettings, saveSettings } from '../core/settings.js';
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, resolvePackagedExe, APPS } from '../core/apps.js';
 import { appProfileDef, chooseOpenProfile, describeProfiles, discoverProfileDirs, profileFolderProblem, profileLaunchArgs } from '../core/appprofiles.js';
 import { detectPresence } from '../core/presence.js';
+import { appRunning, bridgeProblem, bridgeRunning, listProcesses } from '../core/running.js';
 import { terminalRows, terminalChips } from '../core/terminals.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
 import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix } from '../core/mcp.js';
@@ -911,6 +912,10 @@ ipcMain.handle('sb:mcpUnregister', (_e, clientId, name) => unregisterServer(clie
 
 ipcMain.handle('sb:mcpList', (_e, clientId) => listRegistered(clientId));
 
+// What the Apps panel last showed, kept so the running poll can match processes to
+// apps without re-running detection (a PowerShell call) every few seconds.
+let appRefs = [];
+
 ipcMain.handle('sb:apps', async () => {
   const startApps = await getStartApps();
   const settings = loadSettings();
@@ -918,7 +923,46 @@ ipcMain.handle('sb:apps', async () => {
   // one its button opens without a second round trip and a visible correction.
   const builtin = detectApps(startApps).map((a) => (a.installed ? { ...a, ...appProfilesFor(a.id) } : a));
   const custom = settings.customApps.map((c) => ({ id: `custom:${c.appId}`, name: c.label, installed: true, appId: c.appId, exePath: null, custom: true }));
-  return orderApps([...builtin, ...custom], settings.appOrder);
+  const ordered = orderApps([...builtin, ...custom], settings.appOrder);
+  appRefs = ordered.filter((a) => a.installed).map((a) => ({ id: a.id, exePath: a.exePath, appId: a.appId }));
+  return ordered;
+});
+
+/**
+ * One process snapshot answers for every card: which apps are running, and which
+ * bridges. `known: false` means the machine could not be asked, which the panel shows
+ * as no state at all rather than as everything-stopped.
+ */
+ipcMain.handle('sb:running', async () => {
+  const settings = loadSettings();
+  const processes = await listProcesses();
+  if (!processes) return { known: false, apps: {}, bridges: settings.bridges.map((b) => ({ ...b, running: null })) };
+  const apps = {};
+  for (const a of appRefs) apps[a.id] = appRunning(processes, a);
+  return { known: true, apps, bridges: settings.bridges.map((b) => ({ ...b, running: bridgeRunning(processes, b.match) })) };
+});
+
+// The list alone, so the panel can draw its rows instantly; the snapshot poll
+// (sb:running) fills in whether each one is alive.
+ipcMain.handle('sb:bridges', () => loadSettings().bridges);
+
+ipcMain.handle('sb:addBridge', (_e, entry) => {
+  const problem = bridgeProblem(entry ?? {});
+  if (problem) return { ok: false, error: problem };
+  const settings = loadSettings();
+  const label = entry.label.trim();
+  const match = entry.match.trim();
+  if (settings.bridges.some((b) => b.match === match)) return { ok: false, error: 'that match text is already being watched' };
+  settings.bridges.push({ id: `bridge-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, label, match });
+  saveSettings(settings);
+  return { ok: true };
+});
+
+ipcMain.handle('sb:removeBridge', (_e, id) => {
+  const settings = loadSettings();
+  settings.bridges = settings.bridges.filter((b) => b.id !== id);
+  saveSettings(settings);
+  return { ok: true };
 });
 
 ipcMain.handle('sb:setAppOrder', (_e, ids) => {
