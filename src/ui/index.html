@@ -1340,13 +1340,14 @@ async function renderLanes() {
       toast('Choose an account first.');
       return;
     }
-    const account = state.accounts.find((a) => a.id === accountId);
-    if (!account) return;
-    // Simplistic mapping for now
-    const harness = account.provider;
-    const provider = account.provider === 'claude' ? 'anthropic' : account.provider === 'codex' ? 'openai' : account.provider === 'gemini' ? 'google' : account.provider;
+    // Which harness and vendor an account implies is decided in core, so a lane added
+    // here and one added with "switchboard lanes add" come out identical.
     try {
-      await sb.addLane({ harness, provider, accountId, billing: billing.value, capabilities: ['chat'] });
+      const res = await sb.addLane({ accountId, billing: billing.value });
+      if (!res?.ok) {
+        toast('Could not add that lane: ' + (res?.error || 'unknown reason'));
+        return;
+      }
       renderLanes();
     } catch (e) {
       toast('Could not add that lane: ' + (e.message || e));

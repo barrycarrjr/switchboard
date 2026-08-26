@@ -126,13 +126,30 @@ address and drops any that need an API key.
 
 The core (`core/`, `bin/cli.js`) is plain Node with no Electron dependency; the tray shell
 is a thin skin over it. `switchboard` is also a CLI: `status`, `accounts`, `use`, `doctor`,
-`providers`, `quota`.
+`providers`, `quota`, `lanes`, `watch`.
+
+Everything the tray decides, the CLI decides the same way, because both call the same code
+in `core/`. That is what makes a machine with no desktop usable: `switchboard lanes` edits
+the same pool the Lanes tab edits, and `switchboard watch` runs the same quota watch the
+tray runs on its five-minute timer.
 
 `switchboard status` is the whole picture in one screen, and the only way to read the
 machine from somewhere else: per tool, the variable and its value, every registered
 account, which one new terminals will use, whether it is signed in, and how much of its
 allowance is left with the reset times. `switchboard status --json` prints the same thing
 for scripts.
+
+`switchboard lanes` is the failover pool: `lanes` lists it in priority order, `lanes add
+<accountId>` appends one, `lanes order <id>...` reorders it, `lanes remove <id>` takes one
+out, and `lanes budget <id> <amount>` sets what a metered lane may spend. A metered lane
+with no budget is deliberately unselectable rather than unlimited, and the listing says so
+rather than leaving it to be discovered by a run that skips it.
+
+`switchboard watch` is the quota watch without the tray. `--once` takes a single pass, for
+Task Scheduler or cron; without it, it stays running and takes a pass every five minutes.
+`--mode notify` reports what it would do and `--mode auto` switches the machine default,
+overriding the stored setting for that one command without writing it back. Readings come
+through the same shared cache the tray fills, so running both costs no extra requests.
 
 `switchboard run` is the intelligent execution broker: it evaluates the current status of all
 configured execution lanes, securely sets up the environment variables for the healthiest 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseRunArgs, parseRunSpec, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide } from '../core/runargs.js';
+import { parseRunArgs, parseRunSpec, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
 
 test('parseRunArgs steals its own flags and leaves the rest to the child', () => {
   const parsed = parseRunArgs(['--provider', 'anthropic', '--account', 'acct1', '--no-fallback', '--yes', '--quiet', '--spec', 'spec.json', '-p', 'hello']);
@@ -125,4 +125,46 @@ test('childWindowsHide keeps a console window off an automated run and leaves a 
   // so Windows gives the harness a fresh one and shows it.
   assert.equal(childWindowsHide(false), true);
   assert.equal(childWindowsHide(true), false);
+});
+
+test('parseLaneAddArgs reads the account, the billing and the budget', () => {
+  assert.deepEqual(parseLaneAddArgs(['claude-work']), { accountId: 'claude-work', billing: 'subscription', budget: null });
+  assert.deepEqual(parseLaneAddArgs(['claude-work', '--metered', '--budget', '25']), { accountId: 'claude-work', billing: 'metered', budget: '25' });
+});
+
+test('the value after --budget is never mistaken for the account', () => {
+  const parsed = parseLaneAddArgs(['--metered', '--budget', '25', 'claude-work']);
+  assert.equal(parsed.accountId, 'claude-work');
+  assert.equal(parsed.budget, '25');
+});
+
+test('parseLaneAddArgs refuses input that would register the wrong thing', () => {
+  assert.throws(() => parseLaneAddArgs([]), /name the account/);
+  assert.throws(() => parseLaneAddArgs(['a', 'b']), /exactly one account/);
+  assert.throws(() => parseLaneAddArgs(['a', '--nope']), /unknown option/);
+  assert.throws(() => parseLaneAddArgs(['a', '--budget']), /needs an amount/);
+});
+
+test('a budget on a subscription lane is refused rather than stored and ignored', () => {
+  assert.throws(() => parseLaneAddArgs(['claude-work', '--budget', '25']), /metered lanes only/);
+});
+
+test('parseWatchArgs defaults to a five-minute loop that follows the stored mode', () => {
+  assert.deepEqual(parseWatchArgs([]), { once: false, intervalMinutes: 5, mode: null, json: false });
+});
+
+test('parseWatchArgs reads the one-shot, interval, mode and json options', () => {
+  assert.deepEqual(parseWatchArgs(['--once', '--interval', '15', '--mode', 'auto', '--json']), {
+    once: true,
+    intervalMinutes: 15,
+    mode: 'auto',
+    json: true,
+  });
+});
+
+test('parseWatchArgs refuses an interval or mode it cannot honour', () => {
+  assert.throws(() => parseWatchArgs(['--interval', '0']), /at least 1 minute/);
+  assert.throws(() => parseWatchArgs(['--interval', 'soon']), /at least 1 minute/);
+  assert.throws(() => parseWatchArgs(['--mode', 'off']), /notify or auto/);
+  assert.throws(() => parseWatchArgs(['--every', '5']), /unknown option/);
 });

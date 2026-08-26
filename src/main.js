@@ -26,7 +26,8 @@ const pkgMeta = createRequire(import.meta.url)('../package.json');
 function effectiveUpdateRepo() {
   return loadSettings().updateRepo ?? pkgMeta.updateRepo ?? null;
 }
-import { decideDefaultSwitch } from '../core/watch.js';
+import { planDefaultSwitches } from '../core/watch.js';
+import { addLane, removeLane, reorderLanes, setLaneBudget } from '../core/lane-admin.js';
 import { accountNote, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
@@ -483,67 +484,16 @@ async function runQuotaWatch() {
 
     const pinPresent = configuredClaudeOverrides().length > 0;
 
-    // Unify decision: per provider
-    // If lanes exist, use lanes as absolute priority. If no lanes, fallback to legacy Claude logic.
-    let switchDecisions = [];
-    const providers = new Set(reg.accounts.map(a => a.provider));
-    
-    for (const p of providers) {
-      const active = activeAccount(reg, p);
-      const providerLanes = settings.lanes.filter(l => l.harness === p);
-      
-      if (providerLanes.length > 0) {
-        // Lane-driven routing
-        const { selectLane, worthSwitchingTo } = await import('../core/lanes.js');
-        const context = {
-          now: Date.now(),
-          loginStates,
-          quotas: snapshots,
-          spendPolicies: settings.spendPolicies,
-          cooldowns: settings.cooldowns,
-          requirements: { harness: p }
-        };
-        const selected = selectLane(providerLanes, context);
-
-        // Only a lane we can actually vouch for may take over the machine default. A
-        // last-resort lane is one whose usage could not be read, and pointing every new
-        // terminal on the machine at an account on that basis is far more than the one
-        // run the last-resort slot was meant to cover.
-        if (worthSwitchingTo(selected) && active && selected.lane.accountId !== active.id) {
-          // The top healthy lane doesn't match the current active default. Switch it.
-          if (p === 'claude' && pinPresent) {
-             switchDecisions.push({ kind: 'pin-blocked', provider: p });
-          } else {
-             const activeLane = providerLanes.find(l => l.accountId === active.id);
-             // Avoid rapid switching if recently switched
-             if (Date.now() - settings.lastAutoSwitchAt > (10 * 60 * 1000)) {
-               switchDecisions.push({ 
-                 kind: settings.quotaWatch === 'auto' ? 'switch' : 'suggest',
-                 provider: p,
-                 to: selected.lane.accountId,
-                 from: active.id,
-                 reason: `Lane priority dictates ${selected.lane.id} is the highest healthy ${p} account`
-               });
-             }
-          }
-        }
-      } else if (p === 'claude') {
-        // Legacy Claude-only logic when no lanes configured
-        const decision = decideDefaultSwitch({
-          mode: settings.quotaWatch,
-          accounts: reg.accounts,
-          activeId: active?.id ?? null,
-          snapshots,
-          loginStates,
-          lastSwitchAt: settings.lastAutoSwitchAt,
-          pinPresent,
-        });
-        if (decision.kind !== 'none') {
-           decision.provider = 'claude';
-           switchDecisions.push(decision);
-        }
-      }
-    }
+    // The decision itself is in core, so `switchboard watch` on a machine with no
+    // desktop takes exactly the same one. Only the rendering below is the app's.
+    const switchDecisions = planDefaultSwitches({
+      settings,
+      registry: reg,
+      snapshots,
+      loginStates,
+      pinPresent,
+      now: Date.now(),
+    });
 
     for (const decision of switchDecisions) {
       if (decision.kind === 'pin-blocked') {
@@ -1287,48 +1237,40 @@ ipcMain.handle('sb:getLanes', () => {
   return { lanes: settings.lanes, spendPolicies: settings.spendPolicies };
 });
 
-ipcMain.handle('sb:addLane', (_e, lane) => {
-  const settings = loadSettings();
-  if (!lane.id) lane.id = `lane-${Date.now()}`;
-  settings.lanes.push(lane);
-  saveSettings(settings);
-  return { ok: true, lane };
+// The lane rules live in core so a lane added here and a lane added from a terminal are
+// the same shape, checked the same way. The renderer sends the account and the billing;
+// which harness and vendor that implies is not its decision to make.
+ipcMain.handle('sb:addLane', (_e, wanted) => {
+  try {
+    const { settings, lane } = addLane(loadSettings(), wanted, registry().accounts);
+    saveSettings(settings);
+    return { ok: true, lane };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
 });
 
 ipcMain.handle('sb:removeLane', (_e, laneId) => {
-  const settings = loadSettings();
-  settings.lanes = settings.lanes.filter(l => l.id !== laneId);
-  delete settings.spendPolicies[laneId];
-  delete settings.cooldowns[laneId];
-  saveSettings(settings);
-  return { ok: true };
+  try {
+    saveSettings(removeLane(loadSettings(), laneId));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
 });
 
 ipcMain.handle('sb:updateLaneOrder', (_e, laneIds) => {
-  const settings = loadSettings();
-  const newLanes = [];
-  for (const id of laneIds) {
-    const found = settings.lanes.find(l => l.id === id);
-    if (found) newLanes.push(found);
-  }
-  // Append any missing ones that were somehow omitted
-  for (const l of settings.lanes) {
-    if (!newLanes.some(n => n.id === l.id)) newLanes.push(l);
-  }
-  settings.lanes = newLanes;
-  saveSettings(settings);
+  saveSettings(reorderLanes(loadSettings(), laneIds));
   return { ok: true };
 });
 
 ipcMain.handle('sb:setLaneBudget', (_e, laneId, budget) => {
-  const settings = loadSettings();
-  if (budget === null || budget === undefined) {
-    delete settings.spendPolicies[laneId];
-  } else {
-    settings.spendPolicies[laneId] = { budget: Number(budget) };
+  try {
+    saveSettings(setLaneBudget(loadSettings(), laneId, budget));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
   }
-  saveSettings(settings);
-  return { ok: true };
 });
 
 ipcMain.handle('sb:openPath', (_e, p) => shell.openPath(p));

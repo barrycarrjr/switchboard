@@ -99,3 +99,69 @@ export function resolveSpecArgv(spec, harness, handoffPrompt = null) {
   if (!Array.isArray(argv)) return null;
   return handoffPrompt ? [...argv, handoffPrompt] : [...argv];
 }
+
+/**
+ * `switchboard lanes add <accountId> [--metered] [--budget <n>]`.
+ *
+ * The value after --budget is consumed explicitly rather than picked out by looking for
+ * the argument that is not a flag: "--budget 25 claude-work" would otherwise register a
+ * lane for an account called "25".
+ */
+export function parseLaneAddArgs(rawArgs = []) {
+  const parsed = { accountId: null, billing: 'subscription', budget: null };
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (arg === '--metered') {
+      parsed.billing = 'metered';
+    } else if (arg === '--subscription') {
+      parsed.billing = 'subscription';
+    } else if (arg === '--budget') {
+      if (i + 1 >= rawArgs.length) throw new Error('--budget needs an amount');
+      parsed.budget = rawArgs[++i];
+    } else if (arg.startsWith('--')) {
+      throw new Error(`unknown option: ${arg}`);
+    } else if (parsed.accountId) {
+      throw new Error('name exactly one account');
+    } else {
+      parsed.accountId = arg;
+    }
+  }
+  if (!parsed.accountId) throw new Error('name the account this lane runs on');
+  if (parsed.budget !== null && parsed.billing !== 'metered') {
+    // A budget on a subscription lane would be stored and never read, which reads as a
+    // cap that is being enforced.
+    throw new Error('--budget applies to metered lanes only');
+  }
+  return parsed;
+}
+
+/**
+ * `switchboard watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]`.
+ *
+ * The mode is an override for this process only: it is never written back to settings,
+ * so a scheduled task cannot quietly change what the desktop app does.
+ */
+export function parseWatchArgs(rawArgs = []) {
+  const parsed = { once: false, intervalMinutes: 5, mode: null, json: false };
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (arg === '--once') {
+      parsed.once = true;
+    } else if (arg === '--json') {
+      parsed.json = true;
+    } else if (arg === '--interval') {
+      if (i + 1 >= rawArgs.length) throw new Error('--interval needs a number of minutes');
+      const minutes = Number(rawArgs[++i]);
+      if (!Number.isFinite(minutes) || minutes < 1) throw new Error('--interval must be at least 1 minute');
+      parsed.intervalMinutes = minutes;
+    } else if (arg === '--mode') {
+      if (i + 1 >= rawArgs.length) throw new Error('--mode needs notify or auto');
+      const mode = String(rawArgs[++i]);
+      if (mode !== 'notify' && mode !== 'auto') throw new Error('--mode must be notify or auto');
+      parsed.mode = mode;
+    } else {
+      throw new Error(`unknown option: ${arg}`);
+    }
+  }
+  return parsed;
+}

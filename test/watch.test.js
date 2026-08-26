@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideDefaultSwitch, isSpent, SWITCH_COOLDOWN_MS } from '../core/watch.js';
+import { decideDefaultSwitch, isSpent, planDefaultSwitches, SWITCH_COOLDOWN_MS } from '../core/watch.js';
 
 const acct = (id) => ({ id, provider: 'claude', label: id, home: `/x/${id}` });
 const snap = (session, week, extra = {}) => ({
@@ -102,4 +102,129 @@ test('with several targets, the one with the most week headroom wins', () => {
   const accounts = [acct('a'), acct('b'), acct('c')];
   const d = decideDefaultSwitch({ ...base, accounts, mode: 'auto', snapshots: { a: snap(100, 62), b: snap(5, 40), c: snap(5, 10) } });
   assert.equal(d.to, 'c');
+});
+
+// planDefaultSwitches: the whole watch decision, for every tool at once. The tray app and
+// `switchboard watch` both call this, so these cases cover both.
+
+const laneFor = (id, accountId, harness = 'claude') => ({
+  id,
+  harness,
+  provider: harness === 'claude' ? 'anthropic' : harness,
+  accountId,
+  billing: 'subscription',
+  capabilities: ['chat'],
+});
+
+// Which account is the machine default: the persisted variable names its folder.
+const envSaying = (home) => (name) => (name === 'CLAUDE_CONFIG_DIR' ? home : null);
+
+const signedIn = (...ids) => Object.fromEntries(ids.map((id) => [id, { signedIn: true }]));
+
+const planBase = {
+  registry: { accounts: [acct('a'), acct('b')] },
+  loginStates: signedIn('a', 'b'),
+  now: 1_000_000_000,
+  envReader: envSaying('/x/a'),
+};
+
+test('planDefaultSwitches does nothing while the watch is off', () => {
+  const decisions = planDefaultSwitches({
+    ...planBase,
+    settings: { quotaWatch: 'off', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')] },
+    snapshots: { a: snap(100, 50), b: snap(5, 10) },
+  });
+  assert.deepEqual(decisions, []);
+});
+
+test('a configured pool decides by lane order, not by whether the default is spent', () => {
+  const [decision, ...rest] = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/b'),  // b is the default, and it is perfectly healthy
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(5, 10), b: snap(5, 10) },
+  });
+  assert.equal(rest.length, 0);
+  assert.equal(decision.kind, 'switch');
+  assert.equal(decision.provider, 'claude');
+  assert.equal(decision.to, 'a');
+  assert.equal(decision.from, 'b');
+});
+
+test('notify mode suggests the lane switch instead of making it', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/b'),
+    settings: { quotaWatch: 'notify', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(5, 10), b: snap(5, 10) },
+  });
+  assert.equal(decision.kind, 'suggest');
+  assert.equal(decision.to, 'a');
+});
+
+test('the top lane already being the default is nothing to do', () => {
+  const decisions = planDefaultSwitches({
+    ...planBase,
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(5, 10), b: snap(5, 10) },
+  });
+  assert.deepEqual(decisions, []);
+});
+
+test('a lane whose usage could not be read is never worth switching to', () => {
+  const decisions = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/b'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: { error: 'auth' }, b: snap(5, 10) },
+  });
+  assert.deepEqual(decisions, []);
+});
+
+test('a credential override blocks a lane switch rather than making an unreliable one', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/b'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(5, 10), b: snap(5, 10) },
+    pinPresent: true,
+  });
+  assert.equal(decision.kind, 'pin-blocked');
+  assert.equal(decision.provider, 'claude');
+});
+
+test('a lane switch respects the cooldown on the last one', () => {
+  const decisions = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/b'),
+    settings: {
+      quotaWatch: 'auto',
+      lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')],
+      lastAutoSwitchAt: planBase.now - (SWITCH_COOLDOWN_MS - 1),
+    },
+    snapshots: { a: snap(5, 10), b: snap(5, 10) },
+  });
+  assert.deepEqual(decisions, []);
+});
+
+test('with no lanes at all, Claude still falls back to the quota-only decision', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    settings: { quotaWatch: 'auto', lanes: [], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(100, 62), b: snap(5, 10) },
+  });
+  assert.equal(decision.kind, 'switch');
+  assert.equal(decision.provider, 'claude');
+  assert.equal(decision.to, 'b');
+});
+
+test('a tool other than Claude waits for lanes rather than being guessed about', () => {
+  const decisions = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [{ id: 'c1', provider: 'codex', label: 'c1', home: '/x/c1' }] },
+    loginStates: signedIn('c1'),
+    settings: { quotaWatch: 'auto', lanes: [], lastAutoSwitchAt: 0 },
+    snapshots: {},
+  });
+  assert.deepEqual(decisions, []);
 });

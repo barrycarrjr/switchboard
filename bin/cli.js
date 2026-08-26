@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 // The scriptable core. Everything the tray can do, headless.
 import { spawn } from 'node:child_process';
-import { loadRegistry, saveRegistry, addAccount, removeAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, PROVIDERS, accountScopedEnv } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, removeAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, PROVIDERS, accountScopedEnv, configuredClaudeCredentialOverrides } from '../core/accounts.js';
 import { detectAll, TOOLS, toolExecutable } from '../core/providers.js';
 import { runChecks, accountLoginState } from '../core/doctor.js';
 import { sharedProviderQuota } from '../core/quota-cache.js';
 import { collectStatus, formatStatus } from '../core/status.js';
-import { loadSettings } from '../core/settings.js';
+import { loadSettings, saveSettings } from '../core/settings.js';
+import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, BILLING_KINDS } from '../core/lane-admin.js';
+import { planDefaultSwitches } from '../core/watch.js';
+import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
 import { readHandoff, generateHandoffPrompt } from '../core/handoff.js';
-import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide } from '../core/runargs.js';
+import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
 import readline from 'node:readline/promises';
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -63,6 +66,101 @@ async function promptUser(query) {
   } finally {
     rl.close();
   }
+}
+
+/**
+ * Whether changing the machine default actually outlives this command.
+ *
+ * setUserEnv writes the user-scope environment through setx on Windows. Everywhere else
+ * it falls back to setting this process's own environment, which dies with the command,
+ * so an unattended watch would report a switch that never happened. It says so instead.
+ */
+const DEFAULT_SWITCH_PERSISTS = process.platform === 'win32';
+
+/** One line describing one watch decision, and what was done about it. */
+function formatDecision(decision, accounts) {
+  const label = (id) => accounts.find((a) => a.id === id)?.label ?? id;
+  switch (decision.kind) {
+    case 'pin-blocked':
+      return `${decision.provider}: the default account is out of quota, but a machine-wide authentication override makes folder switching unreliable. Run "switchboard doctor".`;
+    case 'exhausted': {
+      const when = decision.resetsAt ? ` Earliest reset: ${new Date(decision.resetsAt).toLocaleString()}.` : '';
+      return `${decision.provider}: no signed-in account with readable quota has room.${when}`;
+    }
+    case 'switch':
+      return decision.applied
+        ? `${decision.provider}: ${decision.reason}. Switched the default to ${label(decision.to)}; new processes use it and running ones are unchanged.`
+        : `${decision.provider}: ${decision.reason}. Not switched: ${decision.note}`;
+    case 'suggest':
+      return `${decision.provider}: ${decision.reason}. Switch with: switchboard use ${decision.to}`;
+    default:
+      return `${decision.provider}: ${decision.kind}`;
+  }
+}
+
+/**
+ * One watch pass. Reads where every account stands and takes the same decision the tray
+ * app takes, because both call planDefaultSwitches. Settings and the registry are read
+ * fresh every pass: this is meant to run for days, and the desktop app or another
+ * terminal can change either while it does.
+ */
+async function watchPass({ mode, apply }) {
+  const reg = loadRegistry();
+  const stored = loadSettings();
+  // The mode override applies to this pass only and is never written back, so a
+  // scheduled task cannot quietly change what the desktop app does.
+  const settings = { ...stored, quotaWatch: mode };
+  const now = Date.now();
+
+  // Only accounts that a decision could actually name. Claude is always read because it
+  // is the one tool that can be decided about without a configured pool.
+  const wanted = new Set(['claude']);
+  for (const lane of settings.lanes) wanted.add(lane.harness);
+
+  const snapshots = {};
+  const loginStates = {};
+  await Promise.all(reg.accounts.filter((a) => wanted.has(a.provider)).map(async (a) => {
+    loginStates[a.id] = accountLoginState(a);
+    if (!PROVIDERS[a.provider]?.quota) return;
+    // Through the shared cache, so a watch running every five minutes leaves readings
+    // behind for `dry-run` rather than competing with it for the same rate limit.
+    snapshots[a.id] = await sharedProviderQuota(a, { usageSource: settings.usageSources[a.id] ?? null, now });
+  }));
+
+  const pinPresent = configuredClaudeCredentialOverrides({
+    user: readUserEnv,
+    machine: readMachineEnv,
+    processEnv: process.env,
+  }).length > 0;
+
+  const decisions = planDefaultSwitches({ settings, registry: reg, snapshots, loginStates, pinPresent, now });
+
+  for (const decision of decisions) {
+    if (decision.kind !== 'switch') continue;
+    if (!apply) {
+      decision.applied = false;
+      decision.note = 'this pass is read-only';
+      continue;
+    }
+    if (!DEFAULT_SWITCH_PERSISTS) {
+      decision.applied = false;
+      decision.note = `changing the machine default is not supported on ${process.platform}; "switchboard run" still routes by lane`;
+      continue;
+    }
+    // The reading that chose this account can be up to five minutes old, and a sign-out
+    // in between would send every new terminal at an account that cannot work.
+    const target = reg.accounts.find((a) => a.id === decision.to);
+    if (accountLoginState(target ?? {}).signedIn !== true) {
+      decision.applied = false;
+      decision.note = 'that account is no longer signed in';
+      continue;
+    }
+    setActive(reg, decision.to);
+    saveSettings({ ...loadSettings(), lastAutoSwitchAt: Date.now() });
+    decision.applied = true;
+  }
+
+  return { decisions, accounts: reg.accounts };
 }
 
 async function main() {
@@ -424,8 +522,164 @@ async function main() {
       }
       return;
     }
+    // Editing the failover pool. The Lanes tab is the only other way to do this, and a
+    // machine with no desktop has no Lanes tab.
+    case 'lanes': {
+      const [sub, ...rest] = args;
+      const settings = loadSettings();
+
+      if (!sub || sub === 'list' || sub === '--json') {
+        if (args.includes('--json')) {
+          out(JSON.stringify({ lanes: settings.lanes, spendPolicies: settings.spendPolicies }, null, 2));
+          return;
+        }
+        if (!settings.lanes.length) {
+          out('No lanes configured. Add one: switchboard lanes add <accountId>');
+          out('Account ids come from: switchboard accounts');
+          return;
+        }
+        out('Lanes in priority order; the first healthy one gets the work.');
+        settings.lanes.forEach((lane, i) => {
+          const account = registry.accounts.find((a) => a.id === lane.accountId);
+          const budget = settings.spendPolicies?.[lane.id]?.budget ?? null;
+          // A lane that can never be selected is called out here rather than left to be
+          // discovered by a run that quietly skips it.
+          const money = lane.billing !== 'metered' ? 'subscription'
+            : budget ? `metered, budget ${budget}`
+            : 'metered, NO BUDGET so it can never be selected';
+          const who = account ? account.label : 'UNREGISTERED ACCOUNT, so it can never be selected';
+          out(`${String(i + 1).padStart(2)}. ${lane.id}`);
+          out(`    ${lane.harness} / ${lane.provider}  ${who} (${lane.accountId})  ${money}`);
+        });
+        return;
+      }
+
+      if (sub === 'add') {
+        let wanted;
+        try {
+          wanted = parseLaneAddArgs(rest);
+        } catch (e) {
+          out(String(e.message || e));
+          process.exitCode = 1;
+          return;
+        }
+        try {
+          const added = addLane(settings, wanted, registry.accounts);
+          const withBudget = wanted.budget === null
+            ? added.settings
+            : setLaneBudget(added.settings, added.lane.id, wanted.budget);
+          saveSettings(withBudget);
+          out(`added ${added.lane.id} (${added.lane.harness} / ${added.lane.provider}, ${added.lane.billing}) at the end of the pool`);
+          if (wanted.budget !== null) out(`  budget ${Number(wanted.budget)}`);
+          return;
+        } catch (e) {
+          out(String(e.message || e));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      if (sub === 'remove') {
+        try {
+          saveSettings(removeLane(settings, rest[0]));
+          out(`removed ${rest[0]} (the account itself is untouched)`);
+          return;
+        } catch (e) {
+          out(String(e.message || e));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      if (sub === 'order') {
+        // A typo must not silently reorder nothing, so unknown ids are refused before
+        // anything is written. Ids left out keep their order at the end.
+        if (!rest.length) { out('name the lane ids in the order you want them'); process.exitCode = 1; return; }
+        const missing = unknownLaneIds(settings, rest);
+        if (missing.length) { out(`no lane with id: ${missing.join(', ')}`); process.exitCode = 1; return; }
+        const next = reorderLanes(settings, rest);
+        saveSettings(next);
+        next.lanes.forEach((lane, i) => out(`${String(i + 1).padStart(2)}. ${lane.id}  ${lane.accountId}`));
+        return;
+      }
+
+      if (sub === 'budget') {
+        const [laneId, amount] = rest;
+        try {
+          const value = amount === 'none' || amount === undefined ? null : amount;
+          saveSettings(setLaneBudget(settings, laneId, value));
+          out(value === null
+            ? `cleared the budget on ${laneId}, which blocks a metered lane`
+            : `${laneId} may spend up to ${Number(value)}`);
+          return;
+        } catch (e) {
+          out(String(e.message || e));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      out('switchboard lanes <list|add|remove|order|budget>');
+      out('  lanes [--json]                        the pool, in priority order');
+      out(`  lanes add <accountId> [--metered] [--budget <n>]   append a lane (billing: ${BILLING_KINDS.join('|')})`);
+      out('  lanes remove <laneId>                 take a lane out of the pool');
+      out('  lanes order <laneId>...               reorder; ids left out keep their order at the end');
+      out('  lanes budget <laneId> <amount|none>   what a metered lane may spend');
+      process.exitCode = 1;
+      return;
+    }
+    // The quota watch, without the tray. Reads every account a decision could name, then
+    // either reports the switch or performs it.
+    case 'watch': {
+      let parsed;
+      try {
+        parsed = parseWatchArgs(args);
+      } catch (e) {
+        out(String(e.message || e));
+        process.exitCode = 1;
+        return;
+      }
+
+      const mode = parsed.mode ?? loadSettings().quotaWatch;
+      if (mode !== 'notify' && mode !== 'auto') {
+        out('The quota watch is off. Run one pass with: switchboard watch --once --mode notify');
+        out('  notify reports what it would do; auto switches the machine default.');
+        process.exitCode = 1;
+        return;
+      }
+      if (mode === 'auto' && !DEFAULT_SWITCH_PERSISTS) {
+        out(`Note: on ${process.platform} a changed default cannot outlive this command, so auto mode reports rather than switches.`);
+      }
+
+      const runPass = async () => {
+        const { decisions, accounts } = await watchPass({ mode, apply: mode === 'auto' });
+        if (parsed.json) {
+          out(JSON.stringify({ at: new Date().toISOString(), mode, decisions }));
+          return;
+        }
+        const stamp = new Date().toLocaleString();
+        if (!decisions.length) { out(`${stamp}  nothing to do`); return; }
+        for (const decision of decisions) out(`${stamp}  ${formatDecision(decision, accounts)}`);
+      };
+
+      await runPass();
+      if (parsed.once) return;
+
+      // Deliberately a plain timer rather than a service, so Task Scheduler or cron can
+      // run --once instead if that suits better. A pass that throws must not end the
+      // watch: the next one may well succeed.
+      out(`Watching every ${parsed.intervalMinutes} minute${parsed.intervalMinutes === 1 ? '' : 's'}. Stop with Ctrl-C.`);
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, parsed.intervalMinutes * 60 * 1000));
+        try {
+          await runPass();
+        } catch (e) {
+          process.stderr.write(`${new Date().toLocaleString()}  watch pass failed: ${String(e.message || e)}\n`);
+        }
+      }
+    }
     default:
-      out(`switchboard <status|accounts|add|remove|use|detect|providers|doctor|quota|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|detect|providers|doctor|quota|lanes|watch|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> <folder>`);
@@ -435,6 +689,8 @@ async function main() {
       out('  providers                   installed AI tools and versions');
       out('  doctor                      health checks');
       out('  quota                       per-account usage');
+      out('  lanes [...]                 the failover pool: list, add, remove, order, budget');
+      out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
       out('  dry-run [--provider <p>] [--account <id>] [--json]   explain which lane would be selected');
       out('  run [--provider <p>] [--account <id>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');
       out(`  <p> is a harness (${providerList}) or the vendor behind it (anthropic|openai|google)`);
