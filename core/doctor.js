@@ -4,7 +4,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readUserEnv, readMachineEnv } from './env.js';
 import { accountScopedEnv, CLAUDE_CREDENTIAL_ENV_VARS, PROVIDERS } from './accounts.js';
-import { toEpochMs } from './quota.js';
+import { toEpochMs, readClaudeAccountIdentity } from './quota.js';
+import { laneTokenIdentityMatches } from './lane-tokens.js';
 
 const runFile = promisify(execFile);
 
@@ -251,6 +252,7 @@ function inWords(ms) {
 export async function runChecks({
   accounts = [],
   loginStates = {},
+  settings = null,
   env = { user: readUserEnv, machine: readMachineEnv, process: readProcessEnv },
   fetchImpl = fetch,
   now = Date.now(),
@@ -343,7 +345,43 @@ export async function runChecks({
     } catch { /* no config.toml is fine */ }
   }
 
-  // 5. Local runtime reachability, informational only.
+  // 5. A lane token the vendor stopped honouring. Nothing is down: the lane still runs
+  //    on its folder sign-in, so automation quietly reverted to folder mode, and the
+  //    only fix is minting a fresh token. Saying so here is what turns "mystery slower
+  //    fleet" into a one-command repair.
+  for (const [laneId, entry] of Object.entries(settings?.laneTokens ?? {})) {
+    if (!entry?.dead) continue;
+    const account = accounts.find((a) => a.id === entry.accountId);
+    const label = account?.label ?? entry.accountId ?? laneId;
+    checks.push({
+      id: `lane-token-${laneId}`,
+      level: 'warn',
+      title: `Lane token for ${label} was revoked or expired`,
+      detail: `Lane ${laneId} still runs on its folder sign-in; automation just stopped receiving the token. Mint a new one with: switchboard lane-token ${laneId}`,
+    });
+  }
+
+  // 6. A live lane token minted under a different login than the lane's folder now
+  //    carries. Re-signing the folder does not touch the stored token, so dry-run
+  //    stops handing it out rather than billing the old account, and automation
+  //    quietly reverts to folder mode. Saying so here is what turns "the fleet
+  //    stopped using its token" into a one-command repair.
+  for (const [laneId, entry] of Object.entries(settings?.laneTokens ?? {})) {
+    if (!entry || entry.dead) continue;
+    const account = accounts.find((a) => a.id === entry.accountId);
+    // An unregistered account already makes the lane unselectable, and leaves no
+    // folder to read an identity from, so the mismatch check has nothing to add.
+    if (!account) continue;
+    if (laneTokenIdentityMatches(entry, readClaudeAccountIdentity(account.home))) continue;
+    checks.push({
+      id: `lane-token-identity-${laneId}`,
+      level: 'warn',
+      title: `Lane token for ${account.label} no longer matches the folder sign-in`,
+      detail: `Lane ${laneId}'s folder is signed in as a different account than the token was minted for (or its sign-in identity is unreadable, or the entry carries no identity stamp), so automation stops receiving the token rather than billing the wrong account. Sign the folder back in, or mint a fresh token with: switchboard lane-token ${laneId}`,
+    });
+  }
+
+  // 7. Local runtime reachability, informational only.
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 1500);

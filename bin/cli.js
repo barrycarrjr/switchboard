@@ -7,7 +7,9 @@ import { runChecks, accountLoginState } from '../core/doctor.js';
 import { sharedProviderQuota } from '../core/quota-cache.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
-import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, BILLING_KINDS } from '../core/lane-admin.js';
+import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, setLaneToken, removeLaneToken, BILLING_KINDS } from '../core/lane-admin.js';
+import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, createSetupTokenRedactor } from '../core/lane-tokens.js';
+import { fetchClaudeQuota, readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
@@ -82,7 +84,7 @@ function formatDecision(decision, accounts) {
   const label = (id) => accounts.find((a) => a.id === id)?.label ?? id;
   switch (decision.kind) {
     case 'pin-blocked':
-      return `${decision.provider}: the default account is out of quota, but a machine-wide authentication override makes folder switching unreliable. Run "switchboard doctor".`;
+      return `${decision.provider}: the default account ${decision.spent ? 'is out of quota' : 'is nearly out of quota'}, but a machine-wide authentication override makes folder switching unreliable. Run "switchboard doctor".`;
     case 'exhausted': {
       const when = decision.resetsAt ? ` Earliest reset: ${new Date(decision.resetsAt).toLocaleString()}.` : '';
       return `${decision.provider}: no signed-in account with readable quota has room.${when}`;
@@ -160,6 +162,22 @@ async function watchPass({ mode, apply }) {
     decision.applied = true;
   }
 
+  // Lane tokens ride the same schedule. One usage call per stored live token is the only
+  // honest test of whether the vendor still honours it, and it costs nothing for a lane
+  // without one. A token that died stops being handed out the moment this is saved, and
+  // the doctor check names it; automation just reverts to folder mode in the meantime.
+  // The freshness window matches the tray's: about one vendor call per token per hour,
+  // however often the passes themselves run. An explicit --check stays unthrottled.
+  const tokenCheck = await validateLaneTokens(stored, { now: Date.now(), maxAgeMs: 60 * 60 * 1000 });
+  if (tokenCheck.changed) {
+    // Settings are re-read for the merge: the pass above may have written its own
+    // lastAutoSwitchAt, and another process may have written anything else during the
+    // network window. The merge applies only the lanes this pass checked, and only
+    // while each still holds the very token that was validated, so a mint, removal or
+    // dead-mark that landed mid-pass wins over this pass's stale snapshot.
+    saveSettings(mergeLaneTokenResults(loadSettings(), tokenCheck));
+  }
+
   return { decisions, accounts: reg.accounts };
 }
 
@@ -173,6 +191,9 @@ async function main() {
       // A caller has to know which harness it will get BEFORE it builds a command line,
       // so the same selection is available as one machine-readable line.
       const asJson = args.includes('--json');
+      // Opt-in, because the Slack bridge also calls `dry-run --json` and must not start
+      // receiving secrets on stdout it never asked for.
+      const withToken = args.includes('--with-token');
       const { pool, context } = await prepareLanesContext(settings, registry, {
         provider: parsed.provider,
       });
@@ -199,8 +220,22 @@ async function main() {
         return;
       }
 
+      // laneTokenFor decides whether the stored token is live; the identity gate on
+      // top refuses it once the lane's folder is signed in as a different account.
+      // Re-signing a folder does not touch the stored token, so without this the
+      // automation fleet would keep billing the account the token was minted for.
+      // Refusing only reverts automation to folder mode, today's working behaviour,
+      // which is also why an unreadable identity refuses rather than trusts.
+      const emittableLaneToken = (laneId) => {
+        const token = laneTokenFor(settings, laneId);
+        if (!token) return null;
+        const home = registry.accounts.find((a) => a.id === selected.lane.accountId)?.home;
+        const identity = home ? readClaudeAccountIdentity(home) : null;
+        return laneTokenIdentityMatches(settings.laneTokens?.[laneId], identity) ? token : null;
+      };
+
       if (asJson) {
-        out(JSON.stringify({
+        const answer = {
           laneId: selected.lane.id,
           harness: selected.lane.harness,
           provider: selected.lane.provider,
@@ -208,7 +243,12 @@ async function main() {
           billing: selected.lane.billing,
           reason: selected.status.reason,
           available: true
-        }));
+        };
+        // emittableLaneToken answers a non-empty string or null, so the field is
+        // either a usable token or absent, never null or "".
+        const token = withToken ? emittableLaneToken(selected.lane.id) : null;
+        if (token) answer.token = token;
+        out(JSON.stringify(answer));
         return;
       }
 
@@ -218,6 +258,9 @@ async function main() {
       out(`  Account: ${selected.lane.accountId}`);
       out(`  Billing: ${selected.lane.billing}`);
       out(`  Reason: ${selected.status.reason}`);
+      // The human form never prints the value itself, only whether automation would
+      // receive one; a terminal is the easiest place to leak a secret into a screenshot.
+      if (withToken) out(`  Token: ${emittableLaneToken(selected.lane.id) ? 'available' : 'none'}`);
       return;
     }
     case 'run': {
@@ -494,7 +537,7 @@ async function main() {
       return;
     }
     case 'doctor': {
-      const checks = await runChecks({ accounts: registry.accounts });
+      const checks = await runChecks({ accounts: registry.accounts, settings: loadSettings() });
       const mark = { ok: 'OK  ', info: 'INFO', warn: 'WARN', bad: 'FAIL' };
       for (const c of checks) out(`${mark[c.level]}  ${c.title}\n      ${c.detail}`);
       if (checks.some((c) => c.level === 'bad')) process.exitCode = 1;
@@ -628,6 +671,184 @@ async function main() {
       process.exitCode = 1;
       return;
     }
+    // The token a lane hands to automation. It rides ALONGSIDE the folder sign-in,
+    // never instead of it: selection still needs the folder signed in, and a token that
+    // dies only reverts automation to folder mode, which is today's working behaviour.
+    case 'lane-token': {
+      const settings = loadSettings();
+      const laneId = args.find((a) => !a.startsWith('--'));
+      if (!laneId) {
+        out('switchboard lane-token <laneId> [--remove|--check]');
+        out('  with no flag, mints a token for the lane\'s account via "claude setup-token" and stores it');
+        out('  --remove   delete the stored token (the account sign-in is untouched)');
+        out('  --check    ask the vendor whether the stored token is still honoured');
+        process.exitCode = 1;
+        return;
+      }
+
+      if (args.includes('--remove')) {
+        try {
+          saveSettings(removeLaneToken(settings, laneId));
+          out(`removed the lane token for ${laneId} (the account sign-in is untouched)`);
+        } catch (e) {
+          out(String(e.message || e));
+          process.exitCode = 1;
+        }
+        return;
+      }
+
+      if (args.includes('--check')) {
+        const entry = settings.laneTokens?.[laneId];
+        if (!entry) { out(`no lane token for "${laneId}"`); process.exitCode = 1; return; }
+        if (entry.dead) {
+          out(`the token for ${laneId} is already marked dead (${entry.deadReason ?? 'no reason recorded'}). Mint a new one with: switchboard lane-token ${laneId}`);
+          process.exitCode = 1;
+          return;
+        }
+        // A malformed entry (a non-string or empty token, from settings edited by
+        // hand) would be skipped by validateLaneTokens as unusable, and the empty
+        // result would then fall through to the network-failure line below with exit
+        // 0, claiming a check ran when no request was ever made.
+        if (typeof entry.token !== 'string' || entry.token.length === 0) {
+          out(`no usable token is stored for ${laneId}. Mint one with: switchboard lane-token ${laneId}`);
+          process.exitCode = 1;
+          return;
+        }
+        const checked = await validateLaneTokens(settings, { laneIds: [laneId] });
+        // Settings are re-read and merged per lane: the check spends time on the
+        // network, and a concurrent mint or removal must not be reverted by saving
+        // this command's stale snapshot over it.
+        if (checked.changed) saveSettings(mergeLaneTokenResults(loadSettings(), checked));
+        const outcome = checked.results.find((r) => r.laneId === laneId)?.outcome;
+        if (outcome === 'dead') {
+          out(`the token for ${laneId} was revoked or expired, so automation reverts to folder mode. Mint a new one with: switchboard lane-token ${laneId}`);
+          process.exitCode = 1;
+          return;
+        }
+        if (outcome === 'ok') { out(`the token for ${laneId} is still honoured`); return; }
+        out('the check could not run (network or endpoint failure). Failing to read the meter is not an empty tank, so the token is kept.');
+        return;
+      }
+
+      const lane = settings.lanes.find((l) => l.id === laneId);
+      if (!lane) { out(`no lane with id "${laneId}"`); process.exitCode = 1; return; }
+      if (lane.harness !== 'claude') {
+        out(`lane ${laneId} runs ${lane.harness}; only Claude lanes can carry a setup token`);
+        process.exitCode = 1;
+        return;
+      }
+      const account = registry.accounts.find((a) => a.id === lane.accountId);
+      if (!account) { out(`lane ${laneId} names an unregistered account (${lane.accountId})`); process.exitCode = 1; return; }
+
+      const executable = await toolExecutable(lane.harness);
+      if (!executable) {
+        out(`Tool for harness '${lane.harness}' is not installed or not found on PATH.`);
+        process.exitCode = 1;
+        return;
+      }
+
+      // Same launch shape as `run`: cmd.exe for the batch shims npm writes on Windows,
+      // with the same unsafe-path guard.
+      let spawnFile = executable;
+      let spawnArgs = ['setup-token'];
+      if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable)) {
+        if (/[\u0000-\u001f"%]/.test(executable)) {
+          out(`Unsafe batch-shim path: ${executable}`);
+          process.exitCode = 1;
+          return;
+        }
+        spawnFile = 'cmd.exe';
+        spawnArgs = ['/d', '/s', '/v:off', '/c', executable, 'setup-token'];
+      }
+
+      // accountScopedEnv strips any inherited CLAUDE_CODE_OAUTH_TOKEN and pins
+      // CLAUDE_CONFIG_DIR to this lane's account folder, which structurally prevents
+      // the known trap where setup-token silently mints for whatever account the
+      // calling shell was already carrying.
+      const childEnv = accountScopedEnv(account, process.env);
+      out(`Minting a token for ${account.label} (${lane.accountId}). Complete the browser approval when asked.`);
+
+      const minted = await new Promise((resolve) => {
+        // The flow is interactive: it prints a URL and waits for the browser approval,
+        // so both streams are forwarded live while stdout is also accumulated for the
+        // token line at the end. setup-token prints the minted value as part of that
+        // flow, so the live echo is redacted on both streams; only the raw accumulator
+        // keeps the real value, for extractSetupToken below.
+        const child = spawn(spawnFile, spawnArgs, { stdio: ['inherit', 'pipe', 'pipe'], env: childEnv });
+        let stdout = '';
+        // One stateful redactor per stream: a token split across chunk boundaries
+        // would slip its tail past a per-chunk replace. flush releases anything still
+        // held when the stream ends; a second flush returns nothing, so settling
+        // twice cannot double-print.
+        const outRedactor = createSetupTokenRedactor();
+        const errRedactor = createSetupTokenRedactor();
+        child.stdout?.on('data', (data) => {
+          process.stdout.write(outRedactor.write(data.toString()));
+          stdout += data.toString();
+        });
+        child.stderr?.on('data', (data) => process.stderr.write(errRedactor.write(data.toString())));
+        const settle = (result) => {
+          process.stdout.write(outRedactor.flush());
+          process.stderr.write(errRedactor.flush());
+          resolve(result);
+        };
+        child.on('error', (err) => settle({ code: 1, stdout, launchError: err.message }));
+        child.on('close', (code) => settle({ code, stdout }));
+      });
+
+      if (minted.launchError) {
+        out(`Failed to launch ${executable}: ${minted.launchError}`);
+        process.exitCode = 1;
+        return;
+      }
+      const token = extractSetupToken(minted.stdout);
+      if (!token) {
+        out(minted.code === 0
+          ? 'setup-token finished without printing a token, so nothing was stored'
+          : `setup-token exited with code ${minted.code}, so nothing was stored`);
+        process.exitCode = 1;
+        return;
+      }
+
+      // The minting login's identity is stamped into the stored entry, so dry-run can
+      // refuse to hand the token out after the folder is re-signed into a different
+      // account. No identity means nothing to stamp, and an unstamped fresh token
+      // would outlive any later re-sign-in unnoticed, so it is refused instead.
+      const identity = readClaudeAccountIdentity(account.home);
+      if (!identity) {
+        out(`No readable sign-in identity in ${account.home}, so nothing was stored. The lane's folder must be signed in; sign it in and mint again.`);
+        process.exitCode = 1;
+        return;
+      }
+
+      // One validation call before anything is written. A token the vendor refuses
+      // must not be stored: automation would trust it and fail every run on auth.
+      let verdict = 'ok';
+      try {
+        await fetchClaudeQuota(token);
+      } catch (e) {
+        verdict = e.status === 401 || e.status === 403 ? 'refused' : 'unknown';
+      }
+      if (verdict === 'refused') {
+        out('The usage endpoint refused the freshly minted token, so nothing was stored. Check the account sign-in and mint again.');
+        process.exitCode = 1;
+        return;
+      }
+      // Settings are re-read here: the browser approval can take minutes, and the tray
+      // or another terminal may have written settings.json while we waited.
+      saveSettings(setLaneToken(loadSettings(), laneId, {
+        token,
+        accountId: account.id,
+        mintedAt: Date.now(),
+        organizationUuid: identity.organizationUuid,
+        accountUuid: identity.accountUuid,
+      }));
+      out(`Stored a lane token for ${account.label} (${token.length} characters; the value itself is never printed).`);
+      if (verdict === 'unknown') {
+        out(`The validation call could not run (network or endpoint failure); the token is stored anyway. Confirm later with: switchboard lane-token ${laneId} --check`);
+      }
+      return;
+    }
     // The quota watch, without the tray. Reads every account a decision could name, then
     // either reports the switch or performs it.
     case 'watch': {
@@ -679,7 +900,7 @@ async function main() {
       }
     }
     default:
-      out(`switchboard <status|accounts|add|remove|use|detect|providers|doctor|quota|lanes|watch|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|detect|providers|doctor|quota|lanes|lane-token|watch|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> <folder>`);
@@ -690,8 +911,9 @@ async function main() {
       out('  doctor                      health checks');
       out('  quota                       per-account usage');
       out('  lanes [...]                 the failover pool: list, add, remove, order, budget');
+      out('  lane-token <laneId> [--remove|--check]   mint, delete or validate the token a lane hands to automation');
       out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
-      out('  dry-run [--provider <p>] [--account <id>] [--json]   explain which lane would be selected');
+      out('  dry-run [--provider <p>] [--account <id>] [--json] [--with-token]   explain which lane would be selected');
       out('  run [--provider <p>] [--account <id>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');
       out(`  <p> is a harness (${providerList}) or the vendor behind it (anthropic|openai|google)`);
   }

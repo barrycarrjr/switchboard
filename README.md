@@ -126,7 +126,7 @@ address and drops any that need an API key.
 
 The core (`core/`, `bin/cli.js`) is plain Node with no Electron dependency; the tray shell
 is a thin skin over it. `switchboard` is also a CLI: `status`, `accounts`, `use`, `doctor`,
-`providers`, `quota`, `lanes`, `watch`.
+`providers`, `quota`, `lanes`, `lane-token`, `watch`.
 
 Everything the tray decides, the CLI decides the same way, because both call the same code
 in `core/`. That is what makes a machine with no desktop usable: `switchboard lanes` edits
@@ -145,11 +145,47 @@ out, and `lanes budget <id> <amount>` sets what a metered lane may spend. A mete
 with no budget is deliberately unselectable rather than unlimited, and the listing says so
 rather than leaving it to be discovered by a run that skips it.
 
+`switchboard lane-token <laneId>` mints a token a Claude lane can hand to automation, so
+fleets authenticate with the token instead of opening the account folder's credential
+file. Minting runs `claude setup-token` inside the lane's own account folder, with any
+inherited token stripped, so it can never bind the wrong account; the freshly minted
+token is validated against the vendor usage endpoint before it is stored, and a refused
+one is not stored at all. The minting login's identity is stamped into the stored entry,
+so a lane folder later signed in to a different account stops receiving the token (and
+Health says why) instead of quietly billing the account the token was minted for; a
+folder with no readable sign-in identity refuses to mint until it is signed in.
+`lane-token <laneId> --check` asks the vendor whether the
+stored token is still honoured, and `lane-token <laneId> --remove` deletes it. The token
+never appears in `lanes --json`, the tray, a config export, or any printed output.
+`switchboard dry-run --json --with-token` adds the token to the JSON for the calling
+process only, and only when the caller passes the flag; a token the vendor has revoked
+is marked dead, stops being emitted, and shows up as a Health warning saying to mint a
+new one, while the lane itself keeps running on its folder sign-in. Uninstalling
+Switchboard leaves `settings.json` behind in `%APPDATA%\Switchboard`, so remove lane
+tokens first if the machine is being retired.
+
 `switchboard watch` is the quota watch without the tray. `--once` takes a single pass, for
 Task Scheduler or cron; without it, it stays running and takes a pass every five minutes.
 `--mode notify` reports what it would do and `--mode auto` switches the machine default,
 overriding the stored setting for that one command without writing it back. Readings come
-through the same shared cache the tray fills, so running both costs no extra requests.
+through the same shared cache the tray fills, so running both costs no extra requests for
+quota readings. Stored lane tokens are validated on the same schedule, throttled to about
+one vendor call per token per hour, and the tray checks them on every pass even with the
+quota watch off, so a revoked token is noticed within the hour rather than at the next
+failed run. `switchboard lane-token <laneId> --check` always asks the vendor immediately.
+
+The watch moves the default before an account is completely out, not after. Two windows
+decide it: the five hour session window and the weekly one. The five hour window is the one
+that stops work first in practice, because it is the smallest and fills fastest, and it can
+sit at ninety odd percent while the weekly figure still looks comfortable. So an account is
+handed the machine default only while both windows have room to spare (under 90 percent of
+the five hour window and under 95 percent of the weekly one), and the default is moved off
+an account as soon as either window passes those marks and somewhere better exists. Lane
+order still decides which account is preferred; usage only decides which accounts are in
+the running. One run is judged differently: a lane at 95 percent still works, so
+`switchboard run` will happily use it and fall over to the next lane if it does hit the
+wall. Pointing every terminal on the machine at an account with minutes left is the thing
+these limits prevent.
 
 `switchboard run` is the intelligent execution broker: it evaluates the current status of all
 configured execution lanes, securely sets up the environment variables for the healthiest 

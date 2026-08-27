@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { decideDefaultSwitch, isSpent, planDefaultSwitches, SWITCH_COOLDOWN_MS } from '../core/watch.js';
 
 const acct = (id) => ({ id, provider: 'claude', label: id, home: `/x/${id}` });
@@ -86,6 +89,16 @@ test('exhausted reports the latest known reset of the spent windows', () => {
 test('the pin blocks switching and says so', () => {
   const d = decideDefaultSwitch({ ...base, mode: 'auto', pinPresent: true, snapshots: { a: snap(100, 62), b: snap(5, 10) } });
   assert.equal(d.kind, 'pin-blocked');
+  assert.equal(d.spent, true);
+});
+
+// pin-blocked fires at the running-low gate, not at empty, so the decision carries
+// which of the two it is: telling someone their account "is out of quota" while it is
+// still working would be a false alarm about the wrong problem.
+test('a pin block on a merely running-low account says low, not empty', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', pinPresent: true, snapshots: { a: snap(92, 40), b: snap(5, 10) } });
+  assert.equal(d.kind, 'pin-blocked');
+  assert.equal(d.spent, false);
 });
 
 test('the cooldown suppresses back-to-back switches', () => {
@@ -191,6 +204,20 @@ test('a credential override blocks a lane switch rather than making an unreliabl
   });
   assert.equal(decision.kind, 'pin-blocked');
   assert.equal(decision.provider, 'claude');
+  // Healthy snapshots here, so the block is about the pin, not exhaustion.
+  assert.equal(decision.spent, false);
+});
+
+// Both renderers branch on the flag; a hard-coded "is out of quota" would lie whenever
+// the block fired at the running-low gate. Pinned at source, the way the lane-token
+// wiring pins are, because formatDecision and the tray handler have no spawn harness.
+test('both pin-blocked renderers say low or empty from the decision, not a fixed claim', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const cli = fs.readFileSync(path.join(root, 'bin', 'cli.js'), 'utf8');
+  const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
+  const branch = /\$\{decision\.spent \? 'is out of quota' : 'is nearly out of quota'\}/;
+  assert.match(cli, branch);
+  assert.match(main, branch);
 });
 
 test('a lane switch respects the cooldown on the last one', () => {
@@ -205,6 +232,37 @@ test('a lane switch respects the cooldown on the last one', () => {
     snapshots: { a: snap(5, 10), b: snap(5, 10) },
   });
   assert.deepEqual(decisions, []);
+});
+
+// A lastAutoSwitchAt AHEAD of now was written by a wrong clock; reading its negative
+// age as "inside the cooldown" would freeze all switching for the whole skew, since
+// nothing rewrites the stamp while switches are suppressed. Expired, not inside:
+// same guard as the lane-token freshness window ("a checkedAt in the future is
+// stale, not fresh" in lane-tokens.test.js).
+test('a cooldown stamp in the future is expired, not in force', () => {
+  const d = decideDefaultSwitch({
+    ...base,
+    mode: 'auto',
+    lastSwitchAt: base.now + 24 * 60 * 60 * 1000,
+    snapshots: { a: snap(100, 62), b: snap(5, 10) },
+  });
+  assert.equal(d.kind, 'switch');
+});
+
+test('a lane switch is not frozen by a future cooldown stamp either', () => {
+  const decisions = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/b'),
+    settings: {
+      quotaWatch: 'auto',
+      lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')],
+      lastAutoSwitchAt: planBase.now + 24 * 60 * 60 * 1000,
+    },
+    snapshots: { a: snap(5, 10), b: snap(5, 10) },
+  });
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].kind, 'switch');
+  assert.equal(decisions[0].to, 'a');
 });
 
 test('with no lanes at all, Claude still falls back to the quota-only decision', () => {

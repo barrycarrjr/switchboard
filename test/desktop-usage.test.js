@@ -257,6 +257,18 @@ test('settings roundtrip and defaulting', () => {
   assert.equal(loadSettings(file).quotaWatch, 'off');
 });
 
+test('lane tokens default to an empty object and survive a roundtrip', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-s3-')), 'settings.json');
+  assert.deepEqual(loadSettings(file).laneTokens, {});
+  const entry = { token: 'tok-x', accountId: 'claude-work', mintedAt: 1 };
+  saveSettings({ ...loadSettings(file), laneTokens: { 'lane-1': entry } }, file);
+  assert.deepEqual(loadSettings(file).laneTokens, { 'lane-1': entry });
+  fs.writeFileSync(file, '{"laneTokens":"wat"}');
+  assert.deepEqual(loadSettings(file).laneTokens, {});
+  fs.writeFileSync(file, '{"laneTokens":[]}');
+  assert.deepEqual(loadSettings(file).laneTokens, {});
+});
+
 test('window bounds only restore when they look like real bounds', () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-s2-')), 'settings.json');
   fs.writeFileSync(file, JSON.stringify({ windowBounds: { width: 662, height: 830, x: 100, y: 100 } }));

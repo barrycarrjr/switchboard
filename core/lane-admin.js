@@ -83,17 +83,20 @@ export function addLane(settings, { accountId, billing = 'subscription' } = {}, 
 }
 
 /**
- * Take a lane out of the pool, along with the two things filed under its id. Leaving
- * either behind would silently apply to the next lane to reuse the id.
+ * Take a lane out of the pool, along with the three things filed under its id. Leaving
+ * any of them behind would silently apply to the next lane to reuse the id, and for the
+ * token that means a reused id inheriting an old account's credential.
  */
 export function removeLane(settings, laneId) {
   const lanes = settings.lanes ?? [];
   if (!lanes.some((l) => l.id === laneId)) throw new Error(`no lane with id "${laneId}"`);
   const spendPolicies = { ...(settings.spendPolicies ?? {}) };
   const cooldowns = { ...(settings.cooldowns ?? {}) };
+  const laneTokens = { ...(settings.laneTokens ?? {}) };
   delete spendPolicies[laneId];
   delete cooldowns[laneId];
-  return { ...settings, lanes: lanes.filter((l) => l.id !== laneId), spendPolicies, cooldowns };
+  delete laneTokens[laneId];
+  return { ...settings, lanes: lanes.filter((l) => l.id !== laneId), spendPolicies, cooldowns, laneTokens };
 }
 
 /** Lane ids in a list that name no lane. Empty when they all do. */
@@ -135,4 +138,64 @@ export function setLaneBudget(settings, laneId, budget) {
   if (!Number.isFinite(amount) || amount <= 0) throw new Error('a budget must be a number greater than zero');
   spendPolicies[laneId] = { budget: amount };
   return { ...settings, spendPolicies };
+}
+
+/**
+ * Store the token a lane hands to automation. The token rides ALONGSIDE the folder
+ * sign-in, never instead of it: lane selection still needs the folder signed in, and
+ * this entry only tells automation to authenticate without touching that login. The
+ * account id is stored with it so a later check can name which account the token was
+ * minted for, the minting login's identity uuids are stamped on so the token stops
+ * being handed out once the folder is signed in as someone else, and storing a fresh
+ * entry drops any dead mark from a previous one.
+ */
+export function setLaneToken(settings, laneId, entry = {}) {
+  const lanes = settings.lanes ?? [];
+  if (!lanes.some((l) => l.id === laneId)) throw new Error(`no lane with id "${laneId}"`);
+  if (typeof entry.token !== 'string' || !entry.token.trim()) throw new Error('a lane token must be a non-empty string');
+  if (typeof entry.accountId !== 'string' || !entry.accountId.trim()) throw new Error('a lane token needs the account id it was minted for');
+  const mintedAt = Number(entry.mintedAt);
+  if (!Number.isFinite(mintedAt) || mintedAt <= 0) throw new Error('a lane token needs the time it was minted');
+  const stored = { token: entry.token, accountId: entry.accountId, mintedAt };
+  // The identity stamp is not required here, but an unstamped entry is refused by the
+  // identity gate (no legitimately minted entry lacks one), and a stamp that is
+  // present must be usable: a malformed one stored silently would read back as "no
+  // stamp" and be refused the same way, hiding the real problem.
+  if (entry.organizationUuid != null) {
+    if (typeof entry.organizationUuid !== 'string' || !entry.organizationUuid.trim()) throw new Error('an identity stamp needs a non-empty organization uuid');
+    stored.organizationUuid = entry.organizationUuid;
+  }
+  if (entry.accountUuid != null) {
+    if (typeof entry.accountUuid !== 'string' || !entry.accountUuid.trim()) throw new Error('an identity stamp needs a non-empty account uuid');
+    stored.accountUuid = entry.accountUuid;
+  }
+  const laneTokens = { ...(settings.laneTokens ?? {}) };
+  laneTokens[laneId] = stored;
+  return { ...settings, laneTokens };
+}
+
+/**
+ * Delete a stored lane token. Keyed on the entry rather than the lane, so a token left
+ * behind by settings edited outside the app can still be removed by hand.
+ */
+export function removeLaneToken(settings, laneId) {
+  const laneTokens = { ...(settings.laneTokens ?? {}) };
+  if (!laneTokens[laneId]) throw new Error(`no lane token for "${laneId}"`);
+  delete laneTokens[laneId];
+  return { ...settings, laneTokens };
+}
+
+/**
+ * Mark a stored token as no longer honoured. The entry is kept rather than deleted so
+ * the Health tab can say WHY automation reverted to folder mode and what to run; only
+ * minting a fresh token (or removing the entry) clears the mark.
+ */
+export function markLaneTokenDead(settings, laneId, reason, now = Date.now()) {
+  const laneTokens = { ...(settings.laneTokens ?? {}) };
+  const entry = laneTokens[laneId];
+  if (!entry) throw new Error(`no lane token for "${laneId}"`);
+  const clean = String(reason ?? '').trim();
+  if (!clean) throw new Error('a dead token needs the reason it died');
+  laneTokens[laneId] = { ...entry, dead: true, deadReason: clean, checkedAt: now };
+  return { ...settings, laneTokens };
 }

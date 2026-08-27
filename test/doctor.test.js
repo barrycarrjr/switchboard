@@ -109,6 +109,95 @@ test('unreachable ollama is informational, not an error', async () => {
   assert.equal(checks.find((x) => x.id === 'ollama').level, 'info');
 });
 
+test('a dead lane token warns, naming the account and the re-mint command, never the value', async () => {
+  // Assembled at runtime so the fixture is a realistic secret without the source-tree
+  // ratchet (generic.test.js) seeing the credential prefix in this file.
+  const secret = ['sk', 'ant', 'oat01', 'SECRET'].join('-');
+  const account = { id: 'claude-work', provider: 'claude', label: 'Work', home: tmpHome() };
+  const checks = await runChecks({
+    accounts: [account],
+    env: envNone,
+    fetchImpl: noFetch,
+    settings: {
+      laneTokens: {
+        'lane-1': { token: secret, accountId: 'claude-work', mintedAt: 1, dead: true, deadReason: 'revoked or expired', checkedAt: 2 },
+        'lane-2': { token: 'tok-live', accountId: 'claude-work', mintedAt: 1 },
+      },
+    },
+  });
+  const c = checks.find((x) => x.id === 'lane-token-lane-1');
+  assert.equal(c.level, 'warn');
+  assert.equal(c.title, 'Lane token for Work was revoked or expired');
+  assert.match(c.detail, /switchboard lane-token lane-1/);
+  assert.equal(JSON.stringify(checks).includes(secret), false);
+  // A live token is not a finding; only a dead one earns a warning.
+  assert.equal(checks.find((x) => x.id === 'lane-token-lane-2'), undefined);
+});
+
+test('a live token minted under a different login than the folder now carries warns', async () => {
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({
+    oauthAccount: { organizationUuid: 'org-new', accountUuid: 'acct-new' },
+  }));
+  const account = { id: 'claude-work', provider: 'claude', label: 'Work', home };
+  const checks = await runChecks({
+    accounts: [account],
+    env: envNone,
+    fetchImpl: noFetch,
+    settings: {
+      laneTokens: {
+        'lane-1': { token: 'tok-a', accountId: 'claude-work', mintedAt: 1, organizationUuid: 'org-old', accountUuid: 'acct-old' },
+        'lane-2': { token: 'tok-b', accountId: 'claude-work', mintedAt: 1, organizationUuid: 'org-new', accountUuid: 'acct-new' },
+        'lane-3': { token: 'tok-c', accountId: 'claude-work', mintedAt: 1 },
+      },
+    },
+  });
+  const c = checks.find((x) => x.id === 'lane-token-identity-lane-1');
+  assert.equal(c.level, 'warn');
+  assert.match(c.title, /no longer matches the folder sign-in/);
+  assert.match(c.detail, /switchboard lane-token lane-1/);
+  assert.equal(JSON.stringify(checks).includes('tok-a'), false);
+  // A stamp matching the folder's login is not a finding. An entry with NO stamp is:
+  // no legitimately minted entry lacks one, so it is out of band (hand-edited, copied,
+  // restored from an older backup) and stops being handed out until re-minted.
+  assert.equal(checks.find((x) => x.id === 'lane-token-identity-lane-2'), undefined);
+  const unstamped = checks.find((x) => x.id === 'lane-token-identity-lane-3');
+  assert.equal(unstamped.level, 'warn');
+  assert.equal(JSON.stringify(checks).includes('tok-c'), false);
+});
+
+test('a stamped token whose folder identity is unreadable warns rather than trusts', async () => {
+  const account = { id: 'claude-work', provider: 'claude', label: 'Work', home: tmpHome() };
+  const checks = await runChecks({
+    accounts: [account],
+    env: envNone,
+    fetchImpl: noFetch,
+    settings: {
+      laneTokens: {
+        'lane-1': { token: 'tok-a', accountId: 'claude-work', mintedAt: 1, organizationUuid: 'org-old' },
+      },
+    },
+  });
+  const c = checks.find((x) => x.id === 'lane-token-identity-lane-1');
+  assert.equal(c.level, 'warn');
+  assert.match(c.detail, /unreadable/);
+});
+
+test('a dead token whose account is gone still warns, under the account id it knew', async () => {
+  const checks = await runChecks({
+    env: envNone,
+    fetchImpl: noFetch,
+    settings: {
+      laneTokens: {
+        'lane-9': { token: 'tok-x', accountId: 'claude-gone', mintedAt: 1, dead: true, deadReason: 'revoked or expired', checkedAt: 2 },
+      },
+    },
+  });
+  const c = checks.find((x) => x.id === 'lane-token-lane-9');
+  assert.equal(c.level, 'warn');
+  assert.match(c.title, /claude-gone/);
+});
+
 // ---- Which expiry stamp the login check reads ----
 //
 // `expiresAt` is the access token: hours long by design and refreshed silently.

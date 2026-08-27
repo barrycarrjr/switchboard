@@ -42,8 +42,17 @@ export function decideDefaultSwitch({ mode, accounts, activeId, snapshots, login
   const activeSnapshot = snapshots[active.id];
   if (isRunningOut(activeSnapshot) !== true) return { kind: 'none' };
 
-  if (pinPresent) return { kind: 'pin-blocked' };
-  if (now - lastSwitchAt < SWITCH_COOLDOWN_MS) return { kind: 'none' };
+  // The gate above is running-low, not empty, so the renderers need to know which of
+  // the two is being reported: telling someone their account "is out of quota" while
+  // it is still working is a false alarm about the wrong problem.
+  if (pinPresent) return { kind: 'pin-blocked', spent: isSpent(activeSnapshot) === true };
+  // A stamp in the FUTURE means the clock that wrote it was wrong (VM resume, clock
+  // correction), and treating the negative age as inside the cooldown would suppress
+  // every switch for the whole skew, with nothing rewriting the stamp in the
+  // meantime. Expired, not inside: the next applied switch re-stamps with the
+  // corrected clock. Same guard as the lane-token freshness window in lane-tokens.js.
+  const sinceSwitch = now - lastSwitchAt;
+  if (sinceSwitch >= 0 && sinceSwitch < SWITCH_COOLDOWN_MS) return { kind: 'none' };
 
   const target = claude
     .filter((a) => (
@@ -143,10 +152,12 @@ export function planDefaultSwitches({
       if (!worthSwitchingTo(selected) || !active || selected.lane.accountId === active.id) continue;
 
       if (provider === 'claude' && pinPresent) {
-        decisions.push({ kind: 'pin-blocked', provider });
+        decisions.push({ kind: 'pin-blocked', provider, spent: isSpent(snapshots[active.id]) === true });
         continue;
       }
-      if (now - (settings.lastAutoSwitchAt ?? 0) < SWITCH_COOLDOWN_MS) continue;
+      // Future stamp reads as an expired cooldown, same as decideDefaultSwitch above.
+      const sinceAuto = now - (settings.lastAutoSwitchAt ?? 0);
+      if (sinceAuto >= 0 && sinceAuto < SWITCH_COOLDOWN_MS) continue;
 
       decisions.push({
         kind: mode === 'auto' ? 'switch' : 'suggest',

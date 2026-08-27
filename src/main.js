@@ -11,6 +11,7 @@ import { sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
+import { validateLaneTokens, mergeLaneTokenResults } from '../core/lane-tokens.js';
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, resolvePackagedExe, APPS } from '../core/apps.js';
 import { appProfileDef, chooseOpenProfile, describeProfiles, discoverProfileDirs, profileFolderProblem, profileLaunchArgs } from '../core/appprofiles.js';
 import { detectPresence } from '../core/presence.js';
@@ -455,6 +456,42 @@ function configuredClaudeOverrides() {
 async function runQuotaWatch() {
   try {
     const settings = loadSettings();
+
+    // Lane tokens are checked on every tray pass, BEFORE the quota-watch mode gate:
+    // 'off' is the shipped default, and a machine that never turns the watch on still
+    // deserves to learn its token was revoked. Without this, dry-run would keep
+    // handing a dead token to automation, which then auth-fails instead of reverting
+    // to folder mode. Same merge discipline as the CLI watch: the pass's snapshot is
+    // folded into freshly loaded settings one checked lane at a time, so a mint,
+    // removal or dead-mark that landed mid-pass wins. Costs nothing for a machine
+    // with no tokens stored; with one, the freshness window keeps this to about one
+    // vendor call per token per hour rather than one per pass.
+    const tokenCheck = await validateLaneTokens(settings, { now: Date.now(), maxAgeMs: 60 * 60 * 1000 });
+    if (tokenCheck.changed) {
+      const before = loadSettings();
+      const merged = mergeLaneTokenResults(before, tokenCheck);
+      saveSettings(merged);
+      // A death is actionable the way every other watch decision is, so it gets the
+      // same active notification, not just a Health-tab entry someone has to open.
+      // Decided from the MERGED truth, not this pass's raw outcomes: a re-mint that
+      // landed mid-pass wins the merge, and its death notice would be false; and a
+      // death another overlapping pass already saved was already announced. Lane and
+      // label only; the value itself never appears. The tray is only rebuilt on a
+      // death, since a mere checkedAt stamp changes nothing visible.
+      const deaths = tokenCheck.results.filter((r) => r.outcome === 'dead'
+        && merged.laneTokens?.[r.laneId]?.dead
+        && !before.laneTokens?.[r.laneId]?.dead);
+      if (deaths.length) refresh();
+      for (const r of deaths) {
+        const accountId = merged.laneTokens?.[r.laneId]?.accountId;
+        const label = registry().accounts.find((a) => a.id === accountId)?.label ?? r.laneId;
+        new Notification({
+          title: 'Switchboard: lane token needs re-minting',
+          body: `The token for ${label} was revoked or expired; automation reverted to the folder sign-in. Mint a new one with: switchboard lane-token ${r.laneId}`,
+        }).on('click', () => showWindow('health')).show();
+      }
+    }
+
     if (settings.quotaWatch === 'off') return;
     const reg = registry();
 
@@ -499,7 +536,7 @@ async function runQuotaWatch() {
       if (decision.kind === 'pin-blocked') {
         if (!pinNotified) {
           pinNotified = true;
-          new Notification({ title: 'Switchboard', body: `The default ${decision.provider} account is out of quota, but a machine-wide authentication override makes folder switching unreliable. Open Health to inspect it.` })
+          new Notification({ title: 'Switchboard', body: `The default ${decision.provider} account ${decision.spent ? 'is out of quota' : 'is nearly out of quota'}, but a machine-wide authentication override makes folder switching unreliable. Open Health to inspect it.` })
             .on('click', () => showWindow('health')).show();
         }
         continue;
@@ -517,8 +554,11 @@ async function runQuotaWatch() {
           continue;
         }
         setActive(reg, decision.to);
-        settings.lastAutoSwitchAt = Date.now();
-        saveSettings(settings);
+        // Re-read at the save point: this pass's settings snapshot predates a network
+        // window (quota and login fetches above), and saving it back wholesale would
+        // silently revert a lane-token mint, removal, or dead-mark that landed in the
+        // meantime. The pass writes only the one field it owns.
+        saveSettings({ ...loadSettings(), lastAutoSwitchAt: Date.now() });
         refresh();
         new Notification({ title: 'Switchboard switched the default', body: `${decision.reason}. New terminals and apps now use it; running processes are unchanged.` }).show();
         continue;
@@ -543,7 +583,8 @@ async function runQuotaWatch() {
           .show();
       }
     }
-  } catch (err) { 
+
+  } catch (err) {
     /* the watch must never take the app down; it tries again next tick */
     console.error('runQuotaWatch error', err);
   }
@@ -800,7 +841,9 @@ ipcMain.handle('sb:doctor', async () => {
   await Promise.all(accounts.map(async (account) => {
     loginStates[account.id] = await cachedLoginState(account);
   }));
-  return runChecks({ accounts, loginStates });
+  // Settings ride along so a dead lane token surfaces here; the checks only ever name
+  // the lane and account, never the token value.
+  return runChecks({ accounts, loginStates, settings: loadSettings() });
 });
 
 /**

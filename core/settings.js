@@ -17,6 +17,10 @@ const DEFAULTS = {
   lanes: [],                  // ordered pool of lanes [{ id, harness, provider, accountId, billing, capabilities }]
   spendPolicies: {},          // laneId -> { budget }
   cooldowns: {},              // laneId -> epoch ms
+  // laneId -> { token, accountId, mintedAt, dead, deadReason, checkedAt }. Deliberately
+  // NOT on the lane objects: `switchboard lanes --json` and the tray IPC print
+  // settings.lanes verbatim, and a secret filed there would ride along.
+  laneTokens: {},
 };
 
 export function settingsFile() {
@@ -37,6 +41,7 @@ export function loadSettings(file = settingsFile()) {
     if (!Array.isArray(merged.lanes)) merged.lanes = [];
     if (typeof merged.spendPolicies !== 'object' || merged.spendPolicies === null) merged.spendPolicies = {};
     if (typeof merged.cooldowns !== 'object' || merged.cooldowns === null) merged.cooldowns = {};
+    if (typeof merged.laneTokens !== 'object' || merged.laneTokens === null || Array.isArray(merged.laneTokens)) merged.laneTokens = {};
     const b = merged.windowBounds;
     if (!b || typeof b.width !== 'number' || typeof b.height !== 'number' || b.width < 380 || b.height < 400) {
       merged.windowBounds = null;

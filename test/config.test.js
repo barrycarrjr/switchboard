@@ -48,6 +48,30 @@ test('an exported config survives a JSON round trip', () => {
   assert.deepEqual(parseSwitchboardConfig(JSON.stringify(config)), config);
 });
 
+test('a settings export never contains a lane token', () => {
+  // Assembled at runtime so the fixture is a realistic secret without the source-tree
+  // ratchet (generic.test.js) seeing the credential prefix in this file.
+  const secret = ['sk', 'ant', 'oat01', 'SECRET'].join('-');
+  const config = createSwitchboardConfig({
+    registry: { accounts: [
+      { id: 'claude-work', provider: 'claude', label: 'Work', home: 'X:\\profiles\\person\\.claude-work' },
+    ] },
+    settings: {
+      quotaWatch: 'off',
+      usageSources: {},
+      customApps: [],
+      appOrder: [],
+      updateRepo: null,
+      lanes: [{ id: 'lane-1', harness: 'claude', provider: 'anthropic', accountId: 'claude-work', billing: 'subscription', capabilities: ['chat'] }],
+      laneTokens: { 'lane-1': { token: secret, accountId: 'claude-work', mintedAt: 1 } },
+    },
+    mcp: { servers: [] },
+  });
+  const serialized = JSON.stringify(config);
+  assert.equal(serialized.includes(secret), false);
+  assert.equal(serialized.includes('laneTokens'), false);
+});
+
 test('export drops a stale usage source left behind by a removed account', () => {
   const config = createSwitchboardConfig({
     registry: { accounts: [] },

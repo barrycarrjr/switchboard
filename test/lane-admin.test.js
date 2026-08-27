@@ -4,10 +4,13 @@ import {
   addLane,
   buildLane,
   laneProblem,
+  markLaneTokenDead,
   nextLaneId,
   removeLane,
+  removeLaneToken,
   reorderLanes,
   setLaneBudget,
+  setLaneToken,
   unknownLaneIds,
   vendorForHarness,
   BILLING_KINDS,
@@ -97,6 +100,83 @@ test('removeLane also drops the budget and cooldown filed under that id', () => 
 
 test('removeLane refuses an id that names no lane', () => {
   assert.throws(() => removeLane(settingsWith(), 'lane-nope'), /no lane with id/);
+});
+
+test('removeLane also drops the lane token, so a reused id cannot inherit it', () => {
+  const settings = settingsWith(
+    [buildLane(accounts[0], 'subscription', 'lane-1')],
+    { laneTokens: { 'lane-1': { token: 'tok-x', accountId: 'claude-work', mintedAt: 1 } } },
+  );
+  const next = removeLane(settings, 'lane-1');
+  assert.deepEqual(next.laneTokens, {});
+});
+
+test('setLaneToken stores token, account and mint time, and drops a previous dead mark', () => {
+  const settings = settingsWith(
+    [buildLane(accounts[0], 'subscription', 'lane-1')],
+    { laneTokens: { 'lane-1': { token: 'tok-old', accountId: 'claude-work', mintedAt: 1, dead: true, deadReason: 'revoked or expired', checkedAt: 2 } } },
+  );
+  const next = setLaneToken(settings, 'lane-1', { token: 'tok-new', accountId: 'claude-work', mintedAt: 3 });
+  assert.deepEqual(next.laneTokens['lane-1'], { token: 'tok-new', accountId: 'claude-work', mintedAt: 3 });
+  // Pure: the settings passed in keep the old entry.
+  assert.equal(settings.laneTokens['lane-1'].dead, true);
+});
+
+test('setLaneToken refuses an unknown lane and an entry it could not stand behind', () => {
+  const settings = settingsWith([buildLane(accounts[0], 'subscription', 'lane-1')]);
+  const entry = { token: 'tok-x', accountId: 'claude-work', mintedAt: 1 };
+  assert.throws(() => setLaneToken(settings, 'lane-nope', entry), /no lane with id/);
+  assert.throws(() => setLaneToken(settings, 'lane-1', { ...entry, token: '' }), /non-empty string/);
+  assert.throws(() => setLaneToken(settings, 'lane-1', { ...entry, accountId: '' }), /account id/);
+  assert.throws(() => setLaneToken(settings, 'lane-1', { ...entry, mintedAt: 'yesterday' }), /time it was minted/);
+});
+
+test('setLaneToken carries the identity stamp, and a stamp present must be usable', () => {
+  const settings = settingsWith([buildLane(accounts[0], 'subscription', 'lane-1')]);
+  const entry = { token: 'tok-x', accountId: 'claude-work', mintedAt: 1 };
+  const stamped = setLaneToken(settings, 'lane-1', { ...entry, organizationUuid: 'org-1', accountUuid: 'acct-1' });
+  assert.deepEqual(stamped.laneTokens['lane-1'], {
+    token: 'tok-x',
+    accountId: 'claude-work',
+    mintedAt: 1,
+    organizationUuid: 'org-1',
+    accountUuid: 'acct-1',
+  });
+  // An identity that recorded no account uuid stamps the organization alone.
+  const orgOnly = setLaneToken(settings, 'lane-1', { ...entry, organizationUuid: 'org-1', accountUuid: null });
+  assert.equal(orgOnly.laneTokens['lane-1'].organizationUuid, 'org-1');
+  assert.equal('accountUuid' in orgOnly.laneTokens['lane-1'], false);
+  // A malformed stamp stored silently would read back as "no stamp" and skip the
+  // identity gate, so it is refused instead.
+  assert.throws(() => setLaneToken(settings, 'lane-1', { ...entry, organizationUuid: '  ' }), /organization uuid/);
+  assert.throws(() => setLaneToken(settings, 'lane-1', { ...entry, organizationUuid: 'org-1', accountUuid: 42 }), /account uuid/);
+});
+
+test('removeLaneToken deletes the entry and refuses an id with no token', () => {
+  const settings = settingsWith(
+    [buildLane(accounts[0], 'subscription', 'lane-1')],
+    { laneTokens: { 'lane-1': { token: 'tok-x', accountId: 'claude-work', mintedAt: 1 } } },
+  );
+  assert.deepEqual(removeLaneToken(settings, 'lane-1').laneTokens, {});
+  assert.throws(() => removeLaneToken(settingsWith(), 'lane-1'), /no lane token/);
+});
+
+test('markLaneTokenDead keeps the entry and records why and when', () => {
+  const settings = settingsWith(
+    [buildLane(accounts[0], 'subscription', 'lane-1')],
+    { laneTokens: { 'lane-1': { token: 'tok-x', accountId: 'claude-work', mintedAt: 1 } } },
+  );
+  const next = markLaneTokenDead(settings, 'lane-1', 'revoked or expired', 500);
+  assert.deepEqual(next.laneTokens['lane-1'], {
+    token: 'tok-x',
+    accountId: 'claude-work',
+    mintedAt: 1,
+    dead: true,
+    deadReason: 'revoked or expired',
+    checkedAt: 500,
+  });
+  assert.throws(() => markLaneTokenDead(settingsWith(), 'lane-1', 'x'), /no lane token/);
+  assert.throws(() => markLaneTokenDead(next, 'lane-1', '  '), /reason/);
 });
 
 test('reorderLanes keeps lanes left out of the list, at the end', () => {
