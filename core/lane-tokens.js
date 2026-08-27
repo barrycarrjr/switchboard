@@ -1,5 +1,10 @@
-import { fetchClaudeQuota } from './quota.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { markLaneTokenDead } from './lane-admin.js';
+import { CLAUDE_CREDENTIAL_ENV_VARS } from './accounts.js';
+import { toolExecutable } from './providers.js';
 
 /**
  * Whether a lane may hand its token out, kept apart from lane-admin.js, which edits the
@@ -82,18 +87,84 @@ export function laneTokenIdentityMatches(entry, identity) {
 }
 
 /**
- * Ask the vendor whether each stored live token is still honoured, with one usage call
- * per token. A 401 or 403 is the vendor refusing the credential itself, the only honest
- * evidence a token is revoked or expired, so only that marks it dead. A network failure
- * or any other error is NOT evidence of death (the same philosophy as quota-unknown in
- * core/lanes.js: failing to read the meter is not an empty tank) and only stamps
- * checkedAt. Entries already dead, and entries with no usable token, cost nothing.
+ * Whether the vendor still honours a setup token, answered the only honest way there
+ * is: by running Claude with it. The account usage endpoint refuses setup tokens
+ * outright (learned on the first real mint: a token minted seconds earlier came back
+ * 401 there while working perfectly for runs), and `claude auth status` reports
+ * loggedIn for any well-shaped value without asking the vendor at all. So the probe
+ * is a minimal headless run on the cheapest model, under a throwaway config folder
+ * with every other credential stripped, so nothing on the machine can answer for the
+ * token and nothing real is touched.
+ *
+ * Answers 'ok', 'dead' (the vendor refused the credential itself), or 'unreachable'
+ * (anything else: network, timeout, a missing binary; not evidence of death, the same
+ * philosophy as quota-unknown in core/lanes.js).
+ */
+// The first alternation is the CLI's observed wording for a refused setup token,
+// captured live: "Failed to authenticate. API Error: 401 OAuth access token is
+// invalid." The rest cover the wordings its other auth failures have used.
+const AUTH_REFUSAL_RX = /Failed to authenticate|API Error: 401|OAuth session expired|invalid (?:api key|bearer token|token)|token is (?:invalid|expired|revoked)|authentication[_ ]error|please run \/login|not logged in|credential.*(?:revoked|expired)/i;
+
+export async function probeSetupToken(token, {
+  executable = null,
+  spawnImpl = spawn,
+  timeoutMs = 120_000,
+  baseEnv = process.env,
+} = {}) {
+  const bin = executable ?? await toolExecutable('claude');
+  if (!bin) return 'unreachable';
+
+  const env = {};
+  const rejected = new Set(['CLAUDE_CONFIG_DIR', ...CLAUDE_CREDENTIAL_ENV_VARS].map((n) => n.toUpperCase()));
+  for (const [name, value] of Object.entries(baseEnv ?? {})) {
+    if (!rejected.has(name.toUpperCase())) env[name] = value;
+  }
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'switchboard-token-probe-'));
+  env.CLAUDE_CONFIG_DIR = scratch;
+  env.CLAUDE_CODE_OAUTH_TOKEN = token;
+
+  // The same batch-shim wrapping the run case uses: cmd.exe mangles nothing here
+  // because every argument is a plain word.
+  let file = bin;
+  let args = ['-p', 'Reply with exactly: ok', '--model', 'haiku'];
+  if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(bin)) {
+    file = 'cmd.exe';
+    args = ['/d', '/s', '/v:off', '/c', bin, ...args];
+  }
+
+  try {
+    return await new Promise((resolve) => {
+      let output = '';
+      let settled = false;
+      const settle = (answer) => { if (!settled) { settled = true; clearTimeout(timer); resolve(answer); } };
+      const child = spawnImpl(file, args, { env, cwd: scratch, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const timer = setTimeout(() => { try { child.kill(); } catch { /* already gone */ } settle('unreachable'); }, timeoutMs);
+      child.stdout?.on('data', (d) => { output += d.toString(); });
+      child.stderr?.on('data', (d) => { output += d.toString(); });
+      child.on('error', () => settle('unreachable'));
+      child.on('close', (code) => {
+        if (code === 0) return settle('ok');
+        settle(AUTH_REFUSAL_RX.test(output) ? 'dead' : 'unreachable');
+      });
+    });
+  } finally {
+    try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
+
+/**
+ * Ask the vendor whether each stored live token is still honoured, one probe run per
+ * token (see probeSetupToken). Only the vendor refusing the credential itself marks a
+ * token dead; a network failure or any other error is NOT evidence of death (the same
+ * philosophy as quota-unknown in core/lanes.js: failing to read the meter is not an
+ * empty tank) and only stamps checkedAt. Entries already dead, and entries with no
+ * usable token, cost nothing.
  *
  * Pure apart from the fetch: settings in, new settings out, and `changed` tells the
  * caller whether anything is worth saving. `laneIds` narrows the pass to named lanes,
  * for `lane-token <laneId> --check`; omitted means every stored token.
  */
-export async function validateLaneTokens(settings, { fetchImpl = fetch, now = Date.now(), laneIds = null, maxAgeMs = null } = {}) {
+export async function validateLaneTokens(settings, { probeImpl = probeSetupToken, now = Date.now(), laneIds = null, maxAgeMs = null } = {}) {
   const wanted = laneIds ? new Set(laneIds) : null;
   const results = [];
   let next = settings;
@@ -107,7 +178,7 @@ export async function validateLaneTokens(settings, { fetchImpl = fetch, now = Da
   for (const [laneId, entry] of Object.entries(settings?.laneTokens ?? {})) {
     if (wanted && !wanted.has(laneId)) continue;
     if (!entry || typeof entry.token !== 'string' || entry.token.length === 0 || entry.dead) continue;
-    // The timed passes run every few minutes forever, and one uncached vendor call per
+    // The timed passes run every few minutes forever, and one real probe run per
     // token per pass adds up against a rate-limited endpoint. A freshness window lets
     // them skip a recently checked token; a skipped lane produces no result row, so
     // the merge leaves it untouched. An explicit --check passes no window and always
@@ -117,19 +188,22 @@ export async function validateLaneTokens(settings, { fetchImpl = fetch, now = Da
     // corrected clock. Same guard quota-cache.js applies to its own persisted stamp.
     if (maxAgeMs != null && typeof entry.checkedAt === 'number'
       && now - entry.checkedAt >= 0 && now - entry.checkedAt < maxAgeMs) continue;
+    let outcome;
     try {
-      await fetchClaudeQuota(entry.token, fetchImpl);
+      outcome = await probeImpl(entry.token);
+    } catch {
+      outcome = 'unreachable';
+    }
+    if (outcome === 'dead') {
+      next = markLaneTokenDead(next, laneId, 'revoked or expired', now);
+      changed = true;
+      results.push({ laneId, outcome: 'dead' });
+    } else if (outcome === 'ok') {
       stamp(laneId, entry);
       results.push({ laneId, outcome: 'ok' });
-    } catch (e) {
-      if (e.status === 401 || e.status === 403) {
-        next = markLaneTokenDead(next, laneId, 'revoked or expired', now);
-        changed = true;
-        results.push({ laneId, outcome: 'dead' });
-      } else {
-        stamp(laneId, entry);
-        results.push({ laneId, outcome: 'unreachable' });
-      }
+    } else {
+      stamp(laneId, entry);
+      results.push({ laneId, outcome: 'unreachable' });
     }
   }
 

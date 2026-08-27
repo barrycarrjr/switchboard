@@ -8,8 +8,8 @@ import { sharedProviderQuota } from '../core/quota-cache.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, setLaneToken, removeLaneToken, BILLING_KINDS } from '../core/lane-admin.js';
-import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken } from '../core/lane-tokens.js';
-import { fetchClaudeQuota, readClaudeAccountIdentity } from '../core/quota.js';
+import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, probeSetupToken } from '../core/lane-tokens.js';
+import { readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
@@ -162,11 +162,11 @@ async function watchPass({ mode, apply }) {
     decision.applied = true;
   }
 
-  // Lane tokens ride the same schedule. One usage call per stored live token is the only
+  // Lane tokens ride the same schedule. One probe run per stored live token is the only
   // honest test of whether the vendor still honours it, and it costs nothing for a lane
   // without one. A token that died stops being handed out the moment this is saved, and
   // the doctor check names it; automation just reverts to folder mode in the meantime.
-  // The freshness window matches the tray's: about one vendor call per token per hour,
+  // The freshness window matches the tray's: about one small Claude run per token per hour,
   // however often the passes themselves run. An explicit --check stays unthrottled.
   const tokenCheck = await validateLaneTokens(stored, { now: Date.now(), maxAgeMs: 60 * 60 * 1000 });
   if (tokenCheck.changed) {
@@ -824,18 +824,21 @@ async function main() {
         return;
       }
 
-      // One validation call before anything is written. A token the vendor refuses
-      // must not be stored: automation would trust it and fail every run on auth.
-      let verdict = 'ok';
-      try {
-        await fetchClaudeQuota(token);
-      } catch (e) {
-        verdict = e.status === 401 || e.status === 403 ? 'refused' : 'unknown';
-      }
-      if (verdict === 'refused') {
-        out('The usage endpoint refused the freshly minted token, so nothing was stored. Check the account sign-in and mint again.');
+      // One validation before anything is written: a real, minimal Claude run using
+      // the token, because that is the only thing that honestly answers whether the
+      // vendor honours it. The account usage endpoint refuses setup tokens outright
+      // even seconds after a successful mint (learned on the first real one), and
+      // auth status reports loggedIn for any well-shaped value. A token the vendor
+      // refuses must not be stored: automation would trust it and fail every run.
+      out('Checking the token with a small real Claude run; this can take a minute...');
+      const verdict = await probeSetupToken(token);
+      if (verdict === 'dead') {
+        out('Claude refused the pasted token, so nothing was stored. Check that the whole token was copied, and mint again.');
         process.exitCode = 1;
         return;
+      }
+      if (verdict === 'unreachable') {
+        out('The check could not run (network or tool failure), so the token is stored unverified; "lane-token --check" can retry the check later.');
       }
       // Settings are re-read here: the browser approval can take minutes, and the tray
       // or another terminal may have written settings.json while we waited.

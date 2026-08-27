@@ -465,7 +465,7 @@ async function runQuotaWatch() {
     // folded into freshly loaded settings one checked lane at a time, so a mint,
     // removal or dead-mark that landed mid-pass wins. Costs nothing for a machine
     // with no tokens stored; with one, the freshness window keeps this to about one
-    // vendor call per token per hour rather than one per pass.
+    // small Claude run per token per hour rather than one per pass.
     const tokenCheck = await validateLaneTokens(settings, { now: Date.now(), maxAgeMs: 60 * 60 * 1000 });
     if (tokenCheck.changed) {
       const before = loadSettings();

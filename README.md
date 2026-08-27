@@ -151,7 +151,7 @@ file. Minting runs `claude setup-token` interactively in your terminal, inside t
 lane's own account folder with any inherited token stripped, so it can never bind the
 wrong account. Claude's own tool prints the minted token on screen, exactly as it does
 when run by hand; copy it and paste it at the prompt Switchboard shows next. The token
-is validated against the vendor usage endpoint before it is stored, and a refused one
+is validated by a small real Claude run using it before it is stored, and a refused one
 is not stored at all. The minting login's identity is stamped into the stored entry,
 so a lane folder later signed in to a different account stops receiving the token (and
 Health says why) instead of quietly billing the account the token was minted for; a
@@ -174,7 +174,7 @@ Task Scheduler or cron; without it, it stays running and takes a pass every five
 overriding the stored setting for that one command without writing it back. Readings come
 through the same shared cache the tray fills, so running both costs no extra requests for
 quota readings. Stored lane tokens are validated on the same schedule, throttled to about
-one vendor call per token per hour, and the tray checks them on every pass even with the
+one small Claude run per token per hour, and the tray checks them on every pass even with the
 quota watch off, so a revoked token is noticed within the hour rather than at the next
 failed run. `switchboard lane-token <laneId> --check` always asks the vendor immediately.
 

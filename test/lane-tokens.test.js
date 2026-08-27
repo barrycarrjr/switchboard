@@ -1,9 +1,10 @@
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, redactSetupToken } from '../core/lane-tokens.js';
+import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, redactSetupToken, probeSetupToken } from '../core/lane-tokens.js';
 import { buildLane } from '../core/lane-admin.js';
 
 const account = { id: 'claude-work', provider: 'claude', label: 'Work', home: 'X:\\p\\.claude-work' };
@@ -20,9 +21,11 @@ const settingsWith = (laneTokens = {}) => ({
 // test that needs a realistic token (extractSetupToken) assembles it at runtime.
 const liveEntry = (extra = {}) => ({ token: 'tok-abc', accountId: 'claude-work', mintedAt: 1000, ...extra });
 
-const okFetch = async () => ({ ok: true, json: async () => ({ five_hour: { utilization: 10 } }) });
-const refusedFetch = (status) => async () => ({ ok: false, status, json: async () => ({}) });
-const downFetch = async () => { throw new Error('offline'); };
+// Probe fakes: validateLaneTokens asks probeSetupToken (a real minimal Claude run in
+// production) and only ever sees one of its three answers.
+const probeAnswering = (outcome) => async () => outcome;
+const okProbe = probeAnswering('ok');
+const deadProbe = probeAnswering('dead');
 
 test('laneTokenFor answers the stored token only when it is live', () => {
   assert.equal(laneTokenFor(settingsWith(), 'lane-1'), null);
@@ -36,10 +39,10 @@ test('laneTokenFor tolerates settings that never carried the key', () => {
   assert.equal(laneTokenFor(null, 'lane-1'), null);
 });
 
-test('a 401 marks the token dead, and it stops being handed out', async () => {
+test('the vendor refusing the token marks it dead, and it stops being handed out', async () => {
   const { settings, changed, results } = await validateLaneTokens(
     settingsWith({ 'lane-1': liveEntry() }),
-    { fetchImpl: refusedFetch(401), now: 5000 },
+    { probeImpl: deadProbe, now: 5000 },
   );
   assert.equal(changed, true);
   assert.deepEqual(results, [{ laneId: 'lane-1', outcome: 'dead' }]);
@@ -54,18 +57,10 @@ test('a 401 marks the token dead, and it stops being handed out', async () => {
   assert.equal(laneTokenFor(settings, 'lane-1'), null);
 });
 
-test('a 403 is the same refusal as a 401', async () => {
-  const { settings } = await validateLaneTokens(
-    settingsWith({ 'lane-1': liveEntry() }),
-    { fetchImpl: refusedFetch(403), now: 5000 },
-  );
-  assert.equal(settings.laneTokens['lane-1'].dead, true);
-});
-
 test('a network failure is not evidence of death and only stamps checkedAt', async () => {
   const { settings, changed, results } = await validateLaneTokens(
     settingsWith({ 'lane-1': liveEntry() }),
-    { fetchImpl: downFetch, now: 5000 },
+    { probeImpl: probeAnswering('unreachable'), now: 5000 },
   );
   assert.equal(changed, true);
   assert.deepEqual(results, [{ laneId: 'lane-1', outcome: 'unreachable' }]);
@@ -74,10 +69,10 @@ test('a network failure is not evidence of death and only stamps checkedAt', asy
   assert.equal(laneTokenFor(settings, 'lane-1'), 'tok-abc');
 });
 
-test('a 500 is treated like a network failure, not like a refusal', async () => {
+test('a probe that throws is treated like a network failure, not like a refusal', async () => {
   const { settings } = await validateLaneTokens(
     settingsWith({ 'lane-1': liveEntry() }),
-    { fetchImpl: refusedFetch(500), now: 5000 },
+    { probeImpl: async () => { throw new Error('offline'); }, now: 5000 },
   );
   assert.equal(settings.laneTokens['lane-1'].dead, undefined);
   assert.equal(laneTokenFor(settings, 'lane-1'), 'tok-abc');
@@ -86,7 +81,7 @@ test('a 500 is treated like a network failure, not like a refusal', async () => 
 test('a token the vendor still honours keeps everything and stamps checkedAt', async () => {
   const { settings, changed, results } = await validateLaneTokens(
     settingsWith({ 'lane-1': liveEntry() }),
-    { fetchImpl: okFetch, now: 5000 },
+    { probeImpl: okProbe, now: 5000 },
   );
   assert.equal(changed, true);
   assert.deepEqual(results, [{ laneId: 'lane-1', outcome: 'ok' }]);
@@ -96,13 +91,13 @@ test('a token the vendor still honours keeps everything and stamps checkedAt', a
 
 test('dead and empty entries cost no request at all', async () => {
   let calls = 0;
-  const counting = async () => { calls++; return { ok: true, json: async () => ({}) }; };
+  const counting = async () => { calls++; return 'ok'; };
   const { changed, results } = await validateLaneTokens(
     settingsWith({
       'lane-1': liveEntry({ dead: true, deadReason: 'revoked or expired' }),
       'lane-2': liveEntry({ token: '' }),
     }),
-    { fetchImpl: counting, now: 5000 },
+    { probeImpl: counting, now: 5000 },
   );
   assert.equal(calls, 0);
   assert.equal(changed, false);
@@ -111,25 +106,25 @@ test('dead and empty entries cost no request at all', async () => {
 
 test('laneIds narrows the pass to the named lanes', async () => {
   let seen = [];
-  const recording = async (url, init) => {
-    seen.push(init.headers.authorization);
-    return { ok: true, json: async () => ({}) };
+  const recording = async (token) => {
+    seen.push(token);
+    return 'ok';
   };
   const { settings } = await validateLaneTokens(
     settingsWith({
       'lane-1': liveEntry(),
       'lane-2': liveEntry({ token: 'tok-other' }),
     }),
-    { fetchImpl: recording, now: 5000, laneIds: ['lane-2'] },
+    { probeImpl: recording, now: 5000, laneIds: ['lane-2'] },
   );
-  assert.deepEqual(seen, ['Bearer tok-other']);
+  assert.deepEqual(seen, ['tok-other']);
   assert.equal(settings.laneTokens['lane-1'].checkedAt, undefined);
   assert.equal(settings.laneTokens['lane-2'].checkedAt, 5000);
 });
 
 test('validateLaneTokens leaves the settings it was given untouched', async () => {
   const before = settingsWith({ 'lane-1': liveEntry() });
-  await validateLaneTokens(before, { fetchImpl: refusedFetch(401), now: 5000 });
+  await validateLaneTokens(before, { probeImpl: deadProbe, now: 5000 });
   assert.equal(before.laneTokens['lane-1'].dead, undefined);
   assert.equal(before.laneTokens['lane-1'].checkedAt, undefined);
 });
@@ -143,14 +138,14 @@ test('validateLaneTokens leaves the settings it was given untouched', async () =
 // the very token that was validated.
 
 test('a token removed mid-pass stays removed after the merge', async () => {
-  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { fetchImpl: okFetch, now: 5000 });
+  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { probeImpl: okProbe, now: 5000 });
   const fresh = settingsWith({});
   const merged = mergeLaneTokenResults(fresh, check);
   assert.equal(merged.laneTokens['lane-1'], undefined);
 });
 
 test('a token re-minted mid-pass with a new value wins over the stale snapshot', async () => {
-  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { fetchImpl: refusedFetch(401), now: 5000 });
+  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { probeImpl: deadProbe, now: 5000 });
   const fresh = settingsWith({ 'lane-1': liveEntry({ token: 'tok-new', mintedAt: 4000 }) });
   const merged = mergeLaneTokenResults(fresh, check);
   assert.deepEqual(merged.laneTokens['lane-1'], { token: 'tok-new', accountId: 'claude-work', mintedAt: 4000 });
@@ -159,7 +154,7 @@ test('a token re-minted mid-pass with a new value wins over the stale snapshot',
 test('a concurrent dead-mark on a lane the pass never checked is preserved', async () => {
   const check = await validateLaneTokens(
     settingsWith({ 'lane-1': liveEntry(), 'lane-2': liveEntry({ token: 'tok-other' }) }),
-    { fetchImpl: okFetch, now: 5000, laneIds: ['lane-1'] },
+    { probeImpl: okProbe, now: 5000, laneIds: ['lane-1'] },
   );
   const deadTwo = liveEntry({ token: 'tok-other', dead: true, deadReason: 'revoked or expired', checkedAt: 4500 });
   const fresh = settingsWith({ 'lane-1': liveEntry(), 'lane-2': deadTwo });
@@ -169,7 +164,7 @@ test('a concurrent dead-mark on a lane the pass never checked is preserved', asy
 });
 
 test("the checked lane's own dead-mark is applied by the merge", async () => {
-  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { fetchImpl: refusedFetch(401), now: 5000 });
+  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { probeImpl: deadProbe, now: 5000 });
   const fresh = settingsWith({ 'lane-1': liveEntry() });
   const merged = mergeLaneTokenResults(fresh, check);
   assert.equal(merged.laneTokens['lane-1'].dead, true);
@@ -177,7 +172,7 @@ test("the checked lane's own dead-mark is applied by the merge", async () => {
 });
 
 test('mergeLaneTokenResults mutates neither the fresh settings nor the pass result', async () => {
-  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { fetchImpl: refusedFetch(401), now: 5000 });
+  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { probeImpl: deadProbe, now: 5000 });
   const fresh = settingsWith({ 'lane-1': liveEntry() });
   const freshBefore = JSON.stringify(fresh);
   const checkBefore = JSON.stringify(check);
@@ -259,6 +254,7 @@ test('the mint runs setup-token on the real console and takes the token by paste
   assert.match(cli, /spawn\(spawnFile, spawnArgs, \{ stdio: 'inherit', env: childEnv \}\)/);
   assert.match(cli, /rl\.question\('Paste the token that was just printed: '\)/);
   assert.match(cli, /extractSetupToken\(pasted\)/);
+  assert.match(cli, /await probeSetupToken\(token\)/);
   assert.doesNotMatch(cli, /promptUser\('Paste/);
 });
 
@@ -284,14 +280,14 @@ test('the watch and --check saves both merge into freshly loaded settings', () =
 // revoked. The dead-mark must win: only a re-mint clears one, and a re-mint changes
 // the token value, which the token guard already catches.
 test('a concurrent dead-mark on the very lane the pass checked survives an ok result', async () => {
-  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { fetchImpl: okFetch, now: 5000 });
+  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { probeImpl: okProbe, now: 5000 });
   const fresh = settingsWith({ 'lane-1': liveEntry({ dead: true, deadReason: 'revoked or expired', checkedAt: 4500 }) });
   const merged = mergeLaneTokenResults(fresh, check);
   assert.deepEqual(merged.laneTokens['lane-1'], liveEntry({ dead: true, deadReason: 'revoked or expired', checkedAt: 4500 }));
 });
 
 test('a concurrent dead-mark survives even an unreachable result, which carries no vendor evidence', async () => {
-  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { fetchImpl: downFetch, now: 5000 });
+  const check = await validateLaneTokens(settingsWith({ 'lane-1': liveEntry() }), { probeImpl: probeAnswering('unreachable'), now: 5000 });
   const fresh = settingsWith({ 'lane-1': liveEntry({ dead: true, deadReason: 'revoked or expired', checkedAt: 4500 }) });
   const merged = mergeLaneTokenResults(fresh, check);
   assert.equal(merged.laneTokens['lane-1'].dead, true);
@@ -321,17 +317,17 @@ test('the tray quota watch validates lane tokens with the same merge discipline'
 // explicit --check passes no window and always asks.
 test('maxAgeMs skips a freshly checked token and rechecks a stale one', async () => {
   let calls = 0;
-  const counting = async () => { calls++; return { ok: true, json: async () => ({}) }; };
+  const counting = async () => { calls++; return 'ok'; };
   const fresh = await validateLaneTokens(
     settingsWith({ 'lane-1': liveEntry({ checkedAt: 5000 }) }),
-    { fetchImpl: counting, now: 5000 + 60_000, maxAgeMs: 60 * 60 * 1000 },
+    { probeImpl: counting, now: 5000 + 60_000, maxAgeMs: 60 * 60 * 1000 },
   );
   assert.equal(calls, 0);
   assert.equal(fresh.changed, false);
   assert.deepEqual(fresh.results, []);
   const stale = await validateLaneTokens(
     settingsWith({ 'lane-1': liveEntry({ checkedAt: 5000 }) }),
-    { fetchImpl: counting, now: 5000 + 61 * 60_000, maxAgeMs: 60 * 60 * 1000 },
+    { probeImpl: counting, now: 5000 + 61 * 60_000, maxAgeMs: 60 * 60 * 1000 },
   );
   assert.equal(calls, 1);
   assert.deepEqual(stale.results, [{ laneId: 'lane-1', outcome: 'ok' }]);
@@ -339,10 +335,10 @@ test('maxAgeMs skips a freshly checked token and rechecks a stale one', async ()
 
 test('no maxAgeMs means every live token is asked about, however fresh', async () => {
   let calls = 0;
-  const counting = async () => { calls++; return { ok: true, json: async () => ({}) }; };
+  const counting = async () => { calls++; return 'ok'; };
   await validateLaneTokens(
     settingsWith({ 'lane-1': liveEntry({ checkedAt: 5000 }) }),
-    { fetchImpl: counting, now: 5001 },
+    { probeImpl: counting, now: 5001 },
   );
   assert.equal(calls, 1);
 });
@@ -352,12 +348,84 @@ test('no maxAgeMs means every live token is asked about, however fresh', async (
 // vendor and re-stamps with the corrected clock.
 test('a checkedAt in the future is stale, not fresh', async () => {
   let calls = 0;
-  const counting = async () => { calls++; return { ok: true, json: async () => ({}) }; };
+  const counting = async () => { calls++; return 'ok'; };
   const { settings, results } = await validateLaneTokens(
     settingsWith({ 'lane-1': liveEntry({ checkedAt: 5000 + 24 * 60 * 60_000 }) }),
-    { fetchImpl: counting, now: 5000, maxAgeMs: 60 * 60 * 1000 },
+    { probeImpl: counting, now: 5000, maxAgeMs: 60 * 60 * 1000 },
   );
   assert.equal(calls, 1);
   assert.deepEqual(results, [{ laneId: 'lane-1', outcome: 'ok' }]);
   assert.equal(settings.laneTokens['lane-1'].checkedAt, 5000);
+});
+
+// ---- The probe itself: a real minimal Claude run, faked at the spawn seam ----
+//
+// The account usage endpoint refuses setup tokens outright (a token minted seconds
+// earlier came back 401 there while working perfectly for runs), and auth status
+// reports loggedIn for any well-shaped value, so a headless run is the only honest
+// validator. The fake stands in for the spawned CLI.
+
+const fakeSpawn = (script) => {
+  const impl = (file, args, options) => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {};
+    impl.calls.push({ file, args, options });
+    queueMicrotask(() => script(child));
+    return child;
+  };
+  impl.calls = [];
+  return impl;
+};
+
+test('probe answers ok on a clean exit', async () => {
+  const spawnImpl = fakeSpawn((child) => {
+    child.stdout.emit('data', 'ok\n');
+    child.emit('close', 0);
+  });
+  assert.equal(await probeSetupToken('tok-abc', { executable: 'X:\\fake\\claude.exe', spawnImpl }), 'ok');
+});
+
+test('probe answers dead only when the output carries an authentication refusal', async () => {
+  const refusal = fakeSpawn((child) => {
+    child.stderr.emit('data', 'OAuth session expired and could not be refreshed\n');
+    child.emit('close', 1);
+  });
+  assert.equal(await probeSetupToken('tok-abc', { executable: 'X:\\fake\\claude.exe', spawnImpl: refusal }), 'dead');
+  // The wording the CLI actually uses for a refused setup token, captured live on
+  // 2026-08-27, pinned so a classifier edit cannot silently stop matching it.
+  const observed = fakeSpawn((child) => {
+    child.stderr.emit('data', 'Failed to authenticate. API Error: 401 OAuth access token is invalid.');
+    child.emit('close', 1);
+  });
+  assert.equal(await probeSetupToken('tok-abc', { executable: 'X:\\fake\\claude.exe', spawnImpl: observed }), 'dead');
+  const otherFailure = fakeSpawn((child) => {
+    child.stderr.emit('data', 'connect ETIMEDOUT api.anthropic.com\n');
+    child.emit('close', 1);
+  });
+  assert.equal(await probeSetupToken('tok-abc', { executable: 'X:\\fake\\claude.exe', spawnImpl: otherFailure }), 'unreachable');
+});
+
+test('probe answers unreachable on a spawn error and on a timeout', async () => {
+  const erroring = fakeSpawn((child) => child.emit('error', new Error('ENOENT')));
+  assert.equal(await probeSetupToken('tok-abc', { executable: 'X:\\fake\\claude.exe', spawnImpl: erroring }), 'unreachable');
+  const hanging = fakeSpawn(() => { /* never exits */ });
+  assert.equal(await probeSetupToken('tok-abc', { executable: 'X:\\fake\\claude.exe', spawnImpl: hanging, timeoutMs: 30 }), 'unreachable');
+});
+
+test('probe isolates the run: scratch config folder, only the probed token, other credentials stripped', async () => {
+  const spawnImpl = fakeSpawn((child) => child.emit('close', 0));
+  await probeSetupToken('tok-abc', {
+    executable: 'X:\\fake\\claude.exe',
+    spawnImpl,
+    baseEnv: { PATH: 'x', ANTHROPIC_API_KEY: 'must-not-leak', CLAUDE_CONFIG_DIR: 'X:\\p\\.claude' },
+  });
+  const { args, options } = spawnImpl.calls[0];
+  assert.deepEqual(args.slice(0, 2), ['-p', 'Reply with exactly: ok']);
+  assert.equal(options.env.CLAUDE_CODE_OAUTH_TOKEN, 'tok-abc');
+  assert.equal(options.env.ANTHROPIC_API_KEY, undefined);
+  assert.notEqual(options.env.CLAUDE_CONFIG_DIR, 'X:\\p\\.claude');
+  assert.ok(options.env.CLAUDE_CONFIG_DIR.includes('switchboard-token-probe-'));
+  assert.equal(options.env.PATH, 'x');
 });
