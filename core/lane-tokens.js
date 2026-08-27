@@ -29,54 +29,16 @@ export function extractSetupToken(text) {
 }
 
 /**
- * The same text with every setup token replaced by a marker. `claude setup-token`
- * prints the minted value on stdout as part of its normal flow, so a mint that
- * forwards the child's streams verbatim would echo the secret into the terminal while
- * promising it never prints one. The mint path redacts the LIVE echo through this and
- * keeps the raw text aside for extractSetupToken, the one reader that needs the real
- * value. The marker keeps the runtime-assembled prefix so a transcript still shows
- * that a token was printed there, just not what it was.
+ * The same text with every setup token replaced by a marker, for anything that quotes
+ * a transcript of `claude setup-token`, which prints the minted value as part of its
+ * normal flow. The mint path itself no longer captures that transcript at all (the
+ * tool renders only on a real console, so it gets the terminal unfiltered and the user
+ * pastes the token back), but a scrubber for the credential shape stays useful and
+ * tested. The marker keeps the runtime-assembled prefix so a scrubbed transcript
+ * still shows that a token was printed there, just not what it was.
  */
 export function redactSetupToken(text) {
   return String(text ?? '').replace(SETUP_TOKEN_RX_ALL, SETUP_TOKEN_PREFIX + '[redacted]');
-}
-
-/**
- * A per-stream redactor for the live mint echo. redactSetupToken alone is not enough
- * there: the child's output arrives in arbitrary chunks, and a token split across two
- * of them would slip its tail past a per-chunk replace and into the terminal. Each
- * write returns what is safe to show now, holding back only a trailing run that could
- * still grow into a token in the next chunk (a partial prefix, or the prefix plus
- * body characters). flush releases whatever is still held, redacted, when the stream
- * ends. Interactive prompts without a trailing newline still appear promptly, since
- * at most a few characters ever trail them. The lookback is capped a little past any
- * real token's length, so a pathological endless body cannot stall the stream.
- */
-export function createSetupTokenRedactor() {
-  let held = '';
-  const BODY_RX = /^[A-Za-z0-9_-]*$/;
-  const LOOKBACK = SETUP_TOKEN_PREFIX.length + 512;
-  const couldGrow = (tail) => {
-    if (tail.length < SETUP_TOKEN_PREFIX.length) return SETUP_TOKEN_PREFIX.startsWith(tail);
-    return tail.startsWith(SETUP_TOKEN_PREFIX) && BODY_RX.test(tail.slice(SETUP_TOKEN_PREFIX.length));
-  };
-  return {
-    write(chunk) {
-      held += String(chunk ?? '');
-      let start = held.length;
-      for (let i = held.length - 1; i >= 0 && held.length - i <= LOOKBACK; i--) {
-        if (couldGrow(held.slice(i))) start = i;
-      }
-      const emit = held.slice(0, start);
-      held = held.slice(start);
-      return redactSetupToken(emit);
-    },
-    flush() {
-      const rest = redactSetupToken(held);
-      held = '';
-      return rest;
-    },
-  };
 }
 
 /**

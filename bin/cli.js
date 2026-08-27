@@ -8,7 +8,7 @@ import { sharedProviderQuota } from '../core/quota-cache.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, setLaneToken, removeLaneToken, BILLING_KINDS } from '../core/lane-admin.js';
-import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, createSetupTokenRedactor } from '../core/lane-tokens.js';
+import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken } from '../core/lane-tokens.js';
 import { fetchClaudeQuota, readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
@@ -768,32 +768,21 @@ async function main() {
       const childEnv = accountScopedEnv(account, process.env);
       out(`Minting a token for ${account.label} (${lane.accountId}). Complete the browser approval when asked.`);
 
+      out(`Claude's own sign-in tool runs next, in this terminal. Complete the browser`);
+      out(`approval; the tool then prints the minted token here. Copy it, and paste it`);
+      out(`at the prompt that follows. Switchboard checks it before storing anything.`);
+
       const minted = await new Promise((resolve) => {
-        // The flow is interactive: it prints a URL and waits for the browser approval,
-        // so both streams are forwarded live while stdout is also accumulated for the
-        // token line at the end. setup-token prints the minted value as part of that
-        // flow, so the live echo is redacted on both streams; only the raw accumulator
-        // keeps the real value, for extractSetupToken below.
-        const child = spawn(spawnFile, spawnArgs, { stdio: ['inherit', 'pipe', 'pipe'], env: childEnv });
-        let stdout = '';
-        // One stateful redactor per stream: a token split across chunk boundaries
-        // would slip its tail past a per-chunk replace. flush releases anything still
-        // held when the stream ends; a second flush returns nothing, so settling
-        // twice cannot double-print.
-        const outRedactor = createSetupTokenRedactor();
-        const errRedactor = createSetupTokenRedactor();
-        child.stdout?.on('data', (data) => {
-          process.stdout.write(outRedactor.write(data.toString()));
-          stdout += data.toString();
-        });
-        child.stderr?.on('data', (data) => process.stderr.write(errRedactor.write(data.toString())));
-        const settle = (result) => {
-          process.stdout.write(outRedactor.flush());
-          process.stderr.write(errRedactor.flush());
-          resolve(result);
-        };
-        child.on('error', (err) => settle({ code: 1, stdout, launchError: err.message }));
-        child.on('close', (code) => settle({ code, stdout }));
+        // The tool is interactive all the way through and renders its prompts only on
+        // a real console, so it gets the terminal unfiltered and Switchboard captures
+        // nothing. Capturing was tried and shipped in 0.16.0, and it HANGS: with
+        // stdout piped, the tool draws nothing and waits forever on a prompt nobody
+        // can see. The token therefore appears once on screen, printed by the
+        // vendor's own tool exactly as it would if run by hand; Switchboard itself
+        // still never prints it.
+        const child = spawn(spawnFile, spawnArgs, { stdio: 'inherit', env: childEnv });
+        child.on('error', (err) => resolve({ code: 1, launchError: err.message }));
+        child.on('close', (code) => resolve({ code }));
       });
 
       if (minted.launchError) {
@@ -801,11 +790,25 @@ async function main() {
         process.exitCode = 1;
         return;
       }
-      const token = extractSetupToken(minted.stdout);
+      if (minted.code !== 0) {
+        out(`setup-token exited with code ${minted.code}, so nothing was stored`);
+        process.exitCode = 1;
+        return;
+      }
+
+      // Not promptUser: that helper lowercases its answer for y/N questions, and a
+      // token is case sensitive. Pasting echoes on screen, which adds nothing new,
+      // since the tool printed the same value directly above.
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      let pasted;
+      try {
+        pasted = await rl.question('Paste the token that was just printed: ');
+      } finally {
+        rl.close();
+      }
+      const token = extractSetupToken(pasted);
       if (!token) {
-        out(minted.code === 0
-          ? 'setup-token finished without printing a token, so nothing was stored'
-          : `setup-token exited with code ${minted.code}, so nothing was stored`);
+        out('That did not contain a token, so nothing was stored. Run this command again to re-mint.');
         process.exitCode = 1;
         return;
       }

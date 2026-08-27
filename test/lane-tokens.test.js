@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, redactSetupToken, createSetupTokenRedactor } from '../core/lane-tokens.js';
+import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, redactSetupToken } from '../core/lane-tokens.js';
 import { buildLane } from '../core/lane-admin.js';
 
 const account = { id: 'claude-work', provider: 'claude', label: 'Work', home: 'X:\\p\\.claude-work' };
@@ -249,17 +249,17 @@ test('dry-run emission is wired through the flag, laneTokenFor and the identity 
   assert.match(cli, /laneTokenIdentityMatches\(settings\.laneTokens\?\.\[laneId\], identity\) \? token : null/);
 });
 
-// The mint path forwards the child's streams live, and setup-token prints the minted
-// value as part of its normal flow, so the echo is redacted on both streams while the
-// raw accumulator alone keeps the value for extraction.
-test('the mint echo is redacted on both streams, chunk-split safe, and the raw text kept for extraction', () => {
+// The mint child must get the terminal UNFILTERED: setup-token renders its prompts
+// only on a real console, and the captured-stream variant shipped in 0.16.0 hung
+// forever on a prompt nobody could see. The token reaches Switchboard by the user
+// pasting it, and the paste is read by a raw readline question, never by promptUser,
+// whose y/N helper lowercases its answer and would corrupt a case-sensitive token.
+test('the mint runs setup-token on the real console and takes the token by paste', () => {
   const cli = cliSource();
-  assert.match(cli, /process\.stdout\.write\(outRedactor\.write\(data\.toString\(\)\)\);/);
-  assert.match(cli, /process\.stderr\.write\(errRedactor\.write\(data\.toString\(\)\)\)/);
-  assert.match(cli, /outRedactor\.flush\(\)/);
-  assert.match(cli, /errRedactor\.flush\(\)/);
-  assert.match(cli, /stdout \+= data\.toString\(\);/);
-  assert.match(cli, /extractSetupToken\(minted\.stdout\)/);
+  assert.match(cli, /spawn\(spawnFile, spawnArgs, \{ stdio: 'inherit', env: childEnv \}\)/);
+  assert.match(cli, /rl\.question\('Paste the token that was just printed: '\)/);
+  assert.match(cli, /extractSetupToken\(pasted\)/);
+  assert.doesNotMatch(cli, /promptUser\('Paste/);
 });
 
 // A junk entry (a non-string or empty token, from settings edited by hand) is skipped
@@ -296,43 +296,6 @@ test('a concurrent dead-mark survives even an unreachable result, which carries 
   const merged = mergeLaneTokenResults(fresh, check);
   assert.equal(merged.laneTokens['lane-1'].dead, true);
   assert.equal(merged.laneTokens['lane-1'].checkedAt, 4500);
-});
-
-// The live mint echo arrives in arbitrary chunks, so a per-chunk replace would let a
-// token split across two of them print its tail in the clear. The streaming redactor
-// holds back only what could still grow into a token.
-test('the streaming redactor never lets a chunk-split token through', () => {
-  const prefix = ['sk', 'ant', 'oat01'].join('-') + '-';
-  const token = prefix + 'AbC123_-xyz';
-  const r = createSetupTokenRedactor();
-  const shown = r.write('Your token is: ' + token.slice(0, 18)) + r.write(token.slice(18) + '\nDone.\n') + r.flush();
-  assert.ok(!shown.includes(token.slice(13)), 'no part of the token body may reach the terminal');
-  assert.ok(shown.includes(prefix + '[redacted]'));
-  assert.ok(shown.includes('Your token is: '));
-  assert.ok(shown.includes('Done.'));
-});
-
-test('the streaming redactor holds back a token split inside the prefix itself', () => {
-  const prefix = ['sk', 'ant', 'oat01'].join('-') + '-';
-  const token = prefix + 'SECRETBODY';
-  const r = createSetupTokenRedactor();
-  const shown = r.write('token: ' + token.slice(0, 5)) + r.write(token.slice(5) + ' end\n') + r.flush();
-  assert.ok(!shown.includes('SECRETBODY'));
-  assert.ok(shown.includes(prefix + '[redacted]'));
-  assert.ok(shown.includes(' end'));
-});
-
-test('the streaming redactor passes an interactive prompt through promptly, and flush releases a held token', () => {
-  const prefix = ['sk', 'ant', 'oat01'].join('-') + '-';
-  const r = createSetupTokenRedactor();
-  const first = r.write('Open https://claude.ai/activate and approve, then press Enter: ');
-  assert.ok(first.includes('https://claude.ai/activate'));
-  // A token that ends the stream is still held when it closes; flush redacts it.
-  const second = r.write('done. ' + prefix + 'TAILBODY');
-  assert.ok(!second.includes('TAILBODY'));
-  const rest = r.flush();
-  assert.equal(rest, prefix + '[redacted]');
-  assert.equal(r.flush(), '', 'a second flush returns nothing, so settling twice cannot double-print');
 });
 
 // The tray is the resident watcher on a desktop machine, so it must run the same

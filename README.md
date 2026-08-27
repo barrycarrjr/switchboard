@@ -147,16 +147,20 @@ rather than leaving it to be discovered by a run that skips it.
 
 `switchboard lane-token <laneId>` mints a token a Claude lane can hand to automation, so
 fleets authenticate with the token instead of opening the account folder's credential
-file. Minting runs `claude setup-token` inside the lane's own account folder, with any
-inherited token stripped, so it can never bind the wrong account; the freshly minted
-token is validated against the vendor usage endpoint before it is stored, and a refused
-one is not stored at all. The minting login's identity is stamped into the stored entry,
+file. Minting runs `claude setup-token` interactively in your terminal, inside the
+lane's own account folder with any inherited token stripped, so it can never bind the
+wrong account. Claude's own tool prints the minted token on screen, exactly as it does
+when run by hand; copy it and paste it at the prompt Switchboard shows next. The token
+is validated against the vendor usage endpoint before it is stored, and a refused one
+is not stored at all. The minting login's identity is stamped into the stored entry,
 so a lane folder later signed in to a different account stops receiving the token (and
 Health says why) instead of quietly billing the account the token was minted for; a
 folder with no readable sign-in identity refuses to mint until it is signed in.
 `lane-token <laneId> --check` asks the vendor whether the
 stored token is still honoured, and `lane-token <laneId> --remove` deletes it. The token
-never appears in `lanes --json`, the tray, a config export, or any printed output.
+never appears in `lanes --json`, the tray, a config export, or anything Switchboard
+itself prints; the one place it is ever visible is the mint step above, where the
+vendor's own tool shows it to you once.
 `switchboard dry-run --json --with-token` adds the token to the JSON for the calling
 process only, and only when the caller passes the flag; a token the vendor has revoked
 is marked dead, stops being emitted, and shows up as a Health warning saying to mint a
@@ -186,6 +190,15 @@ the running. One run is judged differently: a lane at 95 percent still works, so
 `switchboard run` will happily use it and fall over to the next lane if it does hit the
 wall. Pointing every terminal on the machine at an account with minutes left is the thing
 these limits prevent.
+
+The watch also spends quota that is about to be lost. A weekly window is use-it-or-lose-it:
+whatever is unspent when the week turns over is forfeited. So when any account's weekly
+window resets within the next day and still has room, the default moves there for that last
+day, even though the preferred account is perfectly healthy, and moves back on its own once
+the reset passes and lane order resumes. Soonest turnover wins when several qualify. A
+metered lane never qualifies, because pay-per-use quota does not expire, and the usual rules
+still hold: only a signed-in account with a current reading and room on both windows is
+trusted with the default.
 
 `switchboard run` is the intelligent execution broker: it evaluates the current status of all
 configured execution lanes, securely sets up the environment variables for the healthiest 
