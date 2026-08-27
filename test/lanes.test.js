@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { laneStatus, selectLane, laneAnswersTo, selectionFailure, worthSwitchingTo, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
-import { spentEvidence, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
+import { hasHeadroom, isRunningOut, spentEvidence, tightestWindow, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
 
 function makeLane(id, accountId, billing = 'subscription') {
   return {
@@ -532,4 +532,46 @@ test('no selection at all never switches anything', () => {
   assert.equal(worthSwitchingTo(null), false);
   assert.equal(worthSwitchingTo(undefined), false);
   assert.equal(worthSwitchingTo({ lane: makeLane('l1', 'a1') }), false, 'a result with no status is not a vouched one');
+});
+
+// Headroom: how full a window may get before an account stops being somewhere to send new
+// work. A different question from `spentEvidence`, which answers whether it works at all.
+
+const usage = (session, week) => ({
+  windows: [
+    { key: 'session', label: 'Session (5h)', usedPercent: session, resetsAt: null },
+    { key: 'week', label: 'Week (all models)', usedPercent: week, resetsAt: null },
+  ],
+});
+
+test('headroom needs room on every gating window, and the five-hour one counts', () => {
+  assert.equal(hasHeadroom(usage(5, 10)), true);
+  assert.equal(hasHeadroom(usage(90, 10)), false);   // idle for the week, five-hour nearly gone
+  assert.equal(hasHeadroom(usage(5, 95)), false);
+  assert.equal(hasHeadroom(usage(89, 94)), true);
+});
+
+test('an unreadable or stale account never counts as having room', () => {
+  assert.equal(hasHeadroom({ error: 'auth' }), false);
+  assert.equal(hasHeadroom({ ...usage(5, 10), stale: true }), false);
+  assert.equal(hasHeadroom(undefined), false);
+  assert.equal(hasHeadroom({ windows: [{ key: 'extra', label: 'Extra usage', usedPercent: 0 }] }), false);
+});
+
+test('running out is the same line read from the other side, and says nothing about the unreadable', () => {
+  assert.equal(isRunningOut(usage(90, 10)), true);
+  assert.equal(isRunningOut(usage(5, 10)), false);
+  assert.equal(isRunningOut({ error: 'auth' }), null);
+  assert.equal(isRunningOut({ ...usage(100, 100), stale: true }), null);
+});
+
+test('the fullest window is what ranking compares', () => {
+  assert.equal(tightestWindow(usage(88, 10)), 88);
+  assert.equal(tightestWindow(usage(5, 40)), 40);
+  assert.equal(tightestWindow({ error: 'auth' }), null);
+});
+
+test('running low is not the same as being out: a lane at 95% is still usable for a run', () => {
+  assert.equal(spentEvidence(usage(95, 20), NOW).state, 'clear');
+  assert.equal(isRunningOut(usage(95, 20)), true);
 });

@@ -90,3 +90,67 @@ export function spentEvidence(snapshot, now) {
   if (sawExpired) return { state: 'expired', resetsAt: null };
   return { state: sawReadable ? 'clear' : 'none', resetsAt: null };
 }
+
+/**
+ * How full a window may get before an account stops being somewhere to send new work.
+ *
+ * `SPENT_AT` above answers a different question: whether an account can run at all. That
+ * is the right test for one run (a lane at 97% still works, and the run that finally hits
+ * the wall simply falls over to the next lane), and the wrong test for the machine
+ * default, which redirects every terminal opened afterwards and stays put until something
+ * moves it.
+ *
+ * Waiting for a full 100 meant the default was only ever moved once Claude Code had
+ * already started refusing work, and it meant the default could be handed to an account
+ * with minutes left in its five-hour window. The five-hour window is the one that bites
+ * in practice: it is the smallest, it fills fastest, and it can sit at 90-odd percent
+ * while the weekly figure still reads comfortable, which is exactly the state that looks
+ * healthy and is not.
+ *
+ * So the default moves early, and only to somewhere with real room left. The numbers are
+ * deliberately different per window: 10% of a five-hour window is a few minutes of heavy
+ * use, while 5% of a weekly window is most of a working day.
+ */
+export const HEADROOM_AT = { session: 90, week: 95 };
+
+/** The gating windows a snapshot actually reported, as [key, percent] pairs. */
+function gatingWindows(snapshot) {
+  return GATING
+    .map((key) => [key, pct(snapshot, key)])
+    .filter(([, used]) => used != null);
+}
+
+/**
+ * The fullest gating window, which is what ranking candidates should compare. Ranking on
+ * the weekly figure alone put an account with a nearly-spent five-hour window ahead of a
+ * genuinely idle one, because the weekly number said nothing about the window that was
+ * about to stop the work.
+ */
+export function tightestWindow(snapshot) {
+  const used = gatingWindows(snapshot).map(([, value]) => value);
+  return used.length ? Math.max(...used) : null;
+}
+
+/**
+ * Whether an account has room to spare on every gating window. Unreadable is never room:
+ * a reading we do not have cannot vouch for anything, and pointing the whole machine at
+ * an account on that basis is the very thing `worthSwitchingTo` exists to prevent.
+ */
+export function hasHeadroom(snapshot) {
+  if (!readable(snapshot)) return false;
+  const windows = gatingWindows(snapshot);
+  if (!windows.length) return false;
+  return windows.every(([key, used]) => used < HEADROOM_AT[key]);
+}
+
+/**
+ * Whether an account is close enough to a limit that new work should go elsewhere. Null
+ * when there is nothing readable to say so, so an unreadable account is never pushed off
+ * the default on a guess.
+ */
+export function isRunningOut(snapshot) {
+  if (!readable(snapshot)) return null;
+  const windows = gatingWindows(snapshot);
+  if (!windows.length) return null;
+  return windows.some(([key, used]) => used >= HEADROOM_AT[key]);
+}

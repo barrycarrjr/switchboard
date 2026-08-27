@@ -228,3 +228,87 @@ test('a tool other than Claude waits for lanes rather than being guessed about',
   });
   assert.deepEqual(decisions, []);
 });
+
+// The five-hour window. It is the one that stops work first in practice: it can sit at
+// 95% while the weekly figure still reads comfortable, and it used to be ignored right up
+// until it read a full 100, by which point Claude Code was already refusing work.
+
+test('the default moves before the five-hour window is completely gone', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(92, 40), b: snap(5, 10) } });
+  assert.deepEqual({ kind: d.kind, to: d.to }, { kind: 'switch', to: 'b' });
+  assert.match(d.reason, /nearly out of quota/);
+});
+
+test('a full weekly window still reads as out of quota, not merely low', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(10, 100), b: snap(5, 10) } });
+  assert.match(d.reason, /is out of quota/);
+});
+
+test('running low with nowhere to go is not announced as exhausted', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(92, 40), b: snap(93, 40) } });
+  assert.equal(d.kind, 'none');
+});
+
+test('being genuinely out with nowhere to go is still announced', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(100, 40), b: snap(93, 40) } });
+  assert.equal(d.kind, 'exhausted');
+});
+
+test('targets are ranked by their fullest window, not by the weekly one alone', () => {
+  const accounts = [acct('a'), acct('b'), acct('c')];
+  const d = decideDefaultSwitch({
+    ...base,
+    accounts,
+    mode: 'auto',
+    // b looks best on the week and is nearly out of its five-hour window; c is idle.
+    snapshots: { a: snap(100, 62), b: snap(88, 10), c: snap(5, 40) },
+  });
+  assert.equal(d.to, 'c');
+});
+
+test('a lane whose five-hour window is nearly gone does not take the default back', () => {
+  const decisions = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/b'),  // b is the default and is healthy
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(95, 20), b: snap(5, 10) },
+  });
+  assert.deepEqual(decisions, []);
+});
+
+test('a default running low hands over to the next lane with room', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(95, 20), b: snap(5, 10) },  // a is the default and nearly out
+  });
+  assert.equal(decision.kind, 'switch');
+  assert.equal(decision.to, 'b');
+  assert.match(decision.reason, /close to its limit/);
+});
+
+test('a spent default still moves even when the only other lane is short on room', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(100, 20), b: snap(93, 10) },
+  });
+  assert.equal(decision.kind, 'switch');
+  assert.equal(decision.to, 'b');
+});
+
+test('a metered lane is judged by its spend policy, not by a usage meter it does not have', () => {
+  const metered = { ...laneFor('l-b', 'b'), billing: 'metered' };
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/a'),
+    settings: {
+      quotaWatch: 'auto',
+      lanes: [metered, laneFor('l-a', 'a')],
+      spendPolicies: { 'l-b': { budget: 25 } },
+      lastAutoSwitchAt: 0,
+    },
+    snapshots: { a: snap(5, 10) },
+  });
+  assert.equal(decision.to, 'b');
+});

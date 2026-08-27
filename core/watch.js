@@ -2,10 +2,9 @@ import { accountQuota } from './quota.js';
 import { activeAccount } from './accounts.js';
 import { readUserEnv } from './env.js';
 import { selectLane, worthSwitchingTo } from './lanes.js';
-import { isSpent, latestReset, pct, readable, SPENT_AT } from './lanes-util.js';
+import { hasHeadroom, isRunningOut, isSpent, latestReset, tightestWindow } from './lanes-util.js';
 
 export const SWITCH_COOLDOWN_MS = 10 * 60 * 1000;
-const ROOM_BELOW = 95;  // a target must be comfortably below its limits
 
 /** Collect a quota snapshot per Claude account. Reads, never acts. */
 export async function snapshotQuotas({ accounts, usageSources = {}, fetchImpl = fetch, now = Date.now() }) {
@@ -18,14 +17,6 @@ export async function snapshotQuotas({ accounts, usageSources = {}, fetchImpl = 
 
 export { isSpent };
 
-function hasRoom(snapshot) {
-  if (!readable(snapshot)) return false; // never switch TO an unknown
-  const session = pct(snapshot, 'session');
-  const week = pct(snapshot, 'week');
-  if (session == null && week == null) return false;
-  return (session ?? 0) < ROOM_BELOW && (week ?? 0) < ROOM_BELOW;
-}
-
 /**
  * The ambient-default decision. Pure: state in, decision out, so every case is
  * testable. It decides about the machine DEFAULT for new processes only; it knows
@@ -36,6 +27,11 @@ function hasRoom(snapshot) {
  *   {kind:'pin-blocked'}                 switching is meaningless while a global token pins billing
  *   {kind:'switch'|'suggest', to, from, reason}   auto mode switches; notify mode suggests
  *   {kind:'exhausted', resetsAt}         everything readable is spent
+ *
+ * The trigger is running LOW, not being wholly out. Waiting for a full 100 meant the
+ * default only ever moved once Claude Code was already refusing work, and the five-hour
+ * window is what gets there first: it can sit at 95% while the weekly figure still reads
+ * comfortable. See `HEADROOM_AT`.
  */
 export function decideDefaultSwitch({ mode, accounts, activeId, snapshots, loginStates = null, now = Date.now(), lastSwitchAt = 0, pinPresent = false }) {
   if (mode !== 'notify' && mode !== 'auto') return { kind: 'none' };
@@ -44,7 +40,7 @@ export function decideDefaultSwitch({ mode, accounts, activeId, snapshots, login
   if (!active || claude.length < 2) return { kind: 'none' };
 
   const activeSnapshot = snapshots[active.id];
-  if (isSpent(activeSnapshot) !== true) return { kind: 'none' };
+  if (isRunningOut(activeSnapshot) !== true) return { kind: 'none' };
 
   if (pinPresent) return { kind: 'pin-blocked' };
   if (now - lastSwitchAt < SWITCH_COOLDOWN_MS) return { kind: 'none' };
@@ -52,18 +48,27 @@ export function decideDefaultSwitch({ mode, accounts, activeId, snapshots, login
   const target = claude
     .filter((a) => (
       a.id !== active.id
-      && hasRoom(snapshots[a.id])
+      && hasHeadroom(snapshots[a.id])
       // Desktop can supply a truthful usage snapshot for an account whose CLI is
       // signed out. That is useful for display, but never enough to switch into it.
       && (!loginStates || loginStates[a.id]?.signedIn === true)
     ))
-    .sort((x, y) => (pct(snapshots[x.id], 'week') ?? 0) - (pct(snapshots[y.id], 'week') ?? 0))[0];
+    // Ranked by whichever window is fullest, not by the weekly one. An account can be
+    // idle for the week and nearly out of its five-hour window, and ranking on the week
+    // alone put exactly that account at the front of the queue.
+    .sort((x, y) => (tightestWindow(snapshots[x.id]) ?? 0) - (tightestWindow(snapshots[y.id]) ?? 0))[0];
 
   if (!target) {
-    return { kind: 'exhausted', resetsAt: latestReset(activeSnapshot, now) };
+    // Nowhere to go. Say "out of quota" only when that is literally true; an account
+    // that is merely running low is still working, and calling it exhausted would send
+    // an alarm about something the user can do nothing about and does not yet need to.
+    return isSpent(activeSnapshot) === true
+      ? { kind: 'exhausted', resetsAt: latestReset(activeSnapshot, now) }
+      : { kind: 'none' };
   }
 
-  const reason = `${active.label} is out of quota; ${target.label} has room`;
+  const state = isSpent(activeSnapshot) === true ? 'is out of quota' : 'is nearly out of quota';
+  const reason = `${active.label} ${state}; ${target.label} has room`;
   return { kind: mode === 'auto' ? 'switch' : 'suggest', to: target.id, from: active.id, reason };
 }
 
@@ -107,14 +112,29 @@ export function planDefaultSwitches({
     // A configured pool is the whole answer for its tool: it names the order somebody
     // chose, so the legacy Claude-only reasoning below must not second-guess it.
     if (providerLanes.length) {
-      const selected = selectLane(providerLanes, {
+      const context = {
         now,
         loginStates,
         quotas: snapshots,
         spendPolicies: settings.spendPolicies ?? {},
         cooldowns: settings.cooldowns ?? {},
         requirements: { harness: provider },
-      });
+      };
+
+      // Lane order still decides; usage decides which lanes are in the running at all.
+      // A lane whose five-hour window is nearly gone is a fine place to send one run
+      // (it works, and a run that hits the wall falls over to the next lane), and a bad
+      // place to point every terminal on the machine. Without this, the top lane took
+      // the default back the moment it dropped under a full 100, which is how a default
+      // landed on an account with minutes left in its window and everything stopped.
+      // A metered lane has a spend policy rather than a usage meter, so it is judged by
+      // `laneStatus` alone and never filtered out here for want of a reading.
+      const roomy = providerLanes.filter((l) => l.billing === 'metered' || hasHeadroom(snapshots[l.accountId]));
+
+      let selected = selectLane(roomy, context);
+      // Nothing has room and the default is genuinely spent: take the ordinary pick,
+      // because any account that still runs beats one that has hit the wall.
+      if (!selected && isSpent(snapshots[active?.id]) === true) selected = selectLane(providerLanes, context);
 
       // Only a lane we can actually vouch for may take over the machine default. A
       // last-resort lane is one whose usage could not be read, and pointing every new
@@ -133,7 +153,9 @@ export function planDefaultSwitches({
         provider,
         to: selected.lane.accountId,
         from: active.id,
-        reason: `Lane priority dictates ${selected.lane.id} is the highest healthy ${provider} account`,
+        reason: isRunningOut(snapshots[active.id]) === true
+          ? `${active.label} is close to its limit; ${selected.lane.id} is the highest ${provider} lane with room`
+          : `Lane priority dictates ${selected.lane.id} is the highest healthy ${provider} account`,
       });
       continue;
     }
