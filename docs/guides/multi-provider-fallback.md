@@ -8,8 +8,9 @@ Most AI tools and IDE plugins (like VS Code extensions or background scripts) ru
 
 To protect these native tools, Switchboard runs a **Quota Watcher** in the background:
 1. **Intra-Provider ONLY:** Windows environment variables are locked to a specific tool. If Claude runs out of quota, Switchboard cannot magically force a native VS Code extension to use Codex instead. It can only swap one Claude account for another Claude account.
-2. **Lane Enforcement:** If you have the Quota Watcher set to "Auto", it constantly checks your Lanes tab. It finds the highest-priority healthy lane for *each* provider (e.g., your best Claude lane, your best Codex lane) and makes those the default Windows environment variables. 
-3. **Manual Control:** If you manually click "Make Default" on a lower-priority account in the UI, the system lets you. However, 5 minutes later, the background Watcher will wake up, realize your manual choice doesn't match your Lanes priority, and switch it back to the top healthy lane. If you want to stop this overriding behavior, turn the Quota Watcher to "Off" or "Notify" in the tray menu.
+2. **Lane Enforcement:** If you have the Quota Watcher set to "Auto", it constantly checks your Lanes tab. It finds the highest-priority healthy lane for *each* provider (e.g., your best Claude lane, your best Codex lane) and makes those the default Windows environment variables.
+3. **Spend-Down Exception:** One thing outranks lane priority. A subscription's weekly quota is use-it-or-lose-it, so when any subscription lane's weekly window resets within the next 24 hours and still has room, the Watcher parks the default on *that* lane (soonest reset first) to burn the quota before it is forfeited. Once the reset passes, ordinary lane priority resumes and the default returns to your top lane on its own. Metered lanes never trigger this, because pay-as-you-go quota does not expire.
+4. **Manual Control:** If you manually click "Make Default" on an account the Watcher would not have picked, the system lets you. However, 5 minutes later, the background Watcher will wake up, realize your manual choice doesn't match its own pick (your Lanes priority, or an active spend-down), and switch it back. If you want to stop this overriding behavior, turn the Quota Watcher to "Off" or "Notify" in the tray menu.
 
 ## Layer 2: The Rescuer (`switchboard run`)
 

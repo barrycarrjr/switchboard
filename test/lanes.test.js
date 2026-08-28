@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { laneStatus, selectLane, laneAnswersTo, selectionFailure, worthSwitchingTo, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
-import { hasHeadroom, isRunningOut, spentEvidence, tightestWindow, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
+import { expiringWeek, hasHeadroom, isRunningOut, spentEvidence, tightestWindow, SPEND_DOWN_HORIZON_MS, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
 
 function makeLane(id, accountId, billing = 'subscription') {
   return {
@@ -548,7 +548,7 @@ test('headroom needs room on every gating window, and the five-hour one counts',
   assert.equal(hasHeadroom(usage(5, 10)), true);
   assert.equal(hasHeadroom(usage(90, 10)), false);   // idle for the week, five-hour nearly gone
   assert.equal(hasHeadroom(usage(5, 95)), false);
-  assert.equal(hasHeadroom(usage(89, 94)), true);
+  assert.equal(hasHeadroom(usage(86, 91)), true);    // just clear on both windows
 });
 
 test('an unreadable or stale account never counts as having room', () => {
@@ -558,11 +558,50 @@ test('an unreadable or stale account never counts as having room', () => {
   assert.equal(hasHeadroom({ windows: [{ key: 'extra', label: 'Extra usage', usedPercent: 0 }] }), false);
 });
 
+// The dead band. Giving the default up and winning it back are asked different questions,
+// so a reading that wobbles either side of one mark cannot move the default back and
+// forth: an account lets go at 90/95 and only takes it back once it reads under 87/92.
+
+test('the account holding the default keeps it on a reading that would not win it back', () => {
+  assert.equal(hasHeadroom(usage(89, 94), { holdsDefault: true }), true);
+  assert.equal(hasHeadroom(usage(89, 94)), false, 'the same reading is not enough to take the default off anyone');
+});
+
+test('a reading inside the band moves nothing, in either direction', () => {
+  for (const session of [87, 88, 89]) {
+    assert.equal(hasHeadroom(usage(session, 10), { holdsDefault: true }), true, `keeps the default at ${session}%`);
+    assert.equal(hasHeadroom(usage(session, 10)), false, `cannot take the default at ${session}%`);
+  }
+});
+
+test('an account that has dropped clear of the band is somewhere to send the default again', () => {
+  assert.equal(hasHeadroom(usage(86, 10)), true);
+  assert.equal(hasHeadroom(usage(10, 91)), true);
+});
+
+test('the band has the same shape on the weekly window', () => {
+  assert.equal(hasHeadroom(usage(10, 93), { holdsDefault: true }), true);
+  assert.equal(hasHeadroom(usage(10, 93)), false);
+  assert.equal(hasHeadroom(usage(10, 95), { holdsDefault: true }), false, 'holding it does not survive the leave mark');
+});
+
+test('holding the default does not make an unreadable account readable', () => {
+  assert.equal(hasHeadroom({ error: 'auth' }, { holdsDefault: true }), false);
+  assert.equal(hasHeadroom({ ...usage(5, 10), stale: true }, { holdsDefault: true }), false);
+});
+
 test('running out is the same line read from the other side, and says nothing about the unreadable', () => {
   assert.equal(isRunningOut(usage(90, 10)), true);
   assert.equal(isRunningOut(usage(5, 10)), false);
   assert.equal(isRunningOut({ error: 'auth' }), null);
   assert.equal(isRunningOut({ ...usage(100, 100), stale: true }), null);
+});
+
+test('the mark for leaving did not move when the one for coming back was added', () => {
+  assert.equal(isRunningOut(usage(90, 10)), true);
+  assert.equal(isRunningOut(usage(89, 10)), false, 'the band is about coming back, not about leaving');
+  assert.equal(isRunningOut(usage(10, 95)), true);
+  assert.equal(isRunningOut(usage(10, 94)), false);
 });
 
 test('the fullest window is what ranking compares', () => {
@@ -574,4 +613,52 @@ test('the fullest window is what ranking compares', () => {
 test('running low is not the same as being out: a lane at 95% is still usable for a run', () => {
   assert.equal(spentEvidence(usage(95, 20), NOW).state, 'clear');
   assert.equal(isRunningOut(usage(95, 20)), true);
+});
+
+// ---- Quota about to be forfeited at the weekly turnover ----
+
+const expiringUsage = (session, week, weekReset) => ({
+  windows: [
+    { key: 'session', label: 'Session (5h)', usedPercent: session, resetsAt: null },
+    { key: 'week', label: 'Week (all models)', usedPercent: week, resetsAt: weekReset },
+  ],
+});
+
+test('a week ending within the horizon with room to spare is about to forfeit quota', () => {
+  assert.equal(expiringWeek(expiringUsage(12, 67, NOW + 6 * HOUR), NOW), NOW + 6 * HOUR);
+  assert.equal(expiringWeek(expiringUsage(12, 67, NOW + SPEND_DOWN_HORIZON_MS), NOW), NOW + SPEND_DOWN_HORIZON_MS, 'the boundary is inclusive');
+});
+
+test('a week ending beyond the horizon is not about to forfeit anything', () => {
+  assert.equal(expiringWeek(expiringUsage(12, 67, NOW + SPEND_DOWN_HORIZON_MS + 1), NOW), null);
+});
+
+test('a turnover in the past describes a week that already ended', () => {
+  assert.equal(expiringWeek(expiringUsage(12, 67, NOW - 1000), NOW), null);
+  assert.equal(expiringWeek(expiringUsage(12, 67, NOW), NOW), null);
+});
+
+test('no headroom means nothing left to spend, whichever window is the tight one', () => {
+  assert.equal(expiringWeek(expiringUsage(95, 67, NOW + 6 * HOUR), NOW), null, 'the five-hour window is full');
+  assert.equal(expiringWeek(expiringUsage(12, 96, NOW + 6 * HOUR), NOW), null, 'the week itself is full');
+});
+
+// The account already parked here by an earlier spend-down has to keep counting as
+// expiring while it sits in the band, or the default would leave mid-window for a lane
+// further up the order and the detour would undo itself early.
+test('an expiring account holding the default is judged on keeping it, not on winning it', () => {
+  const parked = expiringUsage(89, 67, NOW + 6 * HOUR);
+  assert.equal(expiringWeek(parked, NOW, { holdsDefault: true }), NOW + 6 * HOUR);
+  assert.equal(expiringWeek(parked, NOW), null, 'the same reading is not enough to send the default somewhere new');
+});
+
+test('unused quota cannot be claimed about a meter that was not read', () => {
+  assert.equal(expiringWeek({ windows: [
+    { key: 'session', label: 'Session (5h)', usedPercent: 12, resetsAt: null },
+    { key: 'week', label: 'Week (all models)', usedPercent: null, resetsAt: NOW + 6 * HOUR },
+  ] }, NOW), null);
+  assert.equal(expiringWeek(usage(12, 67), NOW), null, 'no turnover time, no claim');
+  assert.equal(expiringWeek({ error: 'auth' }, NOW), null);
+  assert.equal(expiringWeek({ ...expiringUsage(12, 67, NOW + 6 * HOUR), stale: true }, NOW), null);
+  assert.equal(expiringWeek(undefined, NOW), null);
 });

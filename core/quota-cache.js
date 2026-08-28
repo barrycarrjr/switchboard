@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { dataDir, writeJsonAtomic } from './paths.js';
 import { PROVIDERS } from './accounts.js';
-import { providerQuota } from './quota.js';
+import { inheritResetTimes, providerQuota } from './quota.js';
 
 /**
  * A quota reading shared across processes, on disk.
@@ -87,14 +87,39 @@ export function writeSharedQuota(accountId, key, result, at = Date.now(), file =
 }
 
 /**
+ * The last shared reading for one account at ANY age, for turnover-time inheritance
+ * only. An old reading's future resetsAt is still the truth, because the schedule
+ * does not move, while its percentages are never served past the TTL.
+ *
+ * Deliberately NOT key-checked, unlike readSharedQuota. The key embeds the credential
+ * file's size and mtime, and the CLI rewrites that file on every token refresh, which
+ * is the same account on the same schedule; rejecting it there threw the turnover away
+ * exactly when the account was in active use. What must not be carried across is a
+ * different SUBSCRIPTION, and inheritResetTimes enforces that on the account identity
+ * stamped into the readings themselves.
+ */
+export function lastSharedQuota(accountId, file = quotaCacheFile()) {
+  try {
+    const entry = JSON.parse(fs.readFileSync(file, 'utf8'))?.[accountId];
+    if (!entry?.result || entry.result.error) return null;
+    return entry.result;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * providerQuota with the shared cache in front of it: serve a fresh-enough shared
  * reading, otherwise fetch live and share the result. The CLI's one quota path.
+ * A fetched reading missing turnover times (the Desktop fallback never has them)
+ * inherits any still-future ones the last shared reading knew; see inheritResetTimes.
  */
-export async function sharedProviderQuota(account, { usageSource = null, now = Date.now(), fetchImpl = fetch } = {}) {
+export async function sharedProviderQuota(account, { usageSource = null, now = Date.now(), fetchImpl = fetch, file = quotaCacheFile() } = {}) {
   const key = sharedQuotaKey(account.provider, account.home);
-  const hit = readSharedQuota(account.id, key, now);
+  const hit = readSharedQuota(account.id, key, now, file);
   if (hit) return hit;
-  const result = await providerQuota(account.provider, account.home, { fetchImpl, usageSource, now });
-  writeSharedQuota(account.id, key, result, Date.now());
+  const fetched = await providerQuota(account.provider, account.home, { fetchImpl, usageSource, now });
+  const result = inheritResetTimes(fetched, lastSharedQuota(account.id, file), now);
+  writeSharedQuota(account.id, key, result, Date.now(), file);
   return result;
 }

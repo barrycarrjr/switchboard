@@ -3,7 +3,75 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexSessionQuota, codexAccountQuota, codexLiveRateLimits, fetchCodexQuota, readCodexAuth, providerQuota } from '../core/quota.js';
+import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, inheritResetTimes, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexSessionQuota, codexAccountQuota, codexLiveRateLimits, fetchCodexQuota, readCodexAuth, providerQuota } from '../core/quota.js';
+
+// A window's turnover time is schedule knowledge, not a meter level: once read, it
+// stays true until that instant passes, however many later readings fail to restate
+// it. Clocks are carried, never percentages, and only clocks still in the future.
+
+const ORG = 'org-1';
+const previousFor = (windows, organizationUuid = ORG) => ({ windows, organizationUuid });
+
+test('inheritResetTimes fills a missing turnover from the previous reading, per window', () => {
+  const NOW = 1_000_000;
+  const previous = previousFor([
+    { key: 'session', usedPercent: 40, resetsAt: NOW + 1_000 },
+    { key: 'week', usedPercent: 60, resetsAt: NOW + 9_000 },
+  ]);
+  const fresh = { windows: [
+    { key: 'session', usedPercent: 45, resetsAt: null },
+    { key: 'week', usedPercent: 62, resetsAt: null },
+  ], source: 'desktop', organizationUuid: ORG };
+  const merged = inheritResetTimes(fresh, previous, NOW);
+  assert.equal(merged.windows[0].resetsAt, NOW + 1_000);
+  assert.equal(merged.windows[1].resetsAt, NOW + 9_000);
+  assert.equal(merged.windows[0].usedPercent, 45, 'percentages stay the fresh reading\'s own');
+  assert.equal(merged.source, 'desktop', 'everything but the clocks is untouched');
+});
+
+test('inheritResetTimes never overwrites a turnover the fresh reading states itself', () => {
+  const NOW = 1_000_000;
+  const previous = previousFor([{ key: 'week', usedPercent: 60, resetsAt: NOW + 9_000 }]);
+  const fresh = { windows: [{ key: 'week', usedPercent: 62, resetsAt: NOW + 8_000 }], organizationUuid: ORG };
+  assert.equal(inheritResetTimes(fresh, previous, NOW).windows[0].resetsAt, NOW + 8_000);
+});
+
+test('inheritResetTimes drops a turnover that has already passed', () => {
+  const NOW = 1_000_000;
+  const previous = previousFor([{ key: 'week', usedPercent: 60, resetsAt: NOW - 1 }]);
+  const fresh = { windows: [{ key: 'week', usedPercent: 2, resetsAt: null }], organizationUuid: ORG };
+  assert.equal(inheritResetTimes(fresh, previous, NOW).windows[0].resetsAt, null,
+    'a passed turnover says nothing about the window that replaced it');
+});
+
+// A schedule belongs to a subscription. Carrying one across a re-login would stamp the
+// old account's turnover onto the new account's percentages, and because the merged
+// reading is stored and re-inherited, the graft would outlive the mistake.
+test('inheritResetTimes refuses to carry a schedule across a change of account', () => {
+  const NOW = 1_000_000;
+  const previous = previousFor([{ key: 'week', usedPercent: 60, resetsAt: NOW + 9_000 }], 'org-A');
+  const fresh = { windows: [{ key: 'week', usedPercent: 5, resetsAt: null }], organizationUuid: 'org-B' };
+  assert.equal(inheritResetTimes(fresh, previous, NOW).windows[0].resetsAt, null);
+});
+
+test('inheritResetTimes refuses when either side cannot name its account', () => {
+  const NOW = 1_000_000;
+  const windows = [{ key: 'week', usedPercent: 5, resetsAt: null }];
+  const known = previousFor([{ key: 'week', usedPercent: 60, resetsAt: NOW + 9_000 }]);
+  assert.equal(inheritResetTimes({ windows }, known, NOW).windows[0].resetsAt, null,
+    'an account we cannot name is one we cannot prove is the same one');
+  assert.equal(inheritResetTimes({ windows, organizationUuid: ORG }, { windows: known.windows }, NOW).windows[0].resetsAt, null);
+});
+
+test('inheritResetTimes passes errors and shapeless readings through untouched', () => {
+  const previous = previousFor([{ key: 'week', usedPercent: 60, resetsAt: 2_000_000 }]);
+  const failed = { error: 'rate-limited' };
+  assert.equal(inheritResetTimes(failed, previous, 1_000_000), failed);
+  const fresh = { windows: [{ key: 'week', usedPercent: 2, resetsAt: null }], organizationUuid: ORG };
+  assert.equal(inheritResetTimes(fresh, null, 1_000_000), fresh);
+  assert.equal(inheritResetTimes(fresh, { error: 'unavailable' }, 1_000_000), fresh);
+  assert.equal(inheritResetTimes(null, previous, 1_000_000), null);
+});
 
 test('toExactPercent reads every value as a percent, clamps, and passes null through', () => {
   assert.equal(toExactPercent(34), 34);

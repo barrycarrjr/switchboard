@@ -181,12 +181,24 @@ failed run. `switchboard lane-token <laneId> --check` always asks the vendor imm
 The watch moves the default before an account is completely out, not after. Two windows
 decide it: the five hour session window and the weekly one. The five hour window is the one
 that stops work first in practice, because it is the smallest and fills fastest, and it can
-sit at ninety odd percent while the weekly figure still looks comfortable. So an account is
-handed the machine default only while both windows have room to spare (under 90 percent of
-the five hour window and under 95 percent of the weekly one), and the default is moved off
-an account as soon as either window passes those marks and somewhere better exists. Lane
-order still decides which account is preferred; usage only decides which accounts are in
-the running. One run is judged differently: a lane at 95 percent still works, so
+sit at ninety odd percent while the weekly figure still looks comfortable. So an account
+gives the machine default up as soon as either window passes its mark (90 percent of the
+five hour window, 95 percent of the weekly one) and somewhere better exists.
+
+Winning the default back is a stricter test than giving it up, deliberately. An account
+that has been passed over takes the default back only once it has dropped clear to under
+87 percent and 92 percent, and a reading anywhere in the gap between the two sets of marks
+leaves the default exactly where it already is. Without that gap a single mark answered in
+both directions, and the two usage sources do not always agree to the point: the live usage
+endpoint and the Claude Desktop fallback can read a couple of percent apart for the same
+account. A reading hovering around 90 percent then moved the default pass after pass, worst
+of all on a lane pool, where lane order pulls the default back to the top lane the moment
+that lane looks roomy again, so it left and returned all day long. Three points is wider
+than the two sources disagree by and small enough that an account which has genuinely
+recovered is preferred again well inside one window.
+
+Lane order still decides which account is preferred; usage only decides which accounts are
+in the running. One run is judged differently: a lane at 95 percent still works, so
 `switchboard run` will happily use it and fall over to the next lane if it does hit the
 wall. Pointing every terminal on the machine at an account with minutes left is the thing
 these limits prevent.
@@ -195,10 +207,13 @@ The watch also spends quota that is about to be lost. A weekly window is use-it-
 whatever is unspent when the week turns over is forfeited. So when any account's weekly
 window resets within the next day and still has room, the default moves there for that last
 day, even though the preferred account is perfectly healthy, and moves back on its own once
-the reset passes and lane order resumes. Soonest turnover wins when several qualify. A
-metered lane never qualifies, because pay-per-use quota does not expire, and the usual rules
-still hold: only a signed-in account with a current reading and room on both windows is
-trusted with the default.
+the reset passes and lane order resumes. The return is the lane pool's doing: with no lanes
+configured there is no preferred account, so the default simply stays where the last switch
+put it, as it always has. Soonest turnover wins when several qualify. A metered lane never
+qualifies, because pay-per-use quota does not expire, and the usual rules still hold: only a
+signed-in account with a current reading and room on both windows is trusted with the
+default, and a default whose own meter merely failed to read is left where it is rather than
+bounced on a blip.
 
 `switchboard run` is the intelligent execution broker: it evaluates the current status of all
 configured execution lanes, securely sets up the environment variables for the healthiest 

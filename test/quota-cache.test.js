@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { sharedQuotaKey, readSharedQuota, writeSharedQuota, sharedProviderQuota, quotaCacheFile, SHARED_QUOTA_TTL_MS } from '../core/quota-cache.js';
+import { sharedQuotaKey, readSharedQuota, writeSharedQuota, sharedProviderQuota, lastSharedQuota, quotaCacheFile, SHARED_QUOTA_TTL_MS } from '../core/quota-cache.js';
 
 const LIVE = { windows: [{ key: 'week', label: 'Week (all models)', usedPercent: 12, resetsAt: null }], source: 'token', vendor: 'Anthropic' };
 
@@ -88,6 +88,65 @@ test('sharedProviderQuota fetches live once, then serves the shared reading', as
     const third = await sharedProviderQuota(account, { fetchImpl: spyFetch });
     assert.equal(third.cached, undefined);
     assert.equal(calls, 2);
+  } finally {
+    process.env.APPDATA = prevAppData;
+  }
+});
+
+// Deliberately not key-checked: the key embeds the credential file's mtime, and the
+// CLI rewrites that on every token refresh, which is the same account on the same
+// schedule. What must not be carried across a re-login is enforced on the account
+// identity inside inheritResetTimes, not here.
+test('lastSharedQuota answers at any age, and past a credential rewrite', () => {
+  const file = tempFile();
+  writeSharedQuota('a1', 'k1', LIVE, 1_000, file);
+  // Far past the TTL: readSharedQuota refuses, the turnover-inheritance read does not.
+  assert.equal(readSharedQuota('a1', 'k1', 1_000 + SHARED_QUOTA_TTL_MS + 1, file), null);
+  assert.equal(lastSharedQuota('a1', file).windows[0].usedPercent, 12);
+  assert.equal(lastSharedQuota('missing', file), null);
+  assert.equal(lastSharedQuota('a1', path.join(path.dirname(file), 'absent.json')), null);
+  writeSharedQuota('a2', 'k2', { error: 'rate-limited' }, 1_000, file);
+  assert.equal(lastSharedQuota('a2', file), null, 'a failure is not a reading to inherit from');
+});
+
+// The flap this closes: mid spend-down, one rate-limited tick swaps the account's
+// reading to the Desktop fallback, whose windows never carry turnover times. Without
+// inheritance the watch could no longer prove the week was about to turn over, lane
+// order reclaimed the default, and the next token-shaped reading sent it back, once
+// per cooldown for as long as the endpoint stayed flaky.
+test('a rate-limited tick cannot make a known week turnover vanish', async () => {
+  const prevAppData = process.env.APPDATA;
+  process.env.APPDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-appdata3-'));
+  try {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-qp3-'));
+    const now = Date.now();
+    const weekReset = now + 6 * 60 * 60 * 1000;
+    fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt: now + 60 * 60 * 1000 } }));
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { organizationUuid: 'org-1', accountUuid: 'acct' } }));
+    const desktopDir = path.join(process.env.APPDATA, 'Claude');
+    fs.mkdirSync(desktopDir, { recursive: true });
+    fs.writeFileSync(path.join(desktopDir, 'plan-usage-history.json'), JSON.stringify({
+      samples: [{ t: now - 60_000, org: 'org-1', u: { fh: 12, sd: 67 } }],
+    }));
+    const account = { id: 'acct-3', provider: 'claude', home };
+
+    const good = async () => ({ ok: true, json: async () => ({
+      five_hour: { utilization: 12, resets_at: now + 2 * 60 * 60 * 1000 },
+      seven_day: { utilization: 67, resets_at: weekReset },
+    }) });
+    const seeded = await sharedProviderQuota(account, { fetchImpl: good, now });
+    assert.equal(seeded.source, 'token');
+    assert.equal(seeded.windows.find((w) => w.key === 'week').resetsAt, weekReset);
+
+    // Well past the TTL (the write stamps its own clock, so leave a margin), the
+    // endpoint rate-limits and the Desktop fallback answers instead.
+    const later = now + SHARED_QUOTA_TTL_MS + 60_000;
+    const limited = async () => ({ ok: false, status: 429, json: async () => ({}) });
+    const fallback = await sharedProviderQuota(account, { fetchImpl: limited, now: later });
+    assert.equal(fallback.source, 'desktop');
+    assert.equal(fallback.fallbackReason, 'rate-limited');
+    assert.equal(fallback.windows.find((w) => w.key === 'week').resetsAt, weekReset, 'the still-future turnover is inherited');
+    assert.equal(fallback.windows.find((w) => w.key === 'week').usedPercent, 67, 'percentages stay the fallback\'s own');
   } finally {
     process.env.APPDATA = prevAppData;
   }

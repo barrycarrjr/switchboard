@@ -254,6 +254,38 @@ export function readDesktopOrganization(profileDir) {
 }
 
 /**
+ * Fold turnover times a previous reading knew into a fresh reading that lacks them.
+ *
+ * A window's resetsAt is schedule knowledge, not a meter level: once read, it stays
+ * true until that instant passes, however many later readings fail to restate it. The
+ * Desktop fallback is the case in point: it knows percentages but never turnover
+ * times, so one rate-limited tick swapped an account's reading to a resetsAt-less
+ * shape, the spend-down watch could no longer prove the account's week was about to
+ * turn over, and the machine default bounced away and back once per cooldown for as
+ * long as the endpoint stayed flaky. Only clocks are carried, never percentages, and
+ * only clocks still in the future: a turnover that has passed says nothing about the
+ * window that replaced it.
+ */
+export function inheritResetTimes(fresh, previous, now = Date.now()) {
+  if (!fresh?.windows || fresh.error || !previous?.windows) return fresh;
+  // Only from the SAME account. A schedule belongs to a subscription, so carrying one
+  // across a re-login would stamp the old account's turnover onto the new account's
+  // percentages, and the merged reading is stored and re-inherited, so the graft
+  // outlives the mistake. The credential file is the wrong thing to compare: the CLI
+  // rewrites it on every token refresh, which is the same account on the same
+  // schedule, and treating that as a new identity threw the inheritance away exactly
+  // when the account was in use. Identity is required on both sides: an account we
+  // cannot name is one we cannot prove is the same one.
+  if (!fresh.organizationUuid || fresh.organizationUuid !== previous.organizationUuid) return fresh;
+  const windows = fresh.windows.map((w) => {
+    if (w.resetsAt != null) return w;
+    const before = previous.windows.find((p) => p.key === w.key);
+    return before?.resetsAt != null && before.resetsAt > now ? { ...w, resetsAt: before.resetsAt } : w;
+  });
+  return { ...fresh, windows };
+}
+
+/**
  * Quota for one registered Claude account. Never throws; unknown is reported, not
  * guessed. Ladder: the account's own token, then an associated Claude Desktop
  * profile's identity-matched usage history, then honest unavailability.
@@ -267,6 +299,13 @@ export async function accountQuota(
   allowDesktopFallback = true,
 ) {
   const { token, expiresAt } = readClaudeCredential(home);
+  // Which account this reading belongs to, stamped onto whatever comes back so a
+  // later reading can tell "the same subscription, refreshed" from "a different
+  // subscription in the same folder". See inheritResetTimes.
+  const stamp = (reading) => {
+    const organizationUuid = readClaudeAccountIdentity(home)?.organizationUuid ?? null;
+    return organizationUuid ? { ...reading, organizationUuid } : reading;
+  };
   let tokenError = null;
   if (token && expiresAt != null && expiresAt <= now) {
     // A token the file itself says has expired earns a guaranteed 401, and the
@@ -278,7 +317,7 @@ export async function accountQuota(
     tokenError = { error: 'auth' };
   } else if (token) {
     try {
-      return { windows: await fetchClaudeQuota(token, fetchImpl), source: 'token', vendor: 'Anthropic' };
+      return stamp({ windows: await fetchClaudeQuota(token, fetchImpl), source: 'token', vendor: 'Anthropic' });
     } catch (e) {
       // 401/403 means the stored access token is stale; the vendor CLI refreshes it
       // on its next real use. 429 means we asked too often; callers should serve

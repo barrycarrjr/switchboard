@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, accountScopedEnv, configuredClaudeCredentialOverrides, PROVIDERS } from '../core/accounts.js';
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
 import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
-import { providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
-import { sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
+import { DESKTOP_STALE_MS, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
+import { lastSharedQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
@@ -1163,11 +1163,17 @@ async function cachedQuota(account, force = false) {
   const pending = (async () => {
     const settings = loadSettings();
     const reg = registry();
-    const result = await providerQuota(account.provider, account.home, {
+    const fetched = await providerQuota(account.provider, account.home, {
       usageSource: settings.usageSources[account.id] ?? null,
       allowDesktopFallback: desktopFallbackIsUnambiguous(account, reg.accounts),
     });
     const completedAt = Date.now();
+    // A reading missing turnover times (the Desktop fallback never has them) inherits
+    // any still-future ones the last reading knew, so a rate-limited tick cannot make
+    // an account's known week turnover vanish; see inheritResetTimes, which refuses
+    // to carry a schedule across a change of account. The shared file stands in when
+    // the app restarted and the in-memory cache is empty.
+    const result = inheritResetTimes(fetched, hit?.result ?? lastSharedQuota(account.id), completedAt);
     const isCurrent = quotaInflight.get(account.id) === flight;
     if (!result.error) {
       if (isCurrent) quotaCache.set(account.id, { key, at: completedAt, lastAttemptAt: completedAt, lastError: null, result });
@@ -1176,10 +1182,17 @@ async function cachedQuota(account, force = false) {
       writeSharedQuota(account.id, sharedQuotaKey(account.provider, account.home), result, completedAt);
       return { ...result, observedAt: completedAt, cached: false };
     }
-    // A failed forced refresh must not erase the last known good reading.
+    // A failed forced refresh must not erase the last known good reading. It is still
+    // re-served for display, but past the staleness bound it stops claiming to be a
+    // current one: decisions read stale as unreadable, which is the honest answer
+    // while the endpoint is failing. Without the bound the tray was the one reader
+    // with no age limit at all (the CLI has the shared five-minute window and the
+    // Desktop sample carries its own), so an outage could hold a reading current for
+    // hours and let the watch move the default on percentages that had moved on.
     if (hit?.result) {
       if (isCurrent) quotaCache.set(account.id, { ...hit, key, lastAttemptAt: completedAt, lastError: result.error });
-      return { ...hit.result, observedAt: hit.at, cached: true, refreshError: result.error };
+      const aged = completedAt - hit.at > DESKTOP_STALE_MS;
+      return { ...hit.result, observedAt: hit.at, cached: true, refreshError: result.error, ...(aged ? { stale: true } : {}) };
     }
     if (isCurrent) quotaCache.set(account.id, { key, at: null, lastAttemptAt: completedAt, lastError: result.error, result: null });
     return result;
