@@ -60,18 +60,33 @@ export function decideDefaultSwitch({ mode, accounts, activeId, snapshots, login
   const activeSnapshot = snapshots[active.id];
   const runningOut = isRunningOut(activeSnapshot) === true;
 
+  // Desktop can supply a truthful usage snapshot for an account whose CLI is signed
+  // out. That is useful for display, but never enough to switch into it.
+  const others = claude.filter((a) => (
+    a.id !== active.id
+    && (!loginStates || loginStates[a.id]?.signedIn === true)
+  ));
+
   // Every candidate here is by definition not the account holding the default, so each
   // is judged at the return mark rather than the leave mark: an account has to have
   // dropped clear of the band, not merely be a point better than the one in place. Two
   // accounts hovering either side of 90% therefore stop trading the default between
   // them. See `HEADROOM_RETURNS_AT`.
-  const eligible = claude.filter((a) => (
-    a.id !== active.id
-    && hasHeadroom(snapshots[a.id])
-    // Desktop can supply a truthful usage snapshot for an account whose CLI is
-    // signed out. That is useful for display, but never enough to switch into it.
-    && (!loginStates || loginStates[a.id]?.signedIn === true)
-  ));
+  let eligible = others.filter((a) => hasHeadroom(snapshots[a.id]));
+
+  // Unless the default has actually hit the wall, which is not a question the band was
+  // ever meant to answer. The band exists to stop the default drifting between two
+  // accounts that both still work; leaving it parked on one that has stopped working is
+  // a worse outcome than the drift it prevents, and the reading it would turn on can be
+  // three points of a five-hour window that refills of its own accord. So when the
+  // default is spent and nothing has dropped clear of the band, the candidates are
+  // judged at the leaving mark instead: the single line every account was held to
+  // before the band existed. Anything under it still runs, and an account that runs
+  // beats one that has hit the wall. The lane path has always answered this the same
+  // way; see the `selectLane(providerLanes, ...)` fallback in planDefaultSwitches.
+  if (!eligible.length && isSpent(activeSnapshot) === true) {
+    eligible = others.filter((a) => isRunningOut(snapshots[a.id]) === false);
+  }
 
   // Accounts about to forfeit quota, soonest turnover first because the first to turn
   // over has the least time left to spend it.

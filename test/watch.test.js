@@ -84,15 +84,55 @@ test('a nearly-spent target is not worth switching to', () => {
 // account, so one mark used in both directions let the default leave and come straight
 // back. An account lets go of the default at 90/95 and only wins it back under 87/92.
 
-test('a target inside the dead band is not somewhere to send the default', () => {
-  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(100, 62), b: snap(88, 10) } });
-  assert.equal(d.kind, 'exhausted', 'a few points better than the account it would replace is not room to spare');
+test('a target inside the dead band is not somewhere to send a default that still works', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(93, 62), b: snap(88, 10) } });
+  assert.equal(d.kind, 'none', 'a few points better than the account it would replace is not room to spare');
 });
 
 test('a target that has dropped clear of the band is', () => {
   const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(100, 62), b: snap(86, 10) } });
   assert.equal(d.kind, 'switch');
   assert.equal(d.to, 'b');
+});
+
+// The band decides between two accounts that both still work. Once the default has
+// actually hit the wall it decides nothing, because staying is no longer an option that
+// works: the candidates go back to being judged at the leaving mark, which is the only
+// line there was before the band existed. Without this, a default at 100% sat there
+// refusing work while an account three points inside the band ran perfectly well, and
+// the machine reported that nothing had room. The lane path never had this problem; it
+// has always fallen back to the ordinary pick when the default is spent.
+
+test('a spent default does hand over to an account inside the band', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(100, 62), b: snap(88, 10) } });
+  assert.equal(d.kind, 'switch', 'an account that still runs beats one that has hit the wall');
+  assert.equal(d.to, 'b');
+});
+
+test('a spent default hands over on the weekly band too', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(30, 100), b: snap(10, 93) } });
+  assert.equal(d.kind, 'switch');
+  assert.equal(d.to, 'b');
+});
+
+test('the handover stops at the leaving mark; it does not take anything that still runs', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(100, 62), b: snap(91, 10) } });
+  assert.equal(d.kind, 'exhausted', 'past the leaving mark is where it was already refused before the band');
+});
+
+test('the handover still refuses an account that is signed out', () => {
+  const d = decideDefaultSwitch({
+    ...base,
+    mode: 'auto',
+    loginStates: { a: { signedIn: true }, b: { signedIn: false } },
+    snapshots: { a: snap(100, 62), b: snap(88, 10) },
+  });
+  assert.equal(d.kind, 'exhausted');
+});
+
+test('a merely low default is left alone even when the band would hand it over', () => {
+  const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: { a: snap(96, 62), b: snap(88, 10) } });
+  assert.equal(d.kind, 'none', 'the band only stops applying once the default has stopped working');
 });
 
 test('two accounts either side of 90 percent do not trade the default between them', () => {
