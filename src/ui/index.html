@@ -302,6 +302,9 @@ document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () 
 function openTab(name) {
   document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.tab === name));
   document.querySelectorAll('.panel').forEach((x) => x.classList.toggle('on', x.id === 'tab-' + name));
+  // Accounts is the one panel that is not rebuilt on return, so its figures are the
+  // one thing that could still be from whenever the tab was last left.
+  if (name === 'accounts') refreshVisibleUsage();
   if (name === 'providers') renderProviders();
   if (name === 'lanes') renderLanes();
   if (name === 'apps') renderApps();
@@ -436,7 +439,12 @@ function quotaSourceRow(q, onRefresh = null) {
   return source;
 }
 
-function renderUsageWindows(host, summary, q, onRefresh = null) {
+/**
+ * Draw one reading. `now` is a parameter rather than a call inside, because whether a
+ * window has already turned over is a judgement about the moment of drawing, and the
+ * only way to test that judgement is to be able to state the moment.
+ */
+function renderUsageWindows(host, summary, q, onRefresh = null, now = Date.now()) {
   const windows = Array.isArray(q.windows) ? q.windows : [];
   if (!windows.length) {
     showUsageState(host, summary, {
@@ -495,7 +503,7 @@ function renderUsageWindows(host, summary, q, onRefresh = null) {
     }
 
     if (w.resetsAt) {
-      const resetPassed = Number(w.resetsAt) < Date.now();
+      const resetPassed = Number(w.resetsAt) < now;
       const reset = el('div', 'quota-reset' + (resetPassed ? ' past' : ''));
       reset.textContent = `${resetPassed ? 'Reset time passed' : 'Resets'} ${fmtAccountTime(w.resetsAt)}${resetPassed ? ' · reading may be stale' : ''}`;
       metric.appendChild(reset);
@@ -888,6 +896,10 @@ function accountCard(p, account) {
         box.appendChild(actionRow);
       }
     };
+    // How the panel's poll re-reads this card. Registered on the node itself, so only
+    // cards actually on screen are ever refreshed, and never forced: a tick rides the
+    // main process's cache instead of spending a request at the vendor.
+    usage.content.refreshUsage = () => fillQuota(1, false);
     showLoading();
     fillQuota();
   } else {
@@ -1114,6 +1126,59 @@ async function renderAccounts() {
   if (!isCurrentRender('accounts', seq)) return;
   if (!$('#ver').querySelector('button')) $('#ver').textContent = 'v' + state.version;
   realPanel.replaceChildren(...panel.childNodes);
+  watchAccountUsage(seq);
+}
+
+/**
+ * How often the usage figures are re-read while their panel is on screen. The main
+ * process holds a reading for ninety seconds, so most ticks cost nothing at the
+ * vendor: this interval decides how soon a turnover is noticed, not how often the
+ * vendor is asked.
+ */
+const USAGE_POLL_MS = 60 * 1000;
+
+/** Whether a poll tick should read anything, or quietly do nothing this time. */
+function shouldPollUsage({ current, tabOn, hidden }) {
+  return current === true && tabOn === true && hidden !== true;
+}
+
+/**
+ * Keep the usage figures honest while the panel is on screen.
+ *
+ * Every card read its usage once as it was drawn and then never again, so a five-hour
+ * window turning over left the panel describing a window that no longer existed, next
+ * to a reset time that had already passed, with nothing on screen admitting it. The
+ * background watch held the right figures the whole time; only this side was frozen.
+ *
+ * One timer at a time, replaced by the next render rather than cleared by it, because
+ * the tab can be left and returned to without the panel being rebuilt. A tick does
+ * nothing while the panel is off screen or the window is away in the tray, so a panel
+ * nobody is looking at asks for nothing.
+ */
+let usageTimer = null;
+function watchAccountUsage(seq) {
+  clearInterval(usageTimer);
+  usageTimer = setInterval(() => {
+    if (!shouldPollUsage({
+      current: isCurrentRender('accounts', seq),
+      tabOn: $('#tab-accounts').classList.contains('on'),
+      hidden: document.hidden,
+    })) return;
+    refreshVisibleUsage();
+  }, USAGE_POLL_MS);
+}
+
+/**
+ * Re-read every usage card now drawn. A card holding the keyboard is left alone:
+ * replacing its contents underneath someone would move focus off whatever they had
+ * reached for.
+ */
+function refreshVisibleUsage() {
+  for (const host of document.querySelectorAll('#tab-accounts .usage-content')) {
+    if (typeof host.refreshUsage !== 'function') continue;
+    if (host.contains(document.activeElement)) continue;
+    host.refreshUsage();
+  }
 }
 
 const TOOL_COLORS = { claude: '#c96f4a', codex: '#10a37f', gemini: '#4285f4', copilot: '#24292f', junie: '#087cfa', qwen: '#615ced', amp: '#f34e3f', opencode: '#5b6675', grok: '#1c1c1c', cursor: '#3b3b3b', aider: '#0a7d36', antigravity: '#2e6ff2', ollama: '#222222', lmstudio: '#6d28d9' };
@@ -2296,6 +2361,12 @@ function openRepoModal() {
 
 $('#ver').addEventListener('click', manualUpdateCheck);
 sb.onUpdateAvailable((info) => showUpdateButton(info));
+
+// The window lives in the tray, so it is usually reopened rather than started. What
+// it was left showing is exactly what must not greet whoever opens it.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && $('#tab-accounts').classList.contains('on')) refreshVisibleUsage();
+});
 
 sb.onRefresh(() => renderAccounts());
 sb.onNavigate((hash) => openTab(hash));
