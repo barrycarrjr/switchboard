@@ -1327,7 +1327,7 @@ async function renderLanes() {
   const section = toolSection('lanes', 'Execution Lanes', data.lanes.length
     ? `${data.lanes.length} lane${data.lanes.length === 1 ? '' : 's'} · drag to reorder`
     : 'No lanes yet');
-  const lanesInfo = el('p', 'panelnote', 'Lanes define the fallback order and settings for "switchboard run". Switchboard will automatically hand off interrupted tasks to the next available lane without leaking secrets. The first lane that is healthy gets the work.');
+  const lanesInfo = el('p', 'panelnote', 'Lanes define the fallback order and settings for "switchboard run". The first lane that is healthy gets the work, and a run stopped by a provider limit starts again in the next one. That retry is a fresh start: Switchboard never captures or replays your conversation.');
   lanesInfo.style.marginTop = '0';
   section.appendChild(lanesInfo);
 

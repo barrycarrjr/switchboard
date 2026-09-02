@@ -2,10 +2,13 @@
 
 A small Windows tray app that manages the AI tooling on a developer's machine: install and
 update the AI CLIs, register multiple subscription accounts per tool, switch the active
-account in two clicks, see each account's usage against its available limits, register MCP servers across every
-AI client at once, and run health checks for broken setups and billing traps.
+account in two clicks, see each account's usage against its available limits, register MCP
+servers with every supported AI client at once, and run health checks for broken setups
+and billing traps.
 
-It also acts as an execution broker (`switchboard run`), routing tasks to the healthiest available AI account via ordered "execution lanes," tracking quota limits, and securely handing off context when an account hits its limit mid-task.
+It also acts as an execution broker (`switchboard run`): it routes a command to the
+healthiest available account through ordered "execution lanes," and starts the command
+again in the next lane when the one it is using hits a provider limit.
 
 For deep-dives into architecture, guides, and full command references, see the **[`docs/`](./docs/)** directory.
 
@@ -15,8 +18,8 @@ For deep-dives into architecture, guides, and full command references, see the *
   nothing else. Four tools qualify, because each has a variable that moves its whole
   sign-in to another folder: Claude Code (`CLAUDE_CONFIG_DIR`), Codex (`CODEX_HOME`),
   Gemini CLI (`GEMINI_CLI_HOME`) and Qwen Code (`QWEN_HOME`).
-- Two of those variables name the folder itself and two name the folder above it, so
-  `GEMINI_CLI_HOME=C:\profiles\work` means the account lives in
+- Three of those variables name the folder itself. `GEMINI_CLI_HOME` alone names the
+  folder above it, so `GEMINI_CLI_HOME=C:\profiles\work` means the account lives in
   `C:\profiles\work\.gemini`. Switchboard appends the vendor's folder name for you and
   refuses to register a folder the vendor could never read.
 - A tool is deliberately absent when its sign-in lives outside the config folder. GitHub
@@ -25,7 +28,9 @@ For deep-dives into architecture, guides, and full command references, see the *
   a second account and quietly share the first one's identity. Tools like that appear on
   the Accounts page as a single machine-wide login instead.
 - Switching sets the user-scope default for those variables, so new terminals and newly
-  launched tools inherit it. Running processes are untouched, unless launched via `switchboard run`.
+  launched tools inherit it. Running processes are untouched. `switchboard run` does not
+  read that default at all: it pins each command it launches to the account of the lane
+  it picked, so a switch never disturbs a run already under way.
 - A desktop app follows the same switch where the app can. Claude Desktop keeps each
   account in its own data folder, so the Apps tab names the account its Launch button
   will open (the one that is the machine default right now) and puts the others behind
@@ -35,8 +40,11 @@ For deep-dives into architecture, guides, and full command references, see the *
   Signing in stays the app's own job, and an app that keeps one login per machine
   (Antigravity), switches accounts inside itself (T3 Code), or has no account at all
   (LM Studio) keeps its plain button.
-- No secrets are stored. Quota display reads each account's own credentials file
-  transiently and calls the vendor usage endpoint; tokens are never persisted or logged.
+- Account switching and usage display store no secrets. Quota display reads each
+  account's own credentials file transiently and calls the vendor usage endpoint; that
+  token is never persisted or logged. The one secret Switchboard does keep is a lane
+  token you mint yourself for automation, held in plain text in its own settings file.
+  See `lane-token` under Development.
 - Usage is shown wherever the vendor gives an honest source. Claude and Codex both read
   the account's own sign-in and ask the vendor what that account has spent. When a Codex
   check is refused, usually a token its CLI has not refreshed in a while, Switchboard
@@ -51,8 +59,17 @@ For deep-dives into architecture, guides, and full command references, see the *
   name and a piece of its command line, and its card says Running or Not running. The
   check is a local process listing taken only while the window is open; nothing is ever
   started or stopped.
-- Installs and updates delegate to vendor mechanisms (winget, npm). Nothing is bundled.
-- Execution Lanes enable intelligent failover. By running tasks through `switchboard run`, the CLI automatically routes your task to an account with available quota. If a provider limit is hit mid-session, Switchboard securely transfers the context to the next available lane without leaking secrets.
+- Installs and updates delegate to vendor mechanisms: winget, npm, pip, or the vendor's
+  own install script. A tool with no such command for Windows is detected but not
+  installed, and links to the vendor site instead. Nothing is bundled.
+- Execution lanes are the failover pool. `switchboard run` picks the first healthy lane,
+  launches the vendor's own CLI pinned to that account, and, when a run stops on a
+  provider limit, drops that lane and starts the command again in the next one. A retry
+  in the same tool starts that tool fresh: Switchboard carries no conversation across.
+  When the next lane is a different tool, it looks for a handoff document already written
+  for that working directory and, if one is there, tells the new tool to read it; if
+  there is none, it says so and asks before starting fresh. Writing that document is not
+  something Switchboard does for you yet.
 
 ## MCP servers
 
@@ -73,9 +90,10 @@ short suggested list at the top of it.
   formats genuinely conflict and at least one client destroys its whole server list when
   handed a shape it does not expect. Where a file must be edited, a timestamped backup is
   written first and a config that cannot be parsed is refused rather than overwritten.
-- A chip shows three states: not registered, registered, and registered but not signed in.
-  A tick that meant "signed out and broken" would be worse than no tick, so a client that
-  cannot report its sign-in state says so rather than guessing.
+- A chip shows four states: not registered, registered and signed in, registered but not
+  signed in, and plain registered for a client that cannot report its sign-in state. A
+  tick that meant "signed out and broken" would be worse than no tick, so that last case
+  says what it knows rather than guessing.
 - Servers needing an API key are deliberately absent from the catalogue. They cannot work
   without stored secrets, and listing them would offer a server that looks configured and
   fails on first use.
@@ -93,11 +111,13 @@ It installs per-user to `%LOCALAPPDATA%\Programs\Switchboard`, registers an unin
 Apps & Features, and running a newer setup upgrades in place. App data lives in
 `%APPDATA%\Switchboard` and is kept on uninstall.
 
-The About panel can export all Switchboard-owned configuration to a versioned JSON file and
-import it later. This includes account registrations and active choices, preferences, custom
-app launchers, and custom MCP server definitions. It does not contain tokens, vendor
-credential files, or MCP client sign-ins. Import validates the complete file and writes a
-pre-import recovery backup under `%APPDATA%\Switchboard\backups` before replacing anything.
+The About panel can export the portable part of Switchboard's own configuration to a
+versioned JSON file and import it later: account registrations and active choices,
+preferences, custom app launchers, and custom MCP server definitions. It does not contain
+tokens, vendor credential files, or MCP client sign-ins, and it does not carry the lane
+pool, spend policies or lane tokens, which stay on the machine that set them up. Import
+validates the complete file and writes a pre-import recovery backup under
+`%APPDATA%\Switchboard\backups` before replacing anything.
 An in-app upgrade writes the same kind of importable backup immediately before its setup
 program is launched; if that backup cannot be written, the upgrade does not start.
 
@@ -125,8 +145,9 @@ result is data we ship, not a dependency. It keeps only servers reachable at an 
 address and drops any that need an API key.
 
 The core (`core/`, `bin/cli.js`) is plain Node with no Electron dependency; the tray shell
-is a thin skin over it. `switchboard` is also a CLI: `status`, `accounts`, `use`, `doctor`,
-`providers`, `quota`, `lanes`, `lane-token`, `watch`.
+is a thin skin over it. `switchboard` is also a CLI: `status`, `accounts`, `add`,
+`remove`, `use`, `detect`, `providers`, `doctor`, `quota`, `lanes`, `lane-token`, `watch`,
+`dry-run` and `run`. Running it with no command prints the same list with a line each.
 
 Everything the tray decides, the CLI decides the same way, because both call the same code
 in `core/`. That is what makes a machine with no desktop usable: `switchboard lanes` edits
@@ -152,7 +173,10 @@ lane's own account folder with any inherited token stripped, so it can never bin
 wrong account. Claude's own tool prints the minted token on screen, exactly as it does
 when run by hand; copy it and paste it at the prompt Switchboard shows next. The token
 is validated by a small real Claude run using it before it is stored, and a refused one
-is not stored at all. The minting login's identity is stamped into the stored entry,
+is not stored at all; a check that cannot reach the vendor stores the token anyway and
+says it is unverified, so you can confirm it later with `--check`. It is kept in plain
+text in `%APPDATA%\Switchboard\settings.json`, so treat that file as a secret.
+The minting login's identity is stamped into the stored entry,
 so a lane folder later signed in to a different account stops receiving the token (and
 Health says why) instead of quietly billing the account the token was minted for; a
 folder with no readable sign-in identity refuses to mint until it is signed in.
@@ -169,14 +193,16 @@ Switchboard leaves `settings.json` behind in `%APPDATA%\Switchboard`, so remove 
 tokens first if the machine is being retired.
 
 `switchboard watch` is the quota watch without the tray. `--once` takes a single pass, for
-Task Scheduler or cron; without it, it stays running and takes a pass every five minutes.
-`--mode notify` reports what it would do and `--mode auto` switches the machine default,
-overriding the stored setting for that one command without writing it back. Readings come
-through the same shared cache the tray fills, so running both costs no extra requests for
-quota readings. Stored lane tokens are validated on the same schedule, throttled to about
-one small Claude run per token per hour, and the tray checks them on every pass even with the
-quota watch off, so a revoked token is noticed within the hour rather than at the next
-failed run. `switchboard lane-token <laneId> --check` always asks the vendor immediately.
+Task Scheduler or cron; without it, it stays running and takes a pass every five minutes,
+or every `--interval <minutes>` if you would rather set the gap yourself. `--mode notify`
+reports what it would do and `--mode auto` switches the machine default, overriding the
+stored setting for that one command without writing it back, and `--json` prints each pass
+as one line of JSON. Readings come through the same shared cache the tray fills, so running
+both costs no extra requests for quota readings. Stored lane tokens are validated on the
+same schedule, throttled to about one small Claude run per token per hour, and the tray
+checks them on every pass even with the quota watch off, so a revoked token is noticed
+within the hour rather than at the next failed run. An explicit `--check` is never
+throttled and always asks the vendor immediately.
 
 The watch moves the default before an account is completely out, not after. Two windows
 decide it: the five hour session window and the weekly one. The five hour window is the one
@@ -215,7 +241,35 @@ signed-in account with a current reading and room on both windows is trusted wit
 default, and a default whose own meter merely failed to read is left where it is rather than
 bounced on a blip.
 
-`switchboard run` is the intelligent execution broker: it evaluates the current status of all
-configured execution lanes, securely sets up the environment variables for the healthiest 
-account, and launches the native CLI. If the task is interrupted by an exhaustion limit, 
-Switchboard intercepts the error and securely hands off the session context to the next available lane.
+`switchboard run` is the execution broker. It reads where every lane stands, takes the
+first healthy one, and launches the vendor's own CLI with an environment scoped to that
+lane's account: the account's own folder and nothing inherited from the calling shell that
+could bill somebody else. Your arguments are passed straight through. `--provider` and
+`--account` narrow the pool, `--no-fallback` keeps it to one lane, and `--quiet` moves
+Switchboard's own lines to standard error so a caller can parse the tool's output.
+`--spec <file>` supplies a command line per tool instead, for a caller that cannot know
+in advance which tool it will get; a fallback to a tool the file says nothing about is
+refused rather than guessed at.
+
+When a run ends on a provider limit, and only then, that lane is dropped and the command
+starts again in the next healthy one. An ordinary non-zero exit is reported and left
+alone, because guessing would move work to another account on any old failure. The retry
+is a fresh start, not a resumption: the new tool begins with the same arguments the first
+one got. Switchboard never captures or replays a conversation. It holds the tool's error
+output and the tail of its normal output in memory while the run lasts, and only so it can
+tell a limit notice from any other failure.
+
+Crossing to a different tool is treated more carefully, because arguments and session
+state do not carry between vendors. Switchboard looks for a handoff document already
+written for the current working directory, which lives under
+`%APPDATA%\Switchboard\handoffs` under a name derived from that directory's path. With one
+there, it tells the new tool to read that file and continue from its next actions. With
+none, it says a handoff is missing. Either way it asks before going ahead, unless you
+passed `--yes`. Switchboard can validate, size-limit and redact such a document, but
+nothing in it writes one during a run yet, so today the file exists only if you or your own
+tooling put it there. Keeping the handoff current while work happens is Phase 3 of
+[the design note](./docs/design/PROVIDER-FAILOVER-HANDOFF.md) and is not built.
+
+A run never uses a stored lane token; the launched tool authenticates with the account
+folder's own sign-in. `switchboard dry-run` answers which lane would be picked without
+launching anything.
