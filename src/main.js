@@ -8,6 +8,7 @@ import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallC
 import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
 import { DESKTOP_STALE_MS, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
 import { lastSharedQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
+import { fetchAllProviderStatus } from '../core/provider-status.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
@@ -849,6 +850,14 @@ ipcMain.handle('sb:doctor', async () => {
   // Settings ride along so a dead lane token surfaces here; the checks only ever name
   // the lane and account, never the token value.
   return runChecks({ accounts, loginStates, settings: loadSettings() });
+});
+
+// A vendor status page belongs to the tool, not to any one account, so this needs
+// none of sb:doctor's account/settings gathering. `force` is what the Health tab's
+// "Check now" button sends to skip the shared five-minute cache.
+ipcMain.handle('sb:providerHealth', async (_e, force = false) => {
+  const health = await fetchAllProviderStatus({ force });
+  return TOOLS.map((t) => ({ id: t.id, name: t.name, ...health[t.id] }));
 });
 
 /**

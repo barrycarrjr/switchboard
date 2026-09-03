@@ -198,6 +198,39 @@
   .hc .hm span{display:block;color:var(--muted);font-size:.76rem}
   .healthfoot{display:flex;align-items:center;gap:10px;margin-top:10px}
   .healthfoot .last{color:var(--muted);font-size:.78rem}
+  .phc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;margin:6px 0 14px}
+  .healthdivider{border:none;border-top:1px solid var(--line);margin:22px 2px}
+  .phc-summary{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+  .phc-filter{font:inherit;font-size:.78rem;color:var(--muted);background:none;border:1px solid transparent;border-radius:99px;padding:4px 11px;cursor:pointer}
+  .phc-filter:hover{background:#eef1f5}
+  .phc-filter.on{background:var(--accent-soft);color:var(--accent)}
+  .phc-filter b{color:var(--ink)}
+  .phc-filter.on b{color:var(--accent)}
+  .phc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+  .phc[hidden]{display:none}
+  .phc-head{display:flex;align-items:center;gap:9px}
+  .phc-head .pi{width:26px;height:26px;border-radius:6px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex:0 0 auto}
+  .phc-title{flex:1;min-width:0;font-size:.9rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .phc-pill{flex:0 0 auto;font-size:.72rem;font-weight:600;border-radius:99px;padding:2px 9px}
+  .phc-pill.ok{background:var(--ok-bg);color:var(--ok)}
+  .phc-pill.warn{background:var(--warn-bg);color:var(--warn)}
+  .phc-pill.bad{background:var(--bad-bg);color:var(--bad)}
+  .phc-pill.info{background:var(--info-bg);color:var(--info)}
+  .phc-components{display:flex;flex-direction:column;gap:4px}
+  .phc-row{display:flex;align-items:center;gap:7px;font-size:.78rem}
+  .phc-row b{margin-left:auto;font-weight:400;color:var(--muted);white-space:nowrap}
+  .phc .dot,.phc-summary .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;display:inline-block;margin-right:5px}
+  .phc .dot.ok,.phc-summary .dot.ok{background:var(--ok)}
+  .phc .dot.warn,.phc-summary .dot.warn{background:var(--warn)}
+  .phc .dot.bad,.phc-summary .dot.bad{background:var(--bad)}
+  .phc .dot.info,.phc-summary .dot.info{background:var(--info)}
+  .phc-issue{font-size:.78rem;line-height:1.45;border-radius:6px;padding:7px 9px}
+  .phc-issue.ok{background:var(--ok-bg);color:var(--ok)}
+  .phc-issue.warn{background:var(--warn-bg);color:var(--warn)}
+  .phc-issue.bad{background:var(--bad-bg);color:var(--bad)}
+  .phc-issue.info{background:var(--info-bg);color:var(--info)}
+  .phc-issue a{display:inline-block;margin-top:5px;color:inherit;font-weight:700;text-decoration:underline;cursor:pointer}
+  .phc-foot{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:.72rem;border-top:1px solid var(--line);padding-top:7px;margin-top:auto}
   .toast{position:fixed;left:12px;right:12px;bottom:12px;background:#1f2937;color:#fff;border-radius:8px;padding:10px 14px;font-size:.84rem;opacity:0;transition:opacity .25s;pointer-events:none}
   .toast.show{opacity:.96}
   .empty{color:var(--muted);font-size:.85rem;padding:14px 4px}
@@ -2002,11 +2035,125 @@ async function renderAbout() {
 
 const MARK = { ok: '&#10003;', warn: '!', bad: '&#10007;', info: 'i' };
 
-async function renderHealth() {
+/** The pill word for one provider-health card. Live cards read off their own level;
+ * the other tiers each get their own word, because all four share the same "info"
+ * color and the color alone cannot say which of four different situations this is. */
+function phLabel(entry) {
+  if (entry.tier === 'live') return { ok: 'Operational', warn: 'Degraded', bad: 'Outage' }[entry.level] || 'Unknown';
+  return { limited: 'Limited info', 'no-feed': 'Not tracked', 'not-applicable': 'Not applicable', local: 'Local check' }[entry.tier] || 'Unknown';
+}
+
+function phRelTime(ms) {
+  if (!ms) return 'Not checked yet';
+  const mins = Math.round((Date.now() - ms) / 60000);
+  if (mins < 1) return 'Updated just now';
+  return `Updated ${mins} min ago`;
+}
+
+/** [left, right] footer text for a provider-health card. */
+function phFoot(entry) {
+  if (entry.tier === 'live') {
+    if (entry.error) return ['Could not reach the status page', 'Retries next check'];
+    return [phRelTime(entry.checkedAt), 'Checks every 5 min'];
+  }
+  const TEXT = {
+    limited: ['No live check', 'Not component-specific'],
+    'no-feed': ['No live check', 'Manual link only'],
+    'not-applicable': ['Not applicable', 'See your configured provider'],
+    local: ['Local check', 'See the check below'],
+  };
+  return TEXT[entry.tier] || ['', ''];
+}
+
+function providerHealthCard(entry) {
+  const card = el('article', 'phc');
+  const head = el('div', 'phc-head');
+  const avatar = el('div', 'pi', esc(entry.name[0]));
+  avatar.style.background = TOOL_COLORS[entry.id] || '#5b6675';
+  head.appendChild(avatar);
+  head.appendChild(el('div', 'phc-title', esc(entry.name)));
+  head.appendChild(el('span', 'phc-pill ' + entry.level, esc(phLabel(entry))));
+  card.appendChild(head);
+  if (entry.components?.length) {
+    const list = el('div', 'phc-components');
+    for (const c of entry.components) {
+      list.appendChild(el('div', 'phc-row', `<span class="dot ${c.level}"></span>${esc(c.name)}<b>${esc(c.status)}</b>`));
+    }
+    card.appendChild(list);
+  }
+  // A fully healthy live card needs no explanation; every other case gets one,
+  // including the static tiers, whose level is always "info" but never "ok".
+  if (entry.summary && (entry.tier !== 'live' || entry.level !== 'ok')) {
+    const box = el('div', 'phc-issue ' + entry.level, esc(entry.summary));
+    if (entry.pageUrl) {
+      const link = el('a', '', 'View status page &#8599;');
+      link.href = '#';
+      link.addEventListener('click', (e) => { e.preventDefault(); sb.openExternal(entry.pageUrl); });
+      box.appendChild(link);
+    }
+    card.appendChild(box);
+  }
+  const [left, right] = phFoot(entry);
+  card.appendChild(el('div', 'phc-foot', `<span>${esc(left)}</span><span>${esc(right)}</span>`));
+  return card;
+}
+
+/**
+ * The counts strip doubles as a filter: click "3 degraded" to show only degraded
+ * cards, click it again to go back to all of them. It tracks which one word is
+ * active itself and only tells the caller what changed, so a card grid built around
+ * this never has to know how the toggling works.
+ */
+function providerHealthSummary(list, onFilter) {
+  const counts = { ok: 0, warn: 0, bad: 0, info: 0 };
+  for (const entry of list) counts[entry.level] = (counts[entry.level] || 0) + 1;
+  const words = [['ok', 'operational'], ['warn', 'degraded'], ['bad', 'outage'], ['info', 'no live signal']];
+  const strip = el('div', 'phc-summary');
+  const chips = words.map(([level, word]) => {
+    const chip = el('button', 'phc-filter', `<span class="dot ${level}"></span><b>${counts[level]}</b> ${word}`);
+    chip.type = 'button';
+    chip.level = level;
+    strip.appendChild(chip);
+    return chip;
+  });
+  let active = null;
+  for (const chip of chips) {
+    chip.addEventListener('click', () => {
+      active = active === chip.level ? null : chip.level;
+      for (const c of chips) c.classList.toggle('on', c.level === active);
+      onFilter?.(active);
+    });
+  }
+  return strip;
+}
+
+function providerHealthSection(list, onRefresh) {
+  const section = el('div');
+  const head = el('div', 'provider-head');
+  head.appendChild(el('div', 'grouphead', 'Provider health'));
+  const refresh = el('button', 'btn', 'Check now');
+  refresh.addEventListener('click', onRefresh);
+  head.appendChild(refresh);
+  section.appendChild(head);
+  const grid = el('div', 'phc-grid');
+  const cards = list.map((entry) => {
+    const card = providerHealthCard(entry);
+    card.level = entry.level;
+    grid.appendChild(card);
+    return card;
+  });
+  section.appendChild(providerHealthSummary(list, (level) => {
+    for (const card of cards) card.hidden = Boolean(level) && card.level !== level;
+  }));
+  section.appendChild(grid);
+  return section;
+}
+
+async function renderHealth(forceProviders = false) {
   const seq = beginRender('health');
   const realPanel = $('#tab-health');
   realPanel.innerHTML = '<div class="empty">Running checks&hellip;</div>';
-  const checks = await sb.doctor();
+  const [checks, health] = await Promise.all([sb.doctor(), sb.providerHealth(forceProviders)]);
   if (!isCurrentRender('health', seq)) return;
   const panel = el('div');
   for (const c of checks) {
@@ -2033,10 +2180,12 @@ async function renderHealth() {
   }
   const foot = el('div', 'healthfoot');
   const run = el('button', 'btn primary', 'Run checks again');
-  run.addEventListener('click', renderHealth);
+  run.addEventListener('click', () => renderHealth());
   foot.appendChild(run);
   foot.appendChild(el('span', 'last', 'Last run: just now'));
   panel.appendChild(foot);
+  panel.appendChild(el('hr', 'healthdivider'));
+  panel.appendChild(providerHealthSection(health, () => renderHealth(true)));
   realPanel.replaceChildren(...panel.childNodes);
 }
 

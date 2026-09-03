@@ -31,6 +31,7 @@ function makeDom() {
       innerHTML: '',
       textContent: '',
       title: '',
+      style: {},
       attrs: {},
       children: [],
       handlers: {},
@@ -347,4 +348,117 @@ test('the summary says nothing extra when the tool is present', () => {
   assert.equal(accountsSectionSummary(here, 1, 0, { label: 'Main' }), 'New sessions use: Main · 1 account');
   assert.equal(accountsSectionSummary(here, 2, 0, null), '2 accounts · the folder in use is not registered');
   assert.equal(accountsSectionSummary(here, 0, 1, null), '1 folder found, none registered yet');
+});
+
+// ---- Provider health cards (the Health tab's per-vendor status-page section) ----
+
+test('phLabel names the live states, and each static tier gets its own word', () => {
+  const { phLabel } = load(['phLabel'], ['phLabel']);
+  assert.equal(phLabel({ tier: 'live', level: 'ok' }), 'Operational');
+  assert.equal(phLabel({ tier: 'live', level: 'warn' }), 'Degraded');
+  assert.equal(phLabel({ tier: 'live', level: 'bad' }), 'Outage');
+  assert.equal(phLabel({ tier: 'limited' }), 'Limited info');
+  assert.equal(phLabel({ tier: 'no-feed' }), 'Not tracked');
+  assert.equal(phLabel({ tier: 'not-applicable' }), 'Not applicable');
+  assert.equal(phLabel({ tier: 'local' }), 'Local check');
+});
+
+test('phFoot explains a live error instead of showing a bare cache timestamp', () => {
+  const { phFoot } = load(['phRelTime', 'phFoot'], ['phFoot']);
+  assert.deepEqual(phFoot({ tier: 'live', error: 'unreachable' }), ['Could not reach the status page', 'Retries next check']);
+  assert.deepEqual(phFoot({ tier: 'live', error: null, checkedAt: null }), ['Not checked yet', 'Checks every 5 min']);
+  assert.deepEqual(phFoot({ tier: 'not-applicable' }), ['Not applicable', 'See your configured provider']);
+  assert.deepEqual(phFoot({ tier: 'local' }), ['Local check', 'See the check below']);
+});
+
+test('providerHealthSummary counts every card into exactly one bucket', () => {
+  const { providerHealthSummary } = load(['providerHealthSummary'], ['providerHealthSummary']);
+  const strip = providerHealthSummary([{ level: 'ok' }, { level: 'ok' }, { level: 'warn' }, { level: 'bad' }, { level: 'info' }, { level: 'info' }]);
+  assert.equal(strip.children.length, 4);
+  assert.match(strip.children[0].innerHTML, /<b>2<\/b> operational/);
+  assert.match(strip.children[1].innerHTML, /<b>1<\/b> degraded/);
+  assert.match(strip.children[2].innerHTML, /<b>1<\/b> outage/);
+  assert.match(strip.children[3].innerHTML, /<b>2<\/b> no live signal/);
+});
+
+test('clicking a summary word filters, and clicking the same one again clears it', () => {
+  const { providerHealthSummary } = load(['providerHealthSummary'], ['providerHealthSummary']);
+  const calls = [];
+  const strip = providerHealthSummary([{ level: 'ok' }, { level: 'warn' }], (level) => calls.push(level));
+  const [operational, degraded] = strip.children;
+
+  degraded.click();
+  assert.deepEqual(calls, ['warn']);
+  assert.equal(degraded.classList.contains('on'), true, 'the clicked word marks itself active');
+  assert.equal(operational.classList.contains('on'), false);
+
+  degraded.click();
+  assert.deepEqual(calls, ['warn', null], 'a second click on the same word clears the filter');
+  assert.equal(degraded.classList.contains('on'), false);
+});
+
+test('choosing a different summary word moves the active mark instead of stacking it', () => {
+  const { providerHealthSummary } = load(['providerHealthSummary'], ['providerHealthSummary']);
+  const calls = [];
+  const strip = providerHealthSummary([{ level: 'ok' }, { level: 'warn' }], (level) => calls.push(level));
+  const [operational, degraded] = strip.children;
+  degraded.click();
+  operational.click();
+  assert.deepEqual(calls, ['warn', 'ok']);
+  assert.equal(degraded.classList.contains('on'), false);
+  assert.equal(operational.classList.contains('on'), true);
+});
+
+test('a provider-health section hides every card except the ones matching the clicked filter', () => {
+  const { providerHealthSection } = load(
+    ['TOOL_COLORS', 'phLabel', 'phRelTime', 'phFoot', 'providerHealthCard', 'providerHealthSummary', 'providerHealthSection'],
+    ['providerHealthSection'],
+  );
+  const list = [
+    { id: 'claude', name: 'Claude Code', tier: 'live', level: 'bad', components: [], summary: 'down', pageUrl: null, error: null, checkedAt: 1 },
+    { id: 'codex', name: 'Codex', tier: 'live', level: 'ok', components: [], summary: null, pageUrl: null, error: null, checkedAt: 1 },
+  ];
+  const section = providerHealthSection(list, () => {});
+  const [, strip, grid] = section.children;
+  const [claudeCard, codexCard] = grid.children;
+  const outageChip = strip.children[2]; // words order is ok, warn, bad, info
+
+  outageChip.click();
+  assert.equal(claudeCard.hidden, false, 'the outage card stays visible under the outage filter');
+  assert.equal(codexCard.hidden, true, 'the healthy card is hidden under the outage filter');
+
+  outageChip.click();
+  assert.equal(codexCard.hidden, false, 'clicking the same filter again shows everything again');
+});
+
+test('a healthy live card shows its tracked components but no explanation box', () => {
+  const { providerHealthCard } = load(['TOOL_COLORS', 'phLabel', 'phRelTime', 'phFoot', 'providerHealthCard'], ['providerHealthCard']);
+  const card = providerHealthCard({
+    id: 'claude', name: 'Claude Code', tier: 'live', level: 'ok',
+    components: [{ name: 'Claude API', level: 'ok', status: 'Operational' }],
+    summary: 'All Systems Operational', pageUrl: 'https://status.claude.com', error: null, checkedAt: 1000,
+  });
+  assert.equal(card.tag, 'article');
+  assert.equal(card.className, 'phc');
+  const [head, components, foot] = card.children;
+  assert.equal(head.className, 'phc-head');
+  assert.equal(head.children[0].style.background, '#c96f4a', 'the avatar uses the same TOOL_COLORS map as the Providers tab');
+  assert.equal(components.className, 'phc-components');
+  assert.equal(foot.className, 'phc-foot', 'no issue box between components and the footer when everything is fine');
+});
+
+test('a card with a problem shows the explanation and a link to the status page', () => {
+  const { providerHealthCard } = load(['TOOL_COLORS', 'phLabel', 'phRelTime', 'phFoot', 'providerHealthCard'], ['providerHealthCard']);
+  const card = providerHealthCard({ id: 'codex', name: 'Codex', tier: 'live', level: 'warn', components: [], summary: 'Elevated errors', pageUrl: 'https://status.openai.com', error: null, checkedAt: 1000 });
+  const [, issue, foot] = card.children;
+  assert.equal(issue.className, 'phc-issue warn');
+  assert.equal(issue.children[0].tag, 'a', 'a problem always offers somewhere to read more');
+  assert.equal(foot.className, 'phc-foot');
+});
+
+test('a tool that is not a hosted service explains itself without a status-page link', () => {
+  const { providerHealthCard } = load(['TOOL_COLORS', 'phLabel', 'phRelTime', 'phFoot', 'providerHealthCard'], ['providerHealthCard']);
+  const card = providerHealthCard({ id: 'aider', name: 'Aider', tier: 'not-applicable', level: 'info', components: [], summary: 'Aider is not a hosted service on its own.', pageUrl: null, error: null, checkedAt: null });
+  const [, issue] = card.children;
+  assert.equal(issue.children.length, 0, 'no link element when there is nowhere to send someone');
 });

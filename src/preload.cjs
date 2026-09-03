@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('sb', {
   providers: () => ipcRenderer.invoke('sb:providers'),
   install: (toolId, mode) => ipcRenderer.invoke('sb:install', toolId, mode),
   doctor: () => ipcRenderer.invoke('sb:doctor'),
+  providerHealth: (force = false) => ipcRenderer.invoke('sb:providerHealth', force),
   updates: () => ipcRenderer.invoke('sb:updates'),
   detectOne: (toolId) => ipcRenderer.invoke('sb:detectOne', toolId),
   candidates: () => ipcRenderer.invoke('sb:candidates'),
