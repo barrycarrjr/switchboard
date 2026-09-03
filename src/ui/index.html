@@ -1327,7 +1327,7 @@ async function renderLanes() {
   const section = toolSection('lanes', 'Execution Lanes', data.lanes.length
     ? `${data.lanes.length} lane${data.lanes.length === 1 ? '' : 's'} · drag to reorder`
     : 'No lanes yet');
-  const lanesInfo = el('p', 'panelnote', 'Lanes define the fallback order and settings for "switchboard run". The first lane that is healthy gets the work, and a run stopped by a provider limit starts again in the next one. Between two Claude accounts the conversation goes with it, so the next account carries on mid-task rather than starting over. Crossing to a different tool, it writes a handoff from what the spent session said it did.');
+  const lanesInfo = el('p', 'panelnote', 'Lanes define the fallback order and settings for "switchboard run". The first lane that is healthy gets the work, and a run stopped by a provider limit starts again in the next one. Between two Claude accounts the conversation goes with it, so the next account carries on mid-task rather than starting over. For any other hop between Claude and Codex, it writes a handoff from what the spent session said it did.');
   lanesInfo.style.marginTop = '0';
   section.appendChild(lanesInfo);
 

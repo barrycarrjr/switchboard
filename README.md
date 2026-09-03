@@ -67,10 +67,10 @@ For deep-dives into architecture, guides, and full command references, see the *
   provider limit, drops that lane and starts the command again in the next one. Between
   two Claude accounts the conversation goes with it: the session is copied into the
   incoming account and resumed there, so the new account carries on from where the spent
-  one stopped instead of starting over. When the next lane is a different tool there is
-  nothing to resume, so Switchboard writes a handoff document instead, taking the
-  objective and the account of the work from what the spent session said as it went, and
-  tells the new tool to read it. A handoff you wrote yourself is used as it is and never
+  one stopped instead of starting over. Every other combination gets a handoff instead:
+  Switchboard writes one from what the spent session said as it worked, and tells the
+  next tool to read it. Claude and Codex can each hand over to the other, and to another
+  account of their own. A handoff you wrote yourself is used as it is and never
   overwritten.
 
 ## MCP servers
@@ -276,15 +276,22 @@ starting the tool fresh, which is what used to happen every time, and the run sa
 happened. Carrying only works between Claude accounts, because Codex files its sessions
 differently and that has not been proven the same way.
 
-Crossing to a different tool cannot work that way, because a session file means nothing to
-another vendor. What crosses instead is a written handoff, and the spent session already
-wrote one without being asked: an agent narrates its work as it goes, so the text of its
-turns holds the objective it was set, what it got done and the decisions it took along the
-way. Switchboard lifts exactly that out of the transcript and writes it as a handoff
-document under `%APPDATA%\Switchboard\handoffs`, under a name derived from the working
-directory, then tells the new tool to read that file and continue from its next actions.
-No summarising model is involved, so nothing here can invent a decision that was never
-made, and it costs nothing.
+Every other hop gets a written handoff instead, because a session file means nothing to
+another vendor and Codex sessions have not been shown to move between accounts at all.
+The spent session already wrote the handoff without being asked: an agent narrates its
+work as it goes, so the text of its turns holds the objective it was set, what it got done
+and the decisions it took along the way. Switchboard lifts exactly that out of the
+transcript and writes it as a handoff document under `%APPDATA%\Switchboard\handoffs`,
+under a name derived from the working directory, then tells the next tool to read that
+file and continue from its next actions. No summarising model is involved, so nothing here
+can invent a decision that was never made, and it costs nothing.
+
+Claude and Codex are both readable this way, so either can hand over to the other or to a
+second account of its own. The two are found differently. Switchboard names a Claude
+session itself, so it knows the exact file. Codex has no such flag, so its session is
+recognised afterwards by the working directory it recorded and by having been written
+during this run; a session left over from earlier work in the same directory is ignored
+rather than handed over as though it were current.
 
 A handoff you wrote yourself is used exactly as it is and never overwritten, on the
 grounds that it may be better than anything derivable and is not Switchboard's to replace.
@@ -292,11 +299,13 @@ Where there is nothing to write from either, because the spent lane was not a Cl
 session or died before saying anything, it says a handoff is missing rather than inventing
 one. In every case it asks before going ahead, unless you passed `--yes`.
 
-Two limits are worth stating plainly. Only a spent Claude lane can be read this way, since
-Codex files its sessions differently. And the document is capped at 4 KB, as it always has
-been, so a long run is recorded from its most recent work backwards and the run says when
-it had to do that. The document is written through the same writer as before, which means
-it still gets the size limit and the redaction of common API-key shapes.
+Two limits are worth stating plainly. Gemini and Qwen lanes cannot be read at all yet, so
+a hop involving either still starts fresh; adding one is a table entry in
+`core/transcripts.js` and a session layout somebody has actually checked. And the document
+is capped at 4 KB, as it always has been, so a long run is recorded from its most recent
+work backwards and the run says when it had to do that. The document is written through
+the same writer as before, which means it still gets the size limit and the redaction of
+common API-key shapes.
 
 A run never uses a stored lane token; the launched tool authenticates with the account
 folder's own sign-in. `switchboard dry-run` answers which lane would be picked without

@@ -15,6 +15,8 @@ import {
   carryNote,
   readSessionTurns,
   sessionDigest,
+  findCodexSession,
+  transcriptSupport,
 } from '../core/transcripts.js';
 
 /** A pair of account folders and a working directory, thrown away after each test. */
@@ -388,4 +390,141 @@ test('a digest of a real-sized conversation fits the handoff writer 4 KB cap', (
   } finally {
     f.cleanup();
   }
+});
+
+// ---- Reading a spent Codex session, so a handoff works in that direction too ----
+
+/** One Codex rollout line, in the shape its CLI writes. */
+function codexTurn(id, role, text) {
+  return JSON.stringify({
+    timestamp: new Date().toISOString(), ordinal: 1, type: 'response_item',
+    payload: { type: 'message', id, role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] },
+  });
+}
+
+function codexMeta(cwd, sessionId = 'sess-1') {
+  return JSON.stringify({ timestamp: new Date().toISOString(), type: 'session_meta', payload: { session_id: sessionId, cwd } });
+}
+
+function seedCodexSession(home, cwd, { day = '2026/09/02', name = 'rollout-2026-09-02T12-00-00-abc.jsonl', lines } = {}) {
+  const dir = path.join(home, 'sessions', ...day.split('/'));
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, [codexMeta(cwd), ...lines].join('\n') + '\n');
+  return file;
+}
+
+test('a Codex rollout yields the same turns a Claude transcript does', () => {
+  const f = fixture();
+  try {
+    const file = seedCodexSession(f.fromHome, f.cwd, {
+      lines: [
+        codexTurn('m1', 'user', 'finish the units module'),
+        JSON.stringify({ type: 'response_item', payload: { type: 'reasoning', content: [] } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'token_count' } }),
+        codexTurn('m2', 'assistant', 'I extended the lookup table.'),
+      ],
+    });
+
+    assert.deepEqual(readSessionTurns(file, { harness: 'codex' }), [
+      { role: 'user', text: 'finish the units module' },
+      { role: 'assistant', text: 'I extended the lookup table.' },
+    ]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('Codex developer messages are instruction, not conversation, so they are left out', () => {
+  const f = fixture();
+  try {
+    const file = seedCodexSession(f.fromHome, f.cwd, {
+      lines: [codexTurn('m1', 'developer', 'system instructions here'), codexTurn('m2', 'assistant', 'real work')],
+    });
+
+    assert.deepEqual(readSessionTurns(file, { harness: 'codex' }), [{ role: 'assistant', text: 'real work' }]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('findCodexSession recognises the run by the directory it recorded', () => {
+  const f = fixture();
+  try {
+    const mine = seedCodexSession(f.fromHome, f.cwd, { name: 'rollout-2026-09-02T10-00-00-mine.jsonl', lines: [codexTurn('m1', 'assistant', 'mine')] });
+    seedCodexSession(f.fromHome, path.join(f.root, 'somewhere-else'), { name: 'rollout-2026-09-02T11-00-00-other.jsonl', lines: [codexTurn('m1', 'assistant', 'other')] });
+
+    assert.equal(findCodexSession({ home: f.fromHome, cwd: f.cwd }), mine);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('findCodexSession ignores an earlier session in the same directory', () => {
+  const f = fixture();
+  try {
+    const old = seedCodexSession(f.fromHome, f.cwd, { name: 'rollout-2026-09-02T09-00-00-old.jsonl', lines: [codexTurn('m1', 'assistant', 'yesterday')] });
+    fs.utimesSync(old, new Date('2026-09-01'), new Date('2026-09-01'));
+
+    // A run that started today must not be handed yesterday's conversation.
+    assert.equal(findCodexSession({ home: f.fromHome, cwd: f.cwd, since: Date.now() - 60_000 }), null);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('findCodexSession prefers the newest when a directory has several from this run', () => {
+  const f = fixture();
+  try {
+    seedCodexSession(f.fromHome, f.cwd, { name: 'rollout-2026-09-02T10-00-00-older.jsonl', lines: [codexTurn('m1', 'assistant', 'older')] });
+    const newer = seedCodexSession(f.fromHome, f.cwd, { name: 'rollout-2026-09-02T13-00-00-newer.jsonl', lines: [codexTurn('m1', 'assistant', 'newer')] });
+
+    assert.equal(findCodexSession({ home: f.fromHome, cwd: f.cwd }), newer);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('findCodexSession answers null rather than guessing when nothing matches', () => {
+  const f = fixture();
+  try {
+    assert.equal(findCodexSession({ home: f.fromHome, cwd: f.cwd }), null);
+    assert.equal(findCodexSession({ home: f.fromHome }), null);
+    assert.equal(findCodexSession({}), null);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('sessionDigest works from a Codex session without being told a session id', () => {
+  const f = fixture();
+  try {
+    seedCodexSession(f.fromHome, f.cwd, {
+      lines: [
+        codexTurn('m1', 'user', 'make every test pass'),
+        codexTurn('m2', 'assistant', 'Nine pass. Temperature needs an offset, not a multiplier.'),
+      ],
+    });
+
+    const digest = sessionDigest({ harness: 'codex', home: f.fromHome, cwd: f.cwd });
+
+    assert.equal(digest.objective, 'make every test pass');
+    assert.match(digest.state, /needs an offset/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a harness with no transcript support is refused rather than half-handled', () => {
+  assert.equal(transcriptSupport('gemini'), null);
+  assert.equal(sessionDigest({ harness: 'gemini', home: 'a', cwd: 'b', sessionId: 'c' }), null);
+  assert.deepEqual(readSessionTurns('anything', { harness: 'gemini' }), []);
+});
+
+test('only a session proven portable is marked carryable', () => {
+  assert.equal(transcriptSupport('claude').carryable, true);
+  // Codex sessions have not been proven to resume from another account folder, and an
+  // unproven yes here would silently lose a run's work.
+  assert.equal(transcriptSupport('codex').carryable, false);
+  assert.deepEqual(CARRYABLE_HARNESSES, ['claude']);
 });

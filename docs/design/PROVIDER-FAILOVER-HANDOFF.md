@@ -147,9 +147,19 @@ which also means nothing in the path can invent a decision that was never made. 
 transcript reduced to under 900 bytes that still carried a design decision and a warning
 about the one case that would not fit it, and a different vendor acted on both.
 
-Two limits, both deliberate. Only a spent Claude session can be read, because Codex files
-its sessions differently and that has not been proven. And a handoff already written for
-the workspace is used untouched rather than generated over.
+Claude and Codex are both readable, so either can hand to the other or to a second account
+of its own, and the reader is a per-vendor table entry rather than a special case. The two
+are located differently and the difference is the interesting part: Claude Code accepts
+`--session-id`, so Switchboard names the session and knows the file; Codex has no such
+flag, so its session is recognised after the fact by the working directory recorded in its
+`session_meta` together with having been written during this run. That second condition is
+load bearing. Without it a rollout left behind by earlier work in the same directory would
+be handed over as the current task, which is worse than handing over nothing.
+
+Gemini and Qwen are not readable yet, so a hop involving either still starts fresh. Adding
+one needs a table entry and a session layout somebody has actually checked, not assumed.
+
+A handoff already written for the workspace is used untouched rather than generated over.
 
 Separately, a failover between two accounts on the SAME tool does not need a handoff at
 all: a Claude transcript is portable between config folders, so the session is copied into

@@ -167,12 +167,109 @@ function windowLines(file, bytes, from, fsImpl = fs) {
   }
 }
 
-/** The text of one transcript message, ignoring tool payloads and thinking blocks. */
-function messageText(message) {
-  const content = message?.content;
+/** The text of one message, ignoring tool payloads and thinking blocks. Vendors disagree
+ * on the block type name, so the caller says which ones carry prose. */
+function messageText(content, textTypes) {
   if (typeof content === 'string') return content.trim();
   if (!Array.isArray(content)) return '';
-  return content.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n').trim();
+  return content.filter((b) => textTypes.includes(b?.type)).map((b) => b.text ?? '').join('\n').trim();
+}
+
+/**
+ * How each vendor records a session, so a handoff can be written from any of them.
+ *
+ * `locate` answers which file holds the run that just ended, and the two vendors need
+ * different answers. Claude Code takes `--session-id`, so Switchboard names the session
+ * and the path is exact. Codex has no such flag, so its session has to be recognised
+ * afterwards: newest first, matching the working directory it recorded, and modified
+ * during the run. That is a narrower test than "newest file" but still a recognition
+ * rather than a certainty, which is why a miss falls back to starting fresh.
+ *
+ * `turn` answers what one line of the file means, or null if it is not conversation.
+ *
+ * `carryable` is whether the session FILE can simply be moved to another account and
+ * resumed, which skips the handoff entirely. Proven for Claude across two real accounts.
+ * Not proven for Codex, and an unproven yes here would silently lose someone's work.
+ */
+export const TRANSCRIPTS = {
+  claude: {
+    carryable: true,
+    locate: ({ home, cwd, sessionId }) => (home && cwd && sessionId ? transcriptFile(home, cwd, sessionId) : null),
+    turn: (record) => {
+      if (record?.type !== 'user' && record?.type !== 'assistant') return null;
+      const text = messageText(record.message?.content, ['text']);
+      return text ? { role: record.message.role, text, key: record.uuid } : null;
+    },
+  },
+  codex: {
+    carryable: false,
+    locate: ({ home, cwd, since, fsImpl = fs }) => findCodexSession({ home, cwd, since, fsImpl }),
+    turn: (record) => {
+      if (record?.type !== 'response_item' || record?.payload?.type !== 'message') return null;
+      const role = record.payload.role;
+      // 'developer' is instruction Codex injects for itself, not the conversation.
+      if (role !== 'user' && role !== 'assistant') return null;
+      const text = messageText(record.payload.content, ['input_text', 'output_text', 'text']);
+      return text ? { role, text, key: record.payload.id ?? `${record.timestamp}:${record.ordinal}` } : null;
+    },
+  },
+};
+
+export function transcriptSupport(harness) {
+  return TRANSCRIPTS[harness] ?? null;
+}
+
+/** How many recent Codex session files to consider before giving up on recognising one. */
+export const CODEX_SESSIONS_SCANNED = 12;
+
+/**
+ * The Codex session for a run in this directory. Codex files sessions under
+ * sessions/YYYY/MM/DD, so walking that structure newest-first keeps the scan to a handful
+ * of files however long the account has been in use. Each candidate's first record is a
+ * session_meta carrying the working directory and the session id, so recognition reads one
+ * line per file rather than opening whole transcripts.
+ */
+export function findCodexSession({ home, cwd, since = 0, fsImpl = fs, limit = CODEX_SESSIONS_SCANNED } = {}) {
+  if (!home || !cwd) return null;
+  const want = path.resolve(cwd).toLowerCase();
+  const root = path.join(home, 'sessions');
+  const found = [];
+
+  const descend = (dir, depth) => {
+    if (found.length >= limit) return;
+    let entries;
+    try {
+      entries = fsImpl.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (depth === 3) {
+      const files = entries.filter((e) => e.isFile() && e.name.endsWith('.jsonl')).map((e) => e.name).sort().reverse();
+      for (const name of files) {
+        if (found.length >= limit) return;
+        found.push(path.join(dir, name));
+      }
+      return;
+    }
+    for (const name of entries.filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse()) {
+      descend(path.join(dir, name), depth + 1);
+    }
+  };
+  descend(root, 0);
+
+  for (const file of found) {
+    try {
+      // The run must have touched it, or it belongs to some earlier piece of work in the
+      // same directory. Without this, a failover would hand over a stale conversation,
+      // which is worse than handing over nothing.
+      if (since && fsImpl.statSync(file).mtimeMs < since) continue;
+      const first = windowLines(file, 64 * 1024, 'head', fsImpl).find((l) => l.includes('"session_meta"'));
+      if (!first) continue;
+      const meta = JSON.parse(first);
+      if (meta?.payload?.cwd && path.resolve(meta.payload.cwd).toLowerCase() === want) return file;
+    } catch { /* unreadable or torn: try the next one */ }
+  }
+  return null;
 }
 
 /**
@@ -181,7 +278,9 @@ function messageText(message) {
  * what it had most recently done, and the middle is what gets dropped rather than either
  * end. Turns are deduplicated by uuid, since a short file's two windows overlap.
  */
-export function readSessionTurns(file, { headBytes = DIGEST_HEAD_BYTES, tailBytes = DIGEST_TAIL_BYTES, fsImpl = fs } = {}) {
+export function readSessionTurns(file, { harness = 'claude', headBytes = DIGEST_HEAD_BYTES, tailBytes = DIGEST_TAIL_BYTES, fsImpl = fs } = {}) {
+  const support = transcriptSupport(harness);
+  if (!support) return [];
   const seen = new Set();
   const turns = [];
   for (const line of [...windowLines(file, headBytes, 'head', fsImpl), ...windowLines(file, tailBytes, 'tail', fsImpl)]) {
@@ -192,13 +291,12 @@ export function readSessionTurns(file, { headBytes = DIGEST_HEAD_BYTES, tailByte
     } catch {
       continue; // a torn or oversized line is skipped, never guessed at
     }
-    if (record?.type !== 'user' && record?.type !== 'assistant') continue;
-    const key = record.uuid ?? line;
+    const turn = support.turn(record);
+    if (!turn) continue;
+    const key = turn.key ?? line;
     if (seen.has(key)) continue;
     seen.add(key);
-    const text = messageText(record.message);
-    if (!text) continue;
-    turns.push({ role: record.message.role, text });
+    turns.push({ role: turn.role, text: turn.text });
   }
   return turns;
 }
@@ -217,9 +315,12 @@ export const DIGEST_STATE_BUDGET = 2400;
  * where the work actually stands; dropping from the front keeps the document useful
  * rather than truncating it mid-sentence at an arbitrary point.
  */
-export function sessionDigest({ home, cwd, sessionId, budget = DIGEST_STATE_BUDGET, fsImpl = fs } = {}) {
-  if (!home || !cwd || !sessionId) return null;
-  const turns = readSessionTurns(transcriptFile(home, cwd, sessionId), { fsImpl });
+export function sessionDigest({ harness = 'claude', home, cwd, sessionId, since = 0, budget = DIGEST_STATE_BUDGET, fsImpl = fs } = {}) {
+  const support = transcriptSupport(harness);
+  if (!support) return null;
+  const file = support.locate({ home, cwd, sessionId, since, fsImpl });
+  if (!file) return null;
+  const turns = readSessionTurns(file, { harness, fsImpl });
   if (!turns.length) return null;
 
   const objective = turns.find((t) => t.role === 'user')?.text ?? null;

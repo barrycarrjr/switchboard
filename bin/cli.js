@@ -14,7 +14,7 @@ import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
 import { readHandoff, writeHandoff, generateHandoffPrompt } from '../core/handoff.js';
-import { CARRYABLE_HARNESSES, callerManagesSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest } from '../core/transcripts.js';
+import { CARRYABLE_HARNESSES, callerManagesSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest, transcriptSupport } from '../core/transcripts.js';
 import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
 import readline from 'node:readline/promises';
 
@@ -421,8 +421,14 @@ async function main() {
       }
 
       while (selected) {
+        // When this lane started, so a vendor whose session cannot be named up front can
+        // still be recognised afterwards: its transcript has to have been touched during
+        // this run, not left behind by earlier work in the same directory. A second early,
+        // because a file written in the same tick as the spawn would otherwise look older
+        // than the run that wrote it.
+        const laneStartedAt = Date.now() - 1000;
         const result = await runInLane(selected.lane, currentArgs);
-        
+
         if (result.limitHit && !parsed.noFallback) {
           const previousLane = selected.lane;
           currentPool = currentPool.filter(l => l.id !== selected.lane.id);
@@ -454,9 +460,18 @@ async function main() {
             // may be better than anything derivable, and it is not Switchboard's to
             // overwrite.
             let handoffExists = !!readHandoff(process.cwd());
-            if (!handoffExists && sessionId && CARRYABLE_HARNESSES.includes(previousLane.harness)) {
+            if (!handoffExists && transcriptSupport(previousLane.harness)) {
               const spentHome = registry.accounts.find((a) => a.id === previousLane.accountId)?.home;
-              const digest = sessionDigest({ home: spentHome, cwd: runCwd, sessionId });
+              // `sessionId` is set only where Switchboard could name the session, which is
+              // Claude. Codex has no such flag, so its session is recognised afterwards by
+              // the directory it recorded and the fact this run touched it: hence `since`.
+              const digest = sessionDigest({
+                harness: previousLane.harness,
+                home: spentHome,
+                cwd: runCwd,
+                sessionId,
+                since: laneStartedAt,
+              });
               if (digest) {
                 try {
                   writeHandoff(runCwd, {
@@ -502,6 +517,7 @@ async function main() {
             }
           } else {
             say(`[switchboard] Falling back to next available lane for harness ${selected.lane.harness}: ${selected.lane.id}`);
+            let carriedSession = false;
 
             // Same harness, so the outgoing session can come with us. Copy its
             // transcript into the incoming account's folder and resume it there: the new
@@ -514,6 +530,7 @@ async function main() {
               const carry = carryTranscript({ fromHome, toHome, cwd: runCwd, sessionId });
               if (carry.carried) {
                 currentArgs = resumeArgs(parsed.commandArgs, sessionId);
+                carriedSession = true;
                 say('[switchboard] Carried the session over; this lane continues where the last one stopped.');
               } else {
                 // Back to a plain named start. Rebuilt from the original arguments rather
@@ -522,6 +539,36 @@ async function main() {
                 // never held. Still named, so a later failover can carry this one.
                 currentArgs = withSessionId(parsed.commandArgs, sessionId);
                 say(`[switchboard] ${carryNote(carry.reason)}.`);
+              }
+            }
+
+            // The session itself could not travel, but a written account of it still can.
+            // This is what covers a tool whose sessions are not portable, Codex being the
+            // one that is not: two Codex lanes would otherwise get neither the session nor
+            // a handoff, and start from nothing. No confirmation here, unlike the
+            // cross-tool path: the same tool is taking over, so there is no vendor
+            // surprise to warn anybody about.
+            if (!carriedSession && !readHandoff(runCwd) && transcriptSupport(previousLane.harness)) {
+              const spentHome = registry.accounts.find((a) => a.id === previousLane.accountId)?.home;
+              const digest = sessionDigest({
+                harness: previousLane.harness,
+                home: spentHome,
+                cwd: runCwd,
+                sessionId,
+                since: laneStartedAt,
+              });
+              if (digest) {
+                try {
+                  writeHandoff(runCwd, {
+                    objective: digest.objective,
+                    state: digest.state,
+                    nextActions: 'Pick up from the state above and finish the objective. Do not redo work that is already done.',
+                  });
+                  if (!spec) currentArgs = [generateHandoffPrompt(runCwd)];
+                  say('[switchboard] Wrote a handoff from the spent session; this lane picks up from it.');
+                } catch (e) {
+                  say(`[switchboard] Could not write a handoff from the spent session: ${String(e.message || e)}`);
+                }
               }
             }
           }
