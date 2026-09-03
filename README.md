@@ -68,9 +68,10 @@ For deep-dives into architecture, guides, and full command references, see the *
   two Claude accounts the conversation goes with it: the session is copied into the
   incoming account and resumed there, so the new account carries on from where the spent
   one stopped instead of starting over. When the next lane is a different tool there is
-  nothing to resume, so it looks instead for a handoff document already written for that
-  working directory, and asks before going on. Writing that document is not something
-  Switchboard does for you yet.
+  nothing to resume, so Switchboard writes a handoff document instead, taking the
+  objective and the account of the work from what the spent session said as it went, and
+  tells the new tool to read it. A handoff you wrote yourself is used as it is and never
+  overwritten.
 
 ## MCP servers
 
@@ -275,16 +276,27 @@ starting the tool fresh, which is what used to happen every time, and the run sa
 happened. Carrying only works between Claude accounts, because Codex files its sessions
 differently and that has not been proven the same way.
 
-Crossing to a different tool cannot work that way, because a session file means nothing
-to another vendor. Switchboard looks for a handoff document already
-written for the current working directory, which lives under
-`%APPDATA%\Switchboard\handoffs` under a name derived from that directory's path. With one
-there, it tells the new tool to read that file and continue from its next actions. With
-none, it says a handoff is missing. Either way it asks before going ahead, unless you
-passed `--yes`. Switchboard can validate, size-limit and redact such a document, but
-nothing in it writes one during a run yet, so today the file exists only if you or your own
-tooling put it there. Keeping the handoff current while work happens is Phase 3 of
-[the design note](./docs/design/PROVIDER-FAILOVER-HANDOFF.md) and is not built.
+Crossing to a different tool cannot work that way, because a session file means nothing to
+another vendor. What crosses instead is a written handoff, and the spent session already
+wrote one without being asked: an agent narrates its work as it goes, so the text of its
+turns holds the objective it was set, what it got done and the decisions it took along the
+way. Switchboard lifts exactly that out of the transcript and writes it as a handoff
+document under `%APPDATA%\Switchboard\handoffs`, under a name derived from the working
+directory, then tells the new tool to read that file and continue from its next actions.
+No summarising model is involved, so nothing here can invent a decision that was never
+made, and it costs nothing.
+
+A handoff you wrote yourself is used exactly as it is and never overwritten, on the
+grounds that it may be better than anything derivable and is not Switchboard's to replace.
+Where there is nothing to write from either, because the spent lane was not a Claude
+session or died before saying anything, it says a handoff is missing rather than inventing
+one. In every case it asks before going ahead, unless you passed `--yes`.
+
+Two limits are worth stating plainly. Only a spent Claude lane can be read this way, since
+Codex files its sessions differently. And the document is capped at 4 KB, as it always has
+been, so a long run is recorded from its most recent work backwards and the run says when
+it had to do that. The document is written through the same writer as before, which means
+it still gets the size limit and the redaction of common API-key shapes.
 
 A run never uses a stored lane token; the launched tool authenticates with the account
 folder's own sign-in. `switchboard dry-run` answers which lane would be picked without

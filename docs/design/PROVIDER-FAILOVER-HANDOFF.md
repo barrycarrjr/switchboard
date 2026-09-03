@@ -127,11 +127,34 @@ repository unless the user explicitly asks.
 ### Phase 3: compact task handoff
 
 - Add a versioned handoff schema, atomic writes, size enforcement, and redaction.
-- Maintain the handoff during work where the harness exposes enough task context.
 - On cross-provider failover, start a new session with the handoff path and the same
   workspace. Default to confirmation until the behavior has been proven reliable.
 - If no valid handoff exists, do not pretend continuation is safe; offer a fresh
   session or ask the user to provide the missing objective.
+- Derive the handoff at the moment of failover, from the spent session's own transcript.
+
+**Built, but not the way this phase originally described it.** The line that used to sit
+here read "maintain the handoff during work where the harness exposes enough task
+context", and both halves of that turned out to be wrong. `switchboard run` hands the
+terminal straight to the vendor's CLI, so for an interactive run it never sees the output
+and cannot maintain anything; and maintaining a document continuously would mean paying to
+summarise throughout every run to serve an event that mostly never happens.
+
+Deriving it once, at the failover, is strictly better, and cheaper than expected. An agent
+narrates its own work, so the text turns of its transcript already contain the objective,
+the progress and the decisions. Lifting them out is plain extraction with no model call,
+which also means nothing in the path can invent a decision that was never made. A 400 KB
+transcript reduced to under 900 bytes that still carried a design decision and a warning
+about the one case that would not fit it, and a different vendor acted on both.
+
+Two limits, both deliberate. Only a spent Claude session can be read, because Codex files
+its sessions differently and that has not been proven. And a handoff already written for
+the workspace is used untouched rather than generated over.
+
+Separately, a failover between two accounts on the SAME tool does not need a handoff at
+all: a Claude transcript is portable between config folders, so the session is copied into
+the incoming account and resumed there. That path carries everything rather than a summary
+of it, and is what runs whenever both lanes are Claude.
 
 ### Phase 4: T3 Code integration
 

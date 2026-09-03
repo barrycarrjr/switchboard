@@ -13,6 +13,8 @@ import {
   resumeArgs,
   carryTranscript,
   carryNote,
+  readSessionTurns,
+  sessionDigest,
 } from '../core/transcripts.js';
 
 /** A pair of account folders and a working directory, thrown away after each test. */
@@ -207,4 +209,183 @@ test('every carry outcome has a note a person can act on', () => {
 
 test('only Claude sessions are claimed as carryable', () => {
   assert.deepEqual(CARRYABLE_HARNESSES, ['claude']);
+});
+
+// ---- Reading a spent session so another vendor can be told what happened ----
+
+/** One transcript line in the shape Claude Code writes. */
+function turn(uuid, role, text, extra = {}) {
+  return JSON.stringify({
+    type: role, uuid, ...extra,
+    message: { role, content: [{ type: 'text', text }] },
+  });
+}
+
+function seedSession(home, cwd, sessionId, lines) {
+  const file = transcriptFile(home, cwd, sessionId);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, lines.join('\n') + '\n');
+  return file;
+}
+
+test('readSessionTurns keeps the text turns and drops the tool traffic', () => {
+  const f = fixture();
+  try {
+    const file = seedSession(f.fromHome, f.cwd, 'sid-1', [
+      turn('u1', 'user', 'make the tests pass'),
+      JSON.stringify({ type: 'assistant', uuid: 'a0', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: {} }] } }),
+      turn('a1', 'assistant', 'nine of sixteen pass now'),
+      JSON.stringify({ type: 'system', uuid: 's1', message: { role: 'system', content: 'ignored' } }),
+      'not json at all',
+    ]);
+
+    assert.deepEqual(readSessionTurns(file), [
+      { role: 'user', text: 'make the tests pass' },
+      { role: 'assistant', text: 'nine of sixteen pass now' },
+    ]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('readSessionTurns does not report the same turn twice when the windows overlap', () => {
+  const f = fixture();
+  try {
+    // A short file is inside both the head and the tail window.
+    const file = seedSession(f.fromHome, f.cwd, 'sid-1', [turn('u1', 'user', 'one'), turn('a1', 'assistant', 'two')]);
+    assert.equal(readSessionTurns(file).length, 2);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('readSessionTurns keeps both ends of a transcript too long to read whole', () => {
+  const f = fixture();
+  try {
+    const filler = Array.from({ length: 400 }, (_, i) => turn(`m${i}`, 'assistant', 'x'.repeat(400)));
+    const file = seedSession(f.fromHome, f.cwd, 'sid-1', [
+      turn('first', 'user', 'the original objective'),
+      ...filler,
+      turn('last', 'assistant', 'where the work actually stands'),
+    ]);
+
+    // Windows far smaller than the file, so the middle is what has to go.
+    const turns = readSessionTurns(file, { headBytes: 2000, tailBytes: 2000 });
+    assert.equal(turns[0].text, 'the original objective');
+    assert.equal(turns.at(-1).text, 'where the work actually stands');
+    assert.ok(turns.length < 402, 'the middle should have been dropped');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('readSessionTurns survives a line the window cut in half', () => {
+  const f = fixture();
+  try {
+    const file = seedSession(f.fromHome, f.cwd, 'sid-1', [
+      turn('u1', 'user', 'objective'),
+      turn('a1', 'assistant', 'y'.repeat(3000)),
+      turn('a2', 'assistant', 'the last thing done'),
+    ]);
+    const turns = readSessionTurns(file, { headBytes: 500, tailBytes: 500 });
+    assert.ok(turns.every((t) => typeof t.text === 'string' && t.text.length > 0));
+    assert.equal(turns.at(-1).text, 'the last thing done');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('sessionDigest carries the objective and what the session said it did', () => {
+  const f = fixture();
+  try {
+    seedSession(f.fromHome, f.cwd, 'sid-1', [
+      turn('u1', 'user', 'make every test pass'),
+      turn('a1', 'assistant', 'I replaced the if-chain with a lookup table.'),
+      turn('a2', 'assistant', 'Temperature will not fit it; it needs an offset.'),
+    ]);
+
+    const digest = sessionDigest({ home: f.fromHome, cwd: f.cwd, sessionId: 'sid-1' });
+
+    assert.equal(digest.objective, 'make every test pass');
+    assert.match(digest.state, /lookup table/);
+    assert.match(digest.state, /needs an offset/);
+    assert.equal(digest.truncated, false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('sessionDigest keeps the newest work when the budget will not hold it all', () => {
+  const f = fixture();
+  try {
+    seedSession(f.fromHome, f.cwd, 'sid-1', [
+      turn('u1', 'user', 'the objective'),
+      turn('a1', 'assistant', 'the oldest step'),
+      turn('a2', 'assistant', 'the newest step'),
+    ]);
+
+    const digest = sessionDigest({ home: f.fromHome, cwd: f.cwd, sessionId: 'sid-1', budget: 20 });
+
+    assert.match(digest.state, /the newest step/);
+    assert.doesNotMatch(digest.state, /the oldest step/);
+    assert.equal(digest.truncated, true);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('sessionDigest keeps the tail of a single turn bigger than the whole budget', () => {
+  const f = fixture();
+  try {
+    seedSession(f.fromHome, f.cwd, 'sid-1', [
+      turn('u1', 'user', 'the objective'),
+      turn('a1', 'assistant', 'z'.repeat(500) + 'THE-ENDING'),
+    ]);
+
+    const digest = sessionDigest({ home: f.fromHome, cwd: f.cwd, sessionId: 'sid-1', budget: 40 });
+
+    assert.match(digest.state, /THE-ENDING/, 'an over-long turn must not leave the state empty');
+    assert.ok(digest.state.length <= 40);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('sessionDigest says so rather than inventing an objective the transcript lacks', () => {
+  const f = fixture();
+  try {
+    seedSession(f.fromHome, f.cwd, 'sid-1', [turn('a1', 'assistant', 'did a thing')]);
+    const digest = sessionDigest({ home: f.fromHome, cwd: f.cwd, sessionId: 'sid-1' });
+    assert.equal(digest.objective, 'Not recorded in the transcript.');
+    assert.match(digest.state, /did a thing/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('sessionDigest is null when there is no session to read', () => {
+  const f = fixture();
+  try {
+    assert.equal(sessionDigest({ home: f.fromHome, cwd: f.cwd, sessionId: 'nope' }), null);
+    assert.equal(sessionDigest({ home: f.fromHome, cwd: f.cwd }), null);
+    assert.equal(sessionDigest({}), null);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a digest of a real-sized conversation fits the handoff writer 4 KB cap', () => {
+  const f = fixture();
+  try {
+    const many = Array.from({ length: 120 }, (_, i) => turn(`a${i}`, 'assistant', `step ${i}: ` + 'detail '.repeat(30)));
+    seedSession(f.fromHome, f.cwd, 'sid-1', [turn('u1', 'user', 'a long job'), ...many]);
+
+    const digest = sessionDigest({ home: f.fromHome, cwd: f.cwd, sessionId: 'sid-1' });
+
+    // The writer caps the whole document, headings included, at 4096 bytes.
+    assert.ok(Buffer.byteLength(digest.objective + digest.state) < 3000, 'digest must leave room for the other sections');
+    assert.equal(digest.truncated, true);
+  } finally {
+    f.cleanup();
+  }
 });

@@ -13,8 +13,8 @@ import { readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
-import { readHandoff, generateHandoffPrompt } from '../core/handoff.js';
-import { CARRYABLE_HARNESSES, callerManagesSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote } from '../core/transcripts.js';
+import { readHandoff, writeHandoff, generateHandoffPrompt } from '../core/handoff.js';
+import { CARRYABLE_HARNESSES, callerManagesSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest } from '../core/transcripts.js';
 import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
 import readline from 'node:readline/promises';
 
@@ -443,8 +443,37 @@ async function main() {
 
           // Cross-provider/cross-harness transition handling
           if (previousLane.harness !== selected.lane.harness || previousLane.provider !== selected.lane.provider) {
-            const handoffExists = !!readHandoff(process.cwd());
-            
+            // A Claude session file means nothing to another vendor, so this hop cannot
+            // carry the session itself. What it can carry is a written account of it, and
+            // the spent session already wrote one: an agent narrates its work as it goes,
+            // so the text turns of its transcript hold the objective, what was done and
+            // the decisions taken. Extracted, never summarised by a model, so nothing here
+            // can invent a decision that was never made.
+            //
+            // A handoff already written for this workspace is left exactly as it is. It
+            // may be better than anything derivable, and it is not Switchboard's to
+            // overwrite.
+            let handoffExists = !!readHandoff(process.cwd());
+            if (!handoffExists && sessionId && CARRYABLE_HARNESSES.includes(previousLane.harness)) {
+              const spentHome = registry.accounts.find((a) => a.id === previousLane.accountId)?.home;
+              const digest = sessionDigest({ home: spentHome, cwd: runCwd, sessionId });
+              if (digest) {
+                try {
+                  writeHandoff(runCwd, {
+                    objective: digest.objective,
+                    state: digest.state,
+                    nextActions: 'Pick up from the state above and finish the objective. Do not redo work that is already done.',
+                  });
+                  handoffExists = true;
+                  say(`[switchboard] Wrote a handoff from the spent ${previousLane.harness} session${digest.truncated ? ' (its most recent work; the run was too long to record in full)' : ''}.`);
+                } catch (e) {
+                  // Includes the writer's own size limit. Falls through to the ask below,
+                  // which is what used to happen every time.
+                  say(`[switchboard] Could not write a handoff from the spent session: ${String(e.message || e)}`);
+                }
+              }
+            }
+
             if (!handoffExists) {
               say(`[switchboard] Warning: Cross-provider failover to ${selected.lane.harness} (${selected.lane.provider}) requires a handoff document, but none was found for this workspace.`);
               if (!parsed.yes) {

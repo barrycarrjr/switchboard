@@ -122,6 +122,130 @@ export function carryTranscript({ fromHome, toHome, cwd, sessionId, fsImpl = fs 
   }
 }
 
+/**
+ * Reading a spent session so a DIFFERENT tool can be told what happened.
+ *
+ * Carrying the session file only works between two Claude accounts; a Claude transcript
+ * means nothing to Codex. What crosses a vendor boundary is a written handoff, and the
+ * material for one is already in the transcript, because an agent narrates its own work
+ * as it goes. Pulling out just the text turns gives the objective it was set and the
+ * account it kept of what it did, decisions included. In the run this was proven on, a
+ * 400 KB transcript reduced to under 900 bytes that still carried both the structure the
+ * first agent had chosen and its warning about the part that would not fit that
+ * structure, and the receiving agent acted on both.
+ *
+ * So no summarising model is involved. This is extraction, which cannot invent a decision
+ * that was never made, and costs nothing.
+ */
+
+/** Head and tail windows. A transcript can run to hundreds of megabytes, so neither the
+ * whole file nor an unbounded slice of it is ever held in memory. The head is where the
+ * objective is; the tail is where the current state is. */
+export const DIGEST_HEAD_BYTES = 64 * 1024;
+export const DIGEST_TAIL_BYTES = 256 * 1024;
+
+/** Read a byte window from a file, dropping whichever edge line the window cut in half. */
+function windowLines(file, bytes, from, fsImpl = fs) {
+  let fd;
+  try {
+    const size = fsImpl.statSync(file).size;
+    const length = Math.min(size, bytes);
+    const start = from === 'tail' ? size - length : 0;
+    const buffer = Buffer.alloc(length);
+    fd = fsImpl.openSync(file, 'r');
+    fsImpl.readSync(fd, buffer, 0, length, start);
+    const lines = buffer.toString('utf8').split(/\r?\n/);
+    if (length < size) {
+      // Only the cut edge is unreliable: the tail's first line and the head's last one.
+      if (from === 'tail') lines.shift(); else lines.pop();
+    }
+    return lines;
+  } catch {
+    return [];
+  } finally {
+    if (fd !== undefined) try { fsImpl.closeSync(fd); } catch { /* already gone */ }
+  }
+}
+
+/** The text of one transcript message, ignoring tool payloads and thinking blocks. */
+function messageText(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  return content.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n').trim();
+}
+
+/**
+ * The readable turns of one session, oldest first. Head and tail windows are read
+ * separately and joined, so a long conversation keeps both the task it started from and
+ * what it had most recently done, and the middle is what gets dropped rather than either
+ * end. Turns are deduplicated by uuid, since a short file's two windows overlap.
+ */
+export function readSessionTurns(file, { headBytes = DIGEST_HEAD_BYTES, tailBytes = DIGEST_TAIL_BYTES, fsImpl = fs } = {}) {
+  const seen = new Set();
+  const turns = [];
+  for (const line of [...windowLines(file, headBytes, 'head', fsImpl), ...windowLines(file, tailBytes, 'tail', fsImpl)]) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue; // a torn or oversized line is skipped, never guessed at
+    }
+    if (record?.type !== 'user' && record?.type !== 'assistant') continue;
+    const key = record.uuid ?? line;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const text = messageText(record.message);
+    if (!text) continue;
+    turns.push({ role: record.message.role, text });
+  }
+  return turns;
+}
+
+/** How much of the handoff document the state section may fill. The writer caps the whole
+ * document at 4 KB; this leaves room for the other sections and the headings. */
+export const DIGEST_STATE_BUDGET = 2400;
+
+/**
+ * The objective a session was set and the account it kept of its work, ready to be handed
+ * to `writeHandoff`. Null when there is nothing worth handing over, which the caller
+ * treats exactly as it treats a missing handoff today.
+ *
+ * The state is filled from the most recent turns backwards. A session that ran long has
+ * more to say than a 4 KB document can hold, and the newest turns are the ones describing
+ * where the work actually stands; dropping from the front keeps the document useful
+ * rather than truncating it mid-sentence at an arbitrary point.
+ */
+export function sessionDigest({ home, cwd, sessionId, budget = DIGEST_STATE_BUDGET, fsImpl = fs } = {}) {
+  if (!home || !cwd || !sessionId) return null;
+  const turns = readSessionTurns(transcriptFile(home, cwd, sessionId), { fsImpl });
+  if (!turns.length) return null;
+
+  const objective = turns.find((t) => t.role === 'user')?.text ?? null;
+  const said = turns.filter((t) => t.role === 'assistant').map((t) => t.text);
+  if (!objective && !said.length) return null;
+
+  const kept = [];
+  let used = 0;
+  for (let i = said.length - 1; i >= 0; i--) {
+    const cost = said[i].length + 2;
+    if (used + cost > budget) break;
+    kept.unshift(said[i]);
+    used += cost;
+  }
+  // A single turn longer than the whole budget would otherwise leave the state empty,
+  // which loses the very thing the handoff exists to carry. Keep its tail instead.
+  if (!kept.length && said.length) kept.push(said[said.length - 1].slice(-budget));
+
+  return {
+    objective: objective ?? 'Not recorded in the transcript.',
+    state: kept.join('\n\n'),
+    turns: turns.length,
+    truncated: kept.length < said.length,
+  };
+}
+
 /** Why a carry did not happen, in words a person reading the run output can act on. */
 export function carryNote(reason) {
   switch (reason) {
