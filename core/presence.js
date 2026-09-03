@@ -46,6 +46,9 @@ export const PRESENCE = [
     bin: 'gemini',
     home: () => path.join(os.homedir(), '.gemini'),
     credFiles: ['oauth_creds.json'],
+    // Antigravity keeps its state in ~/.gemini too, so a credential sitting there is no
+    // evidence that Gemini CLI itself is on this machine. See `sharedDir` below.
+    sharedDir: true,
     // Google retired Gemini CLI for personal accounts (free / AI Pro / Ultra) on
     // 2026-06-18 and points those users at Antigravity (agy). Enterprise licenses
     // and paid API keys still work, so the card stays while the tool is present.
@@ -80,14 +83,27 @@ async function onPath(bin, whichFn) {
   return process.platform === 'win32' && findBinIn(freshPathDirs(), bin) != null;
 }
 
-/** Detect all presence entries. whichFn is injectable for tests. */
+/**
+ * Detect all presence entries. whichFn is injectable for tests.
+ *
+ * A card needs the tool on the machine, or a sign-in that proves it was. The second half
+ * matters for a tool whose command is not on PATH at all: Junie is an IDE plugin, so its
+ * credential is the only evidence it exists, and requiring the binary would hide a tool
+ * the person plainly has.
+ *
+ * That reasoning breaks for a config folder shared with another product. Antigravity
+ * writes credentials into ~/.gemini, so finding one there says nothing about Gemini CLI,
+ * and after the CLI was uninstalled the page went on advertising a signed-in Gemini
+ * account that had nothing left to run it. For those entries the tool itself has to be
+ * present. `accounts.js` refuses to read the same folder as evidence for the same reason.
+ */
 export async function detectPresence({ whichFn = null } = {}) {
   const out = [];
   for (const entry of PRESENCE) {
     const home = entry.home();
     const cliInstalled = await onPath(entry.bin, whichFn);
     const { signedIn, who } = credentialState(entry, home);
-    if (!cliInstalled && !signedIn) continue; // nothing real to show
+    if (!cliInstalled && (!signedIn || entry.sharedDir)) continue; // nothing real to show
     out.push({
       id: entry.id,
       name: entry.name,

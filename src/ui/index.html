@@ -639,14 +639,45 @@ function toolSection(id, title, summary) {
 }
 
 /**
- * Which tools get a section of their own. A tool you actually have (a registered
- * account, or a signed-in folder waiting to be registered) earns the space. The rest
- * belong behind "Add another tool", so the page shows your machine rather than a
- * catalogue of everything Switchboard could manage.
+ * Which tools get a section of their own, so the page shows your machine rather than a
+ * catalogue of everything Switchboard could manage. The rest belong behind "Add another
+ * tool".
+ *
+ * A registered account always earns the space, even when the tool is not installed.
+ * Hiding accounts someone registered would read as data loss the moment a tool was
+ * uninstalled or fell off PATH, and the registration is still theirs; the section says
+ * the tool is missing instead.
+ *
+ * An unregistered folder is different. It is an offer to register something, and there
+ * is nothing to offer when the tool is not on the machine: the account could not be
+ * switched to and could not run. That case turned up with a Gemini folder left signed in
+ * after its CLI was removed, where the page kept advertising an account that could never
+ * work.
  */
 function splitToolsByPresence(providers, accounts, candidates) {
-  const mine = (p) => accounts.some((a) => a.provider === p.id) || candidates.some((c) => c.provider === p.id);
+  const mine = (p) => accounts.some((a) => a.provider === p.id)
+    || (p.installed !== false && candidates.some((c) => c.provider === p.id));
   return { present: providers.filter(mine), absent: providers.filter((p) => !mine(p)) };
+}
+
+/**
+ * The line under a tool's heading on the Accounts page. Pure, because it is the one
+ * place that has to say something true in four different situations at once.
+ *
+ * A section only survives without the tool installed when accounts are registered for
+ * it, and saying so is the point: otherwise the accounts read as usable and every button
+ * on them quietly does nothing. Switching is already refused for a missing tool, so this
+ * explains a page that would otherwise look broken.
+ */
+function accountsSectionSummary(provider, accountCount, candidateCount, active) {
+  const missing = provider.installed === false;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const body = active
+    ? `New sessions use: ${active.label} · ${plural(accountCount, 'account')}`
+    : accountCount
+      ? `${plural(accountCount, 'account')} · the folder in use is not registered`
+      : `${plural(candidateCount, 'folder')} found, none registered yet`;
+  return missing ? `${provider.name} is not installed on this machine · ${body}` : body;
 }
 
 async function addToolAccount(p) {
@@ -1088,11 +1119,7 @@ async function renderAccounts() {
       .sort((a, b) => Number(b.id === p.activeAccountId) - Number(a.id === p.activeAccountId));
     const found = (state.candidates || []).filter((x) => x.provider === p.id);
     const active = mine.find((a) => a.id === p.activeAccountId);
-    const section = toolSection(p.id, p.name, active
-      ? `New sessions use: ${active.label} · ${mine.length} account${mine.length === 1 ? '' : 's'}`
-      : mine.length
-        ? `${mine.length} account${mine.length === 1 ? '' : 's'} · the folder in use is not registered`
-        : `${found.length} folder${found.length === 1 ? '' : 's'} found, none registered yet`);
+    const section = toolSection(p.id, p.name, accountsSectionSummary(p, mine.length, found.length, active));
 
     if (mine.length) {
       const accountGrid = el('div', 'account-grid');

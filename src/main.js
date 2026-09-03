@@ -167,12 +167,17 @@ function saveRecoveryConfig(kind) {
 
 async function stateSnapshot(forceAuthAccountId = null) {
   const reg = registry();
+  // Whether each tool is actually on this machine. Through detectInstalled, which only
+  // looks for the executable: asking each tool its version is what makes a full detect
+  // take seconds, and the Accounts page has no use for the version.
+  const installed = new Set((await detectInstalled()).filter((t) => t.installed).map((t) => t.id));
   const providers = {};
   for (const p of Object.values(PROVIDERS)) {
     providers[p.id] = {
       id: p.id,
       name: p.name,
       envVar: p.envVar,
+      installed: installed.has(p.id),
       activeAccountId: activeAccount(reg, p.id)?.id ?? null,
       activeHome: activeHome(p.id),
       hasQuota: Boolean(p.quota),

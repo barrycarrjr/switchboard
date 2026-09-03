@@ -301,3 +301,50 @@ test('a disabled card button says why and cannot be clicked', () => {
   assert.equal(blocked.title, 'Not signed in. Sign Main Account in before making it the default.', 'hovering it says why');
   assert.equal(blocked.className, 'btn primary', 'it stays the same button, only unusable');
 });
+
+// ---- A tool that is not on the machine ----
+
+test('an unregistered folder is not offered when its tool is not installed', () => {
+  const { splitToolsByPresence } = load(['splitToolsByPresence'], ['splitToolsByPresence']);
+  // The case this was written for: a Gemini folder left signed in after the CLI was
+  // removed. Registering it could only produce an account that cannot run anything.
+  const providers = [{ id: 'gemini', name: 'Gemini CLI', installed: false }];
+
+  const { present, absent } = splitToolsByPresence(providers, [], [{ provider: 'gemini' }]);
+
+  assert.deepEqual(present, []);
+  assert.deepEqual(absent.map((p) => p.id), ['gemini']);
+});
+
+test('an account someone registered keeps its section even with the tool gone', () => {
+  const { splitToolsByPresence } = load(['splitToolsByPresence'], ['splitToolsByPresence']);
+  const providers = [{ id: 'codex', name: 'Codex', installed: false }];
+
+  const { present } = splitToolsByPresence(providers, [{ provider: 'codex' }], []);
+
+  // Hiding these would read as data loss the moment a tool fell off PATH.
+  assert.deepEqual(present.map((p) => p.id), ['codex']);
+});
+
+test('a state payload with no installed flag behaves exactly as before', () => {
+  const { splitToolsByPresence } = load(['splitToolsByPresence'], ['splitToolsByPresence']);
+  const { present } = splitToolsByPresence(PROVIDERS, [], [{ provider: 'codex' }]);
+  assert.deepEqual(present.map((p) => p.id), ['codex']);
+});
+
+test('the summary says a tool is missing rather than letting dead accounts look usable', () => {
+  const { accountsSectionSummary } = load(['accountsSectionSummary'], ['accountsSectionSummary']);
+  const gone = { name: 'Codex', installed: false };
+
+  assert.match(accountsSectionSummary(gone, 2, 0, null), /Codex is not installed on this machine/);
+  assert.match(accountsSectionSummary(gone, 2, 0, null), /2 accounts/);
+});
+
+test('the summary says nothing extra when the tool is present', () => {
+  const { accountsSectionSummary } = load(['accountsSectionSummary'], ['accountsSectionSummary']);
+  const here = { name: 'Claude Code', installed: true };
+
+  assert.equal(accountsSectionSummary(here, 1, 0, { label: 'Main' }), 'New sessions use: Main · 1 account');
+  assert.equal(accountsSectionSummary(here, 2, 0, null), '2 accounts · the folder in use is not registered');
+  assert.equal(accountsSectionSummary(here, 0, 1, null), '1 folder found, none registered yet');
+});
