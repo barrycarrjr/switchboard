@@ -2,7 +2,7 @@
 // The scriptable core. Everything the tray can do, headless.
 import { spawn } from 'node:child_process';
 import { loadRegistry, saveRegistry, addAccount, removeAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, PROVIDERS, accountScopedEnv, configuredClaudeCredentialOverrides } from '../core/accounts.js';
-import { detectAll, TOOLS, toolExecutable } from '../core/providers.js';
+import { detectAll, detectInstalled, TOOLS, toolExecutable } from '../core/providers.js';
 import { runChecks, accountLoginState } from '../core/doctor.js';
 import { sharedProviderQuota } from '../core/quota-cache.js';
 import { collectStatus, formatStatus } from '../core/status.js';
@@ -651,7 +651,8 @@ async function main() {
       return;
     }
     case 'doctor': {
-      const checks = await runChecks({ accounts: registry.accounts, settings: loadSettings() });
+      const installedIds = new Set((await detectInstalled()).filter((t) => t.installed).map((t) => t.id));
+      const checks = await runChecks({ accounts: registry.accounts, settings: loadSettings(), isInstalled: (id) => installedIds.has(id) });
       const mark = { ok: 'OK  ', info: 'INFO', warn: 'WARN', bad: 'FAIL' };
       for (const c of checks) out(`${mark[c.level]}  ${c.title}\n      ${c.detail}`);
       if (checks.some((c) => c.level === 'bad')) process.exitCode = 1;

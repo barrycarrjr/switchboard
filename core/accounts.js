@@ -225,9 +225,15 @@ export function removeAccount(registry, id) {
 }
 
 /** Vendor homes that exist on disk but are not registered yet. */
-export function detectDefaults(registry, homeDir = os.homedir()) {
+export function detectDefaults(registry, homeDir = os.homedir(), { isInstalled = null } = {}) {
   const found = [];
   for (const p of Object.values(PROVIDERS)) {
+    // A folder is only worth registering for a tool this machine actually has. Without
+    // this, installing a tool created an account nobody asked for, and uninstalling it
+    // left that account behind: a section on the Accounts page and a row in the tray
+    // menu for something with nothing left to run it. Callers that cannot cheaply say
+    // what is installed pass nothing and get the old behaviour.
+    if (isInstalled && !isInstalled(p.id)) continue;
     const home = defaultHome(p, homeDir);
     if (!fs.existsSync(home)) continue;
     if (p.sharedDirName && !fs.existsSync(path.join(home, p.credFile))) continue;
@@ -235,6 +241,17 @@ export function detectDefaults(registry, homeDir = os.homedir()) {
     found.push({ provider: p.id, label: 'Default', home });
   }
   return found;
+}
+
+/**
+ * Registered accounts whose tool is not on this machine. Nothing is wrong with the
+ * account itself, which is why these are reported rather than removed: a tool can fall
+ * off PATH for a shell's lifetime, and quietly dropping someone's registrations over
+ * that would be far worse than leaving them. Health offers to clear them instead.
+ */
+export function strayAccounts(registry, isInstalled) {
+  if (typeof isInstalled !== 'function') return [];
+  return registry.accounts.filter((a) => !isInstalled(a.provider));
 }
 
 function dirEntries(dir) {

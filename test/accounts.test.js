@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, envValueForHome, homeFromEnvValue, PROVIDERS } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, strayAccounts, envValueForHome, homeFromEnvValue, PROVIDERS } from '../core/accounts.js';
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'sb-test-'));
@@ -204,4 +204,34 @@ test('a vendor folder another product also writes to is not claimed on sight', (
 
   fs.writeFileSync(path.join(homeDir, '.gemini', 'oauth_creds.json'), '{}');
   assert.deepEqual(detectDefaults({ accounts: [] }, homeDir).map((f) => f.provider).sort(), ['codex', 'gemini']);
+});
+
+test('detectDefaults registers nothing for a tool this machine does not have', () => {
+  // Installing a tool created the folder, Switchboard registered it, and uninstalling
+  // left the account behind holding a section and a tray row open.
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-defaults-'));
+  try {
+    fs.mkdirSync(path.join(homeDir, '.codex'));
+    fs.mkdirSync(path.join(homeDir, '.qwen'));
+
+    const all = detectDefaults({ accounts: [] }, homeDir).map((f) => f.provider).sort();
+    assert.deepEqual(all, ['codex', 'qwen'], 'without the check, both folders register');
+
+    const only = detectDefaults({ accounts: [] }, homeDir, { isInstalled: (id) => id === 'codex' });
+    assert.deepEqual(only.map((f) => f.provider), ['codex']);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test('strayAccounts names registrations whose tool has gone, and nothing else', () => {
+  const reg = { accounts: [
+    { id: 'claude-default', provider: 'claude' },
+    { id: 'qwen-default', provider: 'qwen' },
+  ] };
+
+  assert.deepEqual(strayAccounts(reg, (id) => id === 'claude').map((a) => a.id), ['qwen-default']);
+  assert.deepEqual(strayAccounts(reg, () => true), []);
+  // No way to tell what is installed means no claim either way.
+  assert.deepEqual(strayAccounts(reg, null), []);
 });

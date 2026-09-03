@@ -55,3 +55,34 @@ test('provider-routing overrides offered by Health are actually removable', () =
 test('applyFix rejects unknown actions', () => {
   assert.throws(() => applyFix('format-disk', {}));
 });
+
+test('unregister-account removes the registration and leaves the folder alone', () => {
+  // Both halves injected: nothing here may touch the registry of whoever runs the suite.
+  const stored = { accounts: [
+    { id: 'qwen-default', provider: 'qwen', label: 'Default', home: 'C:\home\.qwen' },
+    { id: 'claude-default', provider: 'claude', label: 'Main', home: 'C:\home\.claude' },
+  ] };
+  let written = null;
+
+  const result = applyFix('unregister-account', { id: 'qwen-default' }, {
+    readRegistry: () => stored,
+    writeRegistry: (reg) => { written = reg; },
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.did, /untouched/);
+  assert.ok(written, 'the change is saved');
+  assert.deepEqual(written.accounts.map((a) => a.id), ['claude-default']);
+});
+
+test('unregister-account says so rather than failing when the account is already gone', () => {
+  let written = null;
+  const result = applyFix('unregister-account', { id: 'gone' }, {
+    readRegistry: () => ({ accounts: [] }),
+    writeRegistry: (reg) => { written = reg; },
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.did, /no longer registered/);
+  assert.equal(written, null, 'nothing to change means nothing is written');
+});

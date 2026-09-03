@@ -264,7 +264,9 @@ function createWindow() {
  * startup and at the end of every quota-watch pass, which is also when the account
  * readings it reports were taken.
  */
-let trayFacts = { terminals: [], alsoSignedIn: [], notes: {}, update: null };
+// installedProviders starts null, meaning "not yet detected": the menu shows every
+// provider until the first detect lands, rather than briefly hiding tools that are there.
+let trayFacts = { terminals: [], alsoSignedIn: [], notes: {}, update: null, installedProviders: null };
 
 async function refreshTrayFacts() {
   if (factsInFlight) return;
@@ -291,6 +293,10 @@ async function refreshTrayFacts() {
       });
     }
     trayFacts.alsoSignedIn = rows;
+    // The menu offers accounts to switch between, and an account for a tool this machine
+    // does not have cannot be switched to. Same rule the Accounts page uses, from the
+    // same detection, so the two can never disagree about what is here.
+    trayFacts.installedProviders = new Set(tools.filter((t) => t.installed).map((t) => t.id));
   } catch (e) {
     console.error('refreshTrayFacts error', e);
   } finally {
@@ -315,8 +321,9 @@ function trayInputs() {
     // used to read as "nothing is set" rather than "something is set that I do not know".
     else if (reg.accounts.some((a) => a.provider === p.id) && activeHome(p.id)) stranded.push(p.name);
   }
+  const installed = trayFacts.installedProviders;
   return {
-    providers: Object.values(PROVIDERS),
+    providers: Object.values(PROVIDERS).filter((p) => !installed || installed.has(p.id)),
     accounts: reg.accounts,
     activeIds,
     notes: trayFacts.notes,
@@ -596,10 +603,14 @@ async function runQuotaWatch() {
   }
 }
 
-app.whenReady().then(() => {
-  // First run: register vendor folders that already exist, generically labeled.
+app.whenReady().then(async () => {
+  // First run: register vendor folders that already exist, generically labeled. Only for
+  // tools this machine actually has: registering a folder for a missing tool produced an
+  // account nobody asked for, which then outlived the tool and kept an empty section and
+  // a dead tray row alive. Detection is cheap here (no tool is asked its version).
   const reg = registry();
-  const found = detectDefaults(reg);
+  const installedIds = new Set((await detectInstalled()).filter((t) => t.installed).map((t) => t.id));
+  const found = detectDefaults(reg, undefined, { isInstalled: (id) => installedIds.has(id) });
   if (found.length) {
     for (const f of found) addAccount(reg, f);
     saveRegistry(reg);
@@ -849,7 +860,8 @@ ipcMain.handle('sb:doctor', async () => {
   }));
   // Settings ride along so a dead lane token surfaces here; the checks only ever name
   // the lane and account, never the token value.
-  return runChecks({ accounts, loginStates, settings: loadSettings() });
+  const installedIds = new Set((await detectInstalled()).filter((t) => t.installed).map((t) => t.id));
+  return runChecks({ accounts, loginStates, settings: loadSettings(), isInstalled: (id) => installedIds.has(id) });
 });
 
 // A vendor status page belongs to the tool, not to any one account, so this needs

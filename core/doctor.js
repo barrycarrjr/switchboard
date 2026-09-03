@@ -255,6 +255,7 @@ export async function runChecks({
   settings = null,
   env = { user: readUserEnv, machine: readMachineEnv, process: readProcessEnv },
   fetchImpl = fetch,
+  isInstalled = null,
   now = Date.now(),
 } = {}) {
   const checks = [];
@@ -381,7 +382,26 @@ export async function runChecks({
     });
   }
 
-  // 7. Local runtime reachability, informational only.
+  // 7. Registrations left behind by a tool that is no longer here. Switchboard registers
+  //    a vendor folder it finds at startup, so installing a tool created an account and
+  //    uninstalling left it, holding open a section and a tray row for something with
+  //    nothing to run it. Reported rather than removed on sight: a tool can fall off PATH
+  //    for a shell's lifetime, and dropping someone's registrations over that would be
+  //    worse than leaving them. The folder and its login are never touched either way.
+  if (isInstalled) {
+    for (const account of accounts.filter((a) => !isInstalled(a.provider))) {
+      const name = PROVIDERS[account.provider]?.name ?? account.provider;
+      checks.push({
+        id: `stray-account-${account.id}`,
+        level: 'info',
+        title: `${name} is not installed, but "${account.label}" is still registered`,
+        detail: `Nothing is broken; the account simply has no tool to run it, so it is hidden from the Accounts page and the tray menu. Install ${name} again and it comes straight back. Clearing it unregisters the account only: the folder ${account.home} and its sign-in are left alone.`,
+        fix: { action: 'unregister-account', args: { id: account.id }, label: 'Clear registration', confirm: `Unregister "${account.label}"? The folder and its login are not touched, and re-installing ${name} registers it again.` },
+      });
+    }
+  }
+
+  // 8. Local runtime reachability, informational only.
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 1500);

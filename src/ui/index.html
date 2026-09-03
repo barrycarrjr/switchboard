@@ -676,41 +676,50 @@ function toolSection(id, title, summary) {
  * catalogue of everything Switchboard could manage. The rest belong behind "Add another
  * tool".
  *
- * A registered account always earns the space, even when the tool is not installed.
- * Hiding accounts someone registered would read as data loss the moment a tool was
- * uninstalled or fell off PATH, and the registration is still theirs; the section says
- * the tool is missing instead.
+ * A tool that is not installed never takes a section, whatever is registered for it.
+ * Every button on such a section is inert: the account cannot be switched to, cannot be
+ * signed in and cannot run. This was tried the other way first, showing the section with
+ * a note that the tool was missing, and it read as a working account with a caption
+ * nobody connected to the dead buttons beneath it.
  *
- * An unregistered folder is different. It is an offer to register something, and there
- * is nothing to offer when the tool is not on the machine: the account could not be
- * switched to and could not run. That case turned up with a Gemini folder left signed in
- * after its CLI was removed, where the page kept advertising an account that could never
- * work.
+ * Nothing is deleted by hiding it. The registration stays in accounts.json, the section
+ * returns the moment the tool is back, `switchboard accounts` still lists it, and the
+ * shelf below says how many registrations a missing tool still holds, so none of it is
+ * invisible.
+ *
+ * Registrations arrive on their own, which is what makes this matter: Switchboard
+ * registers a vendor folder it finds at startup, so merely installing a tool creates an
+ * account, and uninstalling it leaves that account behind to keep an empty section alive.
  */
 function splitToolsByPresence(providers, accounts, candidates) {
-  const mine = (p) => accounts.some((a) => a.provider === p.id)
-    || (p.installed !== false && candidates.some((c) => c.provider === p.id));
+  const mine = (p) => p.installed !== false
+    && (accounts.some((a) => a.provider === p.id) || candidates.some((c) => c.provider === p.id));
   return { present: providers.filter(mine), absent: providers.filter((p) => !mine(p)) };
+}
+
+/** What the shelf says about a tool you do not have, so a hidden registration is still
+ * accounted for rather than silently dropped. */
+function shelfNote(provider, accounts) {
+  const mine = accounts.filter((a) => a.provider === provider.id).length;
+  if (!mine) return provider.note ?? null;
+  const held = `not installed · ${mine} registered account${mine === 1 ? '' : 's'}, kept for when it is back`;
+  return provider.note ? `${held} · ${provider.note}` : held;
 }
 
 /**
  * The line under a tool's heading on the Accounts page. Pure, because it is the one
- * place that has to say something true in four different situations at once.
+ * place that has to say something true in three different situations at once.
  *
- * A section only survives without the tool installed when accounts are registered for
- * it, and saying so is the point: otherwise the accounts read as usable and every button
- * on them quietly does nothing. Switching is already refused for a missing tool, so this
- * explains a page that would otherwise look broken.
+ * It says nothing about the tool being installed, because a section is only built for a
+ * tool that is. That was tried: a section with a "not installed" caption above buttons
+ * that all quietly did nothing read as a working account, so the section is hidden now
+ * and the shelf accounts for it instead. See `splitToolsByPresence`.
  */
-function accountsSectionSummary(provider, accountCount, candidateCount, active) {
-  const missing = provider.installed === false;
+function accountsSectionSummary(accountCount, candidateCount, active) {
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-  const body = active
-    ? `New sessions use: ${active.label} · ${plural(accountCount, 'account')}`
-    : accountCount
-      ? `${plural(accountCount, 'account')} · the folder in use is not registered`
-      : `${plural(candidateCount, 'folder')} found, none registered yet`;
-  return missing ? `${provider.name} is not installed on this machine · ${body}` : body;
+  if (active) return `New sessions use: ${active.label} · ${plural(accountCount, 'account')}`;
+  if (accountCount) return `${plural(accountCount, 'account')} · the folder in use is not registered`;
+  return `${plural(candidateCount, 'folder')} found, none registered yet`;
 }
 
 async function addToolAccount(p) {
@@ -1112,7 +1121,7 @@ function presenceSection(tools) {
 }
 
 /** The tools you do not have, one line each, out of the way until you want one. */
-function shelfSection(absent, open) {
+function shelfSection(absent, open, accounts = []) {
   const section = el('section', 'provider-section');
   const list = el('div', 'tool-shelf' + (open ? ' open' : ''));
   const toggle = el('button', 'addbtn', open ? 'Hide other tools' : '+ Add another tool');
@@ -1128,7 +1137,8 @@ function shelfSection(absent, open) {
     const row = el('div', 'tool-row');
     const text = el('div', 'tool-row-text');
     text.appendChild(el('b', null, esc(p.name)));
-    if (p.note) text.appendChild(el('span', null, esc(p.note)));
+    const note = shelfNote(p, accounts);
+    if (note) text.appendChild(el('span', null, esc(note)));
     row.appendChild(text);
     row.appendChild(cardButton('Add account', () => addToolAccount(p), { title: `Register a ${p.name} config folder` }));
     list.appendChild(row);
@@ -1152,7 +1162,7 @@ async function renderAccounts() {
       .sort((a, b) => Number(b.id === p.activeAccountId) - Number(a.id === p.activeAccountId));
     const found = (state.candidates || []).filter((x) => x.provider === p.id);
     const active = mine.find((a) => a.id === p.activeAccountId);
-    const section = toolSection(p.id, p.name, accountsSectionSummary(p, mine.length, found.length, active));
+    const section = toolSection(p.id, p.name, accountsSectionSummary(mine.length, found.length, active));
 
     if (mine.length) {
       const accountGrid = el('div', 'account-grid');
@@ -1179,7 +1189,7 @@ async function renderAccounts() {
   if (presence.length) panel.appendChild(presenceSection(presence));
 
   // Nothing registered yet is the one case where the catalogue IS the page.
-  if (absent.length) panel.appendChild(shelfSection(absent, present.length === 0));
+  if (absent.length) panel.appendChild(shelfSection(absent, present.length === 0, state.accounts));
 
   panel.appendChild(el('p', 'panelnote', 'Switching changes which account <b>new</b> terminals and newly launched tools use. Running apps and pinned automation are never touched.'));
 

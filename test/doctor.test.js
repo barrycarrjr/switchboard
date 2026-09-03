@@ -539,3 +539,33 @@ test('an unknown provider is reported rather than assumed fine', () => {
   assert.equal(s.signedIn, false);
   assert.equal(s.level, 'warn');
 });
+
+test('a registration whose tool has gone is reported, with a fix that only unregisters', async () => {
+  const accounts = [
+    { id: 'claude-default', provider: 'claude', label: 'Main', home: 'C:\home\.claude' },
+    { id: 'qwen-default', provider: 'qwen', label: 'Default', home: 'C:\home\.qwen' },
+  ];
+
+  const checks = await runChecks({
+    accounts,
+    isInstalled: (id) => id === 'claude',
+    fetchImpl: async () => { throw new Error('offline'); },
+  });
+
+  const stray = checks.find((c) => c.id === 'stray-account-qwen-default');
+  assert.ok(stray, 'the missing tool is reported');
+  assert.equal(stray.level, 'info', 'nothing is broken, so it is not a warning');
+  assert.equal(stray.fix.action, 'unregister-account');
+  assert.equal(stray.fix.args.id, 'qwen-default');
+  assert.match(stray.detail, /folder .* and its sign-in are left alone/);
+  assert.equal(checks.some((c) => c.id === 'stray-account-claude-default'), false, 'an installed tool is not flagged');
+});
+
+test('without a way to tell what is installed, nothing is called stray', async () => {
+  const checks = await runChecks({
+    accounts: [{ id: 'qwen-default', provider: 'qwen', label: 'Default', home: 'C:\home\.qwen' }],
+    fetchImpl: async () => { throw new Error('offline'); },
+  });
+
+  assert.equal(checks.some((c) => c.id.startsWith('stray-account-')), false);
+});
