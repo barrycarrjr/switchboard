@@ -64,12 +64,13 @@ For deep-dives into architecture, guides, and full command references, see the *
   installed, and links to the vendor site instead. Nothing is bundled.
 - Execution lanes are the failover pool. `switchboard run` picks the first healthy lane,
   launches the vendor's own CLI pinned to that account, and, when a run stops on a
-  provider limit, drops that lane and starts the command again in the next one. A retry
-  in the same tool starts that tool fresh: Switchboard carries no conversation across.
-  When the next lane is a different tool, it looks for a handoff document already written
-  for that working directory and, if one is there, tells the new tool to read it; if
-  there is none, it says so and asks before starting fresh. Writing that document is not
-  something Switchboard does for you yet.
+  provider limit, drops that lane and starts the command again in the next one. Between
+  two Claude accounts the conversation goes with it: the session is copied into the
+  incoming account and resumed there, so the new account carries on from where the spent
+  one stopped instead of starting over. When the next lane is a different tool there is
+  nothing to resume, so it looks instead for a handoff document already written for that
+  working directory, and asks before going on. Writing that document is not something
+  Switchboard does for you yet.
 
 ## MCP servers
 
@@ -244,7 +245,12 @@ bounced on a blip.
 `switchboard run` is the execution broker. It reads where every lane stands, takes the
 first healthy one, and launches the vendor's own CLI with an environment scoped to that
 lane's account: the account's own folder and nothing inherited from the calling shell that
-could bill somebody else. Your arguments are passed straight through. `--provider` and
+could bill somebody else. Your arguments are passed through as you wrote them, with one
+addition: on a Claude lane it puts `--session-id` in front of them, so that if the run
+has to move accounts later it knows which conversation to take with it. If your own
+command line already steers the session, with `--resume`, `--continue`, `--fork-session`
+or a `--session-id` of your own, it adds nothing and carries nothing; that session is
+yours. `--provider` and
 `--account` narrow the pool, `--no-fallback` keeps it to one lane, and `--quiet` moves
 Switchboard's own lines to standard error so a caller can parse the tool's output.
 `--spec <file>` supplies a command line per tool instead, for a caller that cannot know
@@ -253,14 +259,24 @@ refused rather than guessed at.
 
 When a run ends on a provider limit, and only then, that lane is dropped and the command
 starts again in the next healthy one. An ordinary non-zero exit is reported and left
-alone, because guessing would move work to another account on any old failure. The retry
-is a fresh start, not a resumption: the new tool begins with the same arguments the first
-one got. Switchboard never captures or replays a conversation. It holds the tool's error
-output and the tail of its normal output in memory while the run lasts, and only so it can
-tell a limit notice from any other failure.
+alone, because guessing would move work to another account on any old failure.
 
-Crossing to a different tool is treated more carefully, because arguments and session
-state do not carry between vendors. Switchboard looks for a handoff document already
+Between two Claude accounts the retry is a real continuation. Claude Code keeps each
+session as a file under the account folder it ran in, and that file is portable, so
+Switchboard copies the session into the incoming account and resumes it there. The new
+account sees everything the spent one had established and picks the work up mid-task. The
+spent account keeps its own copy, and a session the incoming account already holds is
+never overwritten. Switchboard reads none of it: this is a file copy, not a summary, and
+nothing is sent anywhere.
+
+Every part of that is allowed to fail without ending the run. A spent lane that left no
+session, a destination that already has one, an unreadable folder: each falls back to
+starting the tool fresh, which is what used to happen every time, and the run says which
+happened. Carrying only works between Claude accounts, because Codex files its sessions
+differently and that has not been proven the same way.
+
+Crossing to a different tool cannot work that way, because a session file means nothing
+to another vendor. Switchboard looks for a handoff document already
 written for the current working directory, which lives under
 `%APPDATA%\Switchboard\handoffs` under a name derived from that directory's path. With one
 there, it tells the new tool to read that file and continue from its next actions. With

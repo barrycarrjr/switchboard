@@ -14,6 +14,7 @@ import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
 import { readHandoff, generateHandoffPrompt } from '../core/handoff.js';
+import { CARRYABLE_HARNESSES, callerManagesSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote } from '../core/transcripts.js';
 import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
 import readline from 'node:readline/promises';
 
@@ -395,7 +396,22 @@ async function main() {
         return argv;
       }
 
+      // Naming the session up front is what makes carrying it possible later: on a
+      // failover Switchboard has to know which transcript belongs to this run, and the
+      // newest file in the folder is the wrong answer whenever two agents share a
+      // working directory. Only when Switchboard owns the command line (no spec) and the
+      // caller has not named a session themselves. `sessionId` staying null is the
+      // signal that no carry will be attempted.
+      const runCwd = process.cwd();
+      let sessionId = null;
+      if (!spec
+        && CARRYABLE_HARNESSES.includes(selected.lane.harness)
+        && !callerManagesSession(parsed.commandArgs)) {
+        sessionId = newSessionId();
+      }
+
       let currentArgs = parsed.commandArgs;
+      if (sessionId) currentArgs = withSessionId(currentArgs, sessionId);
       if (spec) {
         currentArgs = argsForLane(selected.lane);
         if (!currentArgs) {
@@ -457,6 +473,28 @@ async function main() {
             }
           } else {
             say(`[switchboard] Falling back to next available lane for harness ${selected.lane.harness}: ${selected.lane.id}`);
+
+            // Same harness, so the outgoing session can come with us. Copy its
+            // transcript into the incoming account's folder and resume it there: the new
+            // account continues the actual conversation rather than starting over, and
+            // the spent account keeps its own copy. Every failure here falls through to
+            // the fresh start this path has always done.
+            if (sessionId && CARRYABLE_HARNESSES.includes(selected.lane.harness)) {
+              const fromHome = registry.accounts.find((a) => a.id === previousLane.accountId)?.home;
+              const toHome = registry.accounts.find((a) => a.id === selected.lane.accountId)?.home;
+              const carry = carryTranscript({ fromHome, toHome, cwd: runCwd, sessionId });
+              if (carry.carried) {
+                currentArgs = resumeArgs(parsed.commandArgs, sessionId);
+                say('[switchboard] Carried the session over; this lane continues where the last one stopped.');
+              } else {
+                // Back to a plain named start. Rebuilt from the original arguments rather
+                // than left as they are, because a third lane would otherwise inherit the
+                // previous hop's --resume and ask this account to open a session it has
+                // never held. Still named, so a later failover can carry this one.
+                currentArgs = withSessionId(parsed.commandArgs, sessionId);
+                say(`[switchboard] ${carryNote(carry.reason)}.`);
+              }
+            }
           }
 
           // The new lane can be a different harness, so a spec is re-read for it and the
