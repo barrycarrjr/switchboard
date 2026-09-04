@@ -64,7 +64,8 @@ For deep-dives into architecture, guides, and full command references, see the *
   installed, and links to the vendor site instead. Nothing is bundled.
 - Execution lanes are the failover pool. `switchboard run` picks the first healthy lane,
   launches the vendor's own CLI pinned to that account, and, when a run stops on a
-  provider limit, drops that lane and starts the command again in the next one. Between
+  provider limit or cannot sign in at all, drops that lane and starts the command again in
+  the next one. Between
   two Claude accounts the conversation goes with it: the session is copied into the
   incoming account and resumed there, so the new account carries on from where the spent
   one stopped instead of starting over. Every other combination gets a handoff instead:
@@ -258,9 +259,33 @@ Switchboard's own lines to standard error so a caller can parse the tool's outpu
 in advance which tool it will get; a fallback to a tool the file says nothing about is
 refused rather than guessed at.
 
-When a run ends on a provider limit, and only then, that lane is dropped and the command
-starts again in the next healthy one. An ordinary non-zero exit is reported and left
-alone, because guessing would move work to another account on any old failure.
+A run that ends on a provider limit, or on a sign-in the vendor refused, drops that lane
+and starts again in the next healthy one. An ordinary non-zero exit is still reported and
+left alone, because guessing would move work to another account on any old failure.
+
+The two are read apart, because they do not mean the same thing. A limit means the account
+is real and merely spent: the work started, and between two lanes of the same tool it is
+carried across so the next account picks it up mid-task. A refused sign-in means the run
+never began, so there is no session to carry and no handoff to write, and the command
+simply starts on the next lane as if it were the first. Only the sign-in failure is said
+out loud with the account named, because a spent lane returns by itself when its window
+resets and a broken one does not: without that line, every later run would quietly start
+one lane lower and nobody would know a lane had gone.
+
+Both readings are deliberately narrow, and they are taken from the tool's own output. A
+refused sign-in is recognised from specific phrases, never from a lone word like
+unauthorized, because a run's output includes what the agent itself printed and an agent
+discussing an unauthorized request in somebody else's code must not be mistaken for a lane
+that cannot log in. Output is only ever classified after a non-zero exit, which keeps the
+cost of a wrong reading to a run that had already failed. Where a limit and a sign-in
+failure both appear, it is read as a limit: an exhausted account is not a broken one, and
+sending somebody to repair a sign-in that was never at fault is the worse mistake.
+
+Classification reads the tool's standard output as well as its standard error, because
+that is where a harness actually reports both of these. It is captured only when
+Switchboard's own output is not a terminal, so an interactive run at a keyboard is
+reported rather than classified, on the same reasoning as a limit notice: a person is
+already reading it.
 
 Between two Claude accounts the retry is a real continuation. Claude Code keeps each
 session as a file under the account folder it ran in, and that file is portable, so

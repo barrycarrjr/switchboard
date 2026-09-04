@@ -300,7 +300,7 @@ async function main() {
         return;
       }
 
-      const { isLimitError } = await import('../core/errors.js');
+      const { classifyRunFailure } = await import('../core/errors.js');
 
       // A long run must not balloon memory, and a limit notice always sits at the end of
       // the output, so only the tail is retained for classification.
@@ -310,13 +310,13 @@ async function main() {
         const account = registry.accounts.find(a => a.id === lane.accountId);
         if (!account) {
           say(`Account ${lane.accountId} not found in registry.`);
-          return { code: 1, limitHit: false };
+          return { code: 1, limitHit: false, authFailed: false };
         }
 
         const executable = await toolExecutable(lane.harness);
         if (!executable) {
           say(`Tool for harness '${lane.harness}' is not installed or not found on PATH.`);
-          return { code: 1, limitHit: false };
+          return { code: 1, limitHit: false, authFailed: false };
         }
 
         const childEnv = accountScopedEnv(account, process.env);
@@ -337,7 +337,7 @@ async function main() {
         if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable)) {
           if (/[\u0000-\u001f"%]/.test(executable)) {
             say(`[switchboard] Unsafe batch-shim path: ${executable}`);
-            return { code: 1, limitHit: false };
+            return { code: 1, limitHit: false, authFailed: false };
           }
           spawnFile = 'cmd.exe';
           spawnArgs = ['/d', '/s', '/v:off', '/c', executable, ...executionArgs];
@@ -367,18 +367,27 @@ async function main() {
 
           child.on('error', (err) => {
             say(`\n[switchboard] Failed to launch ${executable}: ${err.message}`);
-            done({ code: 1, limitHit: false });
+            done({ code: 1, limitHit: false, authFailed: false });
           });
 
           child.on('close', (code) => {
-            if (code !== 0 && isLimitError(stderrOutput + '\n' + stdoutTail)) {
+            const verdict = classifyRunFailure(code, stderrOutput + '\n' + stdoutTail);
+            if (verdict === 'limit') {
               say(`\n[switchboard] Provider limit error detected in lane ${lane.id}.`);
-              done({ code, limitHit: true });
+              done({ code, limitHit: true, authFailed: false });
+            } else if (verdict === 'auth') {
+              // Said out loud even though the run carries on elsewhere. A spent lane comes
+              // back by itself when its window resets; a lane that cannot sign in does not,
+              // and without this line every later run would quietly start one lane lower
+              // with nobody ever told why.
+              say(`\n[switchboard] Lane ${lane.id} (${account.label}) could not authenticate, so it is out for this run.`);
+              say(`[switchboard] A run uses the account's own sign-in, so sign ${account.label} back in to bring the lane back.`);
+              done({ code, limitHit: false, authFailed: true });
             } else {
               if (code !== 0) {
                 say(`\n[switchboard] Process exited with code ${code}. Ambiguous failure, not falling back.`);
               }
-              done({ code, limitHit: false });
+              done({ code, limitHit: false, authFailed: false });
             }
           });
         });
@@ -429,7 +438,7 @@ async function main() {
         const laneStartedAt = Date.now() - 1000;
         const result = await runInLane(selected.lane, currentArgs);
 
-        if (result.limitHit && !parsed.noFallback) {
+        if ((result.limitHit || result.authFailed) && !parsed.noFallback) {
           const previousLane = selected.lane;
           currentPool = currentPool.filter(l => l.id !== selected.lane.id);
           
@@ -447,8 +456,20 @@ async function main() {
 
           let handoffPrompt = null;
 
-          // Cross-provider/cross-harness transition handling
-          if (previousLane.harness !== selected.lane.harness || previousLane.provider !== selected.lane.provider) {
+          // A lane that could not sign in never ran, and that changes what the hop has to
+          // do rather than only where it goes. There is no session to carry and no work to
+          // hand off, because none was ever started: no transcript was written, nothing was
+          // consumed, and the digest below would have nothing to read but somebody else's
+          // earlier work in the same directory. So this path deliberately skips all of it
+          // and simply starts the command on the next lane. The arguments are rebuilt from
+          // what the caller asked for, for the same reason the same-harness path rebuilds
+          // them: an earlier hop may have left a --resume on the command line naming a
+          // session that this lane has never held.
+          if (result.authFailed) {
+            currentArgs = sessionId ? withSessionId(parsed.commandArgs, sessionId) : parsed.commandArgs;
+            say(`[switchboard] Falling back to next available lane: ${selected.lane.id}. Nothing was carried, because the lane that failed never started.`);
+          } else if (previousLane.harness !== selected.lane.harness || previousLane.provider !== selected.lane.provider) {
+            // Cross-provider/cross-harness transition handling
             // A Claude session file means nothing to another vendor, so this hop cannot
             // carry the session itself. What it can carry is a written account of it, and
             // the spent session already wrote one: an agent narrates its work as it goes,
