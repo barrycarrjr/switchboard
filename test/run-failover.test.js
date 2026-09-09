@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from '../test-support/tempdir.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cli = path.join(root, 'bin', 'cli.js');
@@ -76,7 +76,7 @@ function writeFakeHarness(binDir) {
 
 /** A whole machine's worth of Switchboard state in a throwaway folder. */
 function makeWorld() {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-failover-'));
+  const tmp = tempDir('sb-failover-');
   const appData = path.join(tmp, 'appdata');
   const dataDir = path.join(appData, 'Switchboard');
   const deadHome = path.join(tmp, 'home-dead');

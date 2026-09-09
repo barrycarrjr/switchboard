@@ -1,9 +1,9 @@
 ﻿import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from '../test-support/tempdir.js';
 import { appRunning, bridgeProblem, bridgeRunning, parseProcessList } from '../core/running.js';
 import { loadSettings } from '../core/settings.js';
 
@@ -62,7 +62,7 @@ test('bridge entries are validated before they are saved', () => {
 });
 
 test('settings default bridges to an empty list and drop malformed entries', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-running-'));
+  const dir = tempDir('sb-running-');
   const file = path.join(dir, 'settings.json');
   assert.deepEqual(loadSettings(file).bridges, []);
   fs.writeFileSync(file, JSON.stringify({ bridges: [

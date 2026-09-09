@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import {
   readClaudeAccountIdentity,
   readDesktopUsage,
@@ -14,13 +14,13 @@ import { verifiedAccountLoginState } from '../core/doctor.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 
 function profileDir(samples) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-dt-'));
+  const dir = tempDir('sb-dt-');
   fs.writeFileSync(path.join(dir, 'plan-usage-history.json'), JSON.stringify({ version: 2, samples }));
   return dir;
 }
 
 function claudeHome(identity = null, oauth = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-dt-home-'));
+  const dir = tempDir('sb-dt-home-');
   fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ claudeAiOauth: oauth }));
   if (identity) {
     fs.writeFileSync(path.join(dir, '.claude.json'), JSON.stringify({
@@ -56,7 +56,7 @@ test('readDesktopUsage marks old samples stale and tolerates junk', () => {
   assert.equal(stale.stale, true);
   const empty = readDesktopUsage(profileDir([]), now);
   assert.equal(empty.error, 'unreadable');
-  const missing = readDesktopUsage(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-dt-')), now);
+  const missing = readDesktopUsage(tempDir('sb-dt-'), now);
   assert.equal(missing.error, 'unreadable');
 });
 
@@ -66,7 +66,7 @@ test('Claude account identity is read from .claude.json without carrying persona
   assert.deepEqual(identity, { accountUuid: 'acct-1', organizationUuid: 'org-1' });
   assert.equal(JSON.stringify(identity).includes('private@example.test'), false);
 
-  const missing = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-dt-no-id-'));
+  const missing = tempDir('sb-dt-no-id-');
   assert.equal(readClaudeAccountIdentity(missing), null);
   fs.writeFileSync(path.join(missing, '.claude.json'), '{not json');
   assert.equal(readClaudeAccountIdentity(missing), null);
@@ -244,7 +244,7 @@ test('an unusable token falls back to identity-matched Desktop data', async () =
 });
 
 test('settings roundtrip and defaulting', () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-s-')), 'settings.json');
+  const file = path.join(tempDir('sb-s-'), 'settings.json');
   const first = loadSettings(file);
   assert.equal(first.quotaWatch, 'off');
   first.quotaWatch = 'auto';
@@ -258,7 +258,7 @@ test('settings roundtrip and defaulting', () => {
 });
 
 test('lane tokens default to an empty object and survive a roundtrip', () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-s3-')), 'settings.json');
+  const file = path.join(tempDir('sb-s3-'), 'settings.json');
   assert.deepEqual(loadSettings(file).laneTokens, {});
   const entry = { token: 'tok-x', accountId: 'claude-work', mintedAt: 1 };
   saveSettings({ ...loadSettings(file), laneTokens: { 'lane-1': entry } }, file);
@@ -270,7 +270,7 @@ test('lane tokens default to an empty object and survive a roundtrip', () => {
 });
 
 test('window bounds only restore when they look like real bounds', () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-s2-')), 'settings.json');
+  const file = path.join(tempDir('sb-s2-'), 'settings.json');
   fs.writeFileSync(file, JSON.stringify({ windowBounds: { width: 662, height: 830, x: 100, y: 100 } }));
   assert.deepEqual(loadSettings(file).windowBounds, { width: 662, height: 830, x: 100, y: 100 });
   fs.writeFileSync(file, JSON.stringify({ windowBounds: { width: 5, height: 830 } }));

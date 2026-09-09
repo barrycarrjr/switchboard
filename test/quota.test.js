@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, inheritResetTimes, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexSessionQuota, codexAccountQuota, codexLiveRateLimits, fetchCodexQuota, readCodexAuth, providerQuota } from '../core/quota.js';
 
 // A window's turnover time is schedule knowledge, not a meter level: once read, it
@@ -169,7 +169,7 @@ test('mapUsage of an empty body is empty, not fabricated', () => {
 });
 
 test('readAccessToken reads the vendor credential file and tolerates absence', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-q-'));
+  const dir = tempDir('sb-q-');
   assert.equal(readAccessToken(dir), null);
   fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'tok-123' } }));
   assert.equal(readAccessToken(dir), 'tok-123');
@@ -191,7 +191,7 @@ test('fetchClaudeQuota sends the bearer token and beta header', async () => {
 });
 
 test('accountQuota reports unknowns instead of guessing, and names auth failures', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-q2-'));
+  const dir = tempDir('sb-q2-');
   assert.deepEqual(await accountQuota(dir), { error: 'no-credentials' });
   fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't' } }));
   const failWith = (status) => async () => ({ ok: false, status, json: async () => ({}) });
@@ -205,7 +205,7 @@ test('accountQuota reports unknowns instead of guessing, and names auth failures
 // repeated bad credentials with hour-long lockouts that then read as "rate-limited".
 // The expiry is in the credentials file, so the call must never be made.
 test('accountQuota reports auth locally instead of presenting a token the file says has expired', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-q3-'));
+  const dir = tempDir('sb-q3-');
   const cred = (expiresAt) => fs.writeFileSync(
     path.join(dir, '.credentials.json'),
     JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt } }),
@@ -232,7 +232,7 @@ test('accountQuota reports auth locally instead of presenting a token the file s
 /* Codex: a live endpoint when the sign-in allows it, the account's own session logs when it does not. */
 
 function codexHome(days = [['2026', '08', '19']]) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-codex-'));
+  const dir = tempDir('sb-codex-');
   for (const [y, m, d] of days) fs.mkdirSync(path.join(dir, 'sessions', y, m, d), { recursive: true });
   return dir;
 }
@@ -323,7 +323,7 @@ test('codexSessionQuota falls back to an older log, and says so when there is no
   assert.equal(codexSessionQuota(home).sampledAt, Date.parse('2026-08-18T09:00:00.000Z'));
 
   assert.deepEqual(codexSessionQuota(codexHome([])), { error: 'no-usage-data' });
-  assert.deepEqual(codexSessionQuota(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-empty-'))), { error: 'no-usage-data' });
+  assert.deepEqual(codexSessionQuota(tempDir('sb-empty-')), { error: 'no-usage-data' });
 });
 
 test('a truncated or oversized line is skipped, never half-parsed into a number', () => {
@@ -342,7 +342,7 @@ test('providerQuota routes by tool and refuses to invent one for the rest', asyn
   writeSession(home, ['2026', '08', '19'], 'rollout-d.jsonl', [tokenCount(LIMITS, '2026-08-19T10:00:00.000Z')]);
   assert.equal((await providerQuota('codex', home)).source, 'session-log');
   assert.deepEqual(await providerQuota('gemini', home), { error: 'unsupported' });
-  assert.deepEqual(await providerQuota('claude', fs.mkdtempSync(path.join(os.tmpdir(), 'sb-c-'))), { error: 'no-credentials' });
+  assert.deepEqual(await providerQuota('claude', tempDir('sb-c-')), { error: 'no-credentials' });
 });
 
 /* The live source: the same account's ChatGPT sign-in, asked directly. */
@@ -363,7 +363,7 @@ function codexHomeWithAuth(tokens) {
 }
 
 test('readCodexAuth reads the vendor credential file and tolerates absence', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-cx-'));
+  const dir = tempDir('sb-cx-');
   assert.equal(readCodexAuth(dir), null);
   fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ tokens: { access_token: 'tok-1', account_id: 'acct-9' } }));
   assert.deepEqual(readCodexAuth(dir), { token: 'tok-1', accountId: 'acct-9' });

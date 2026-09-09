@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import {
   runChecks,
   claudeLoginState,
@@ -16,7 +16,7 @@ const noFetch = async () => { throw new Error('offline'); };
 const envNone = { user: () => null, machine: () => null };
 
 function tmpHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'sb-d-'));
+  return tempDir('sb-d-');
 }
 
 test('a stray API key is a hard failure naming the scope, with a user-scope fix', async () => {

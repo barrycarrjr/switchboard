@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { signOutAccount, signoutLaunch, signoutSupported, signoutUnsupportedNote } from '../core/signout.js';
 
 /**
@@ -12,7 +12,7 @@ import { signOutAccount, signoutLaunch, signoutSupported, signoutUnsupportedNote
  * it actually stands afterwards rather than trusting the command's own exit code.
  */
 function tmpAccount(provider = 'claude', credFile = '.credentials.json', signedIn = true) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-so-'));
+  const home = tempDir('sb-so-');
   if (signedIn) {
     const body = provider === 'claude'
       ? JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r' } })

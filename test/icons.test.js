@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { encodePng, drawIcon, encodeIco, generate } from '../scripts/make-icons.js';
 
 test('encodePng produces a valid PNG signature and IHDR dimensions', () => {
@@ -23,7 +23,7 @@ test('encodeIco wraps the PNG with a single 256px entry', () => {
 });
 
 test('generate writes the three icon files', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-i-'));
+  const dir = tempDir('sb-i-');
   generate(dir);
   for (const f of ['assets/tray.png', 'assets/icon-256.png', 'build/icon.ico']) {
     assert.ok(fs.existsSync(path.join(dir, f)), f);

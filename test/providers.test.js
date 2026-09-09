@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { tempDir } from '../test-support/tempdir.js';
 import { TOOLS, detectTool, uninstallCmdFor, preferredExecutablePath } from '../core/providers.js';
 
 test('tool table invariants: unique ids, vendor sites, vendor install commands or honest notes', () => {
@@ -52,7 +53,7 @@ test('findBinIn finds windows launchers by extension and skips unreadable dirs',
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-p-'));
+  const dir = tempDir('sb-p-');
   fs.writeFileSync(path.join(dir, 'mytool.cmd'), '@echo hi');
   const { findBinIn } = await import('../core/providers.js');
   assert.equal(findBinIn(['C:/no/such/dir', dir], 'mytool'), path.join(dir, 'mytool.cmd'));

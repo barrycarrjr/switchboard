@@ -152,6 +152,14 @@ npm run catalog   # refreshes the MCP server catalogue in core/
 npm run dist      # builds dist/Switchboard-Setup-<version>.exe
 ```
 
+Tests that need scratch space take it from `tempDir` in `test-support/tempdir.js`, never
+from `mkdtempSync` directly. `tempDir` removes what it made when the test process ends, and
+`npm test` first runs `test-support/sweep-temp.js` to collect anything a killed process
+left behind. Add any new fixture prefix to `PREFIXES` in that file; `test/tempdir.test.js`
+reads the test sources and fails if one is missing. This is not housekeeping for its own
+sake: these directories used to be left in `%TEMP%` forever, about 1,900 a day, and `%TEMP%`
+is shared with every other program on the machine.
+
 `npm run catalog` regenerates `core/catalog-remote.json` from Docker's published MCP
 catalogue over plain HTTPS. Docker itself is not needed, to regenerate it or to use it: the
 result is data we ship, not a dependency. It keeps only servers reachable at an https

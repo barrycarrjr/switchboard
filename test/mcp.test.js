@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import {
   FEATURED,
   CLIENTS,
@@ -44,7 +45,7 @@ import {
 } from '../core/mcp.js';
 
 function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'sb-mcp-test-'));
+  return tempDir('sb-mcp-test-');
 }
 
 test('server registry roundtrip through a file', () => {

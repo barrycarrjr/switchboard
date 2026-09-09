@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, strayAccounts, envValueForHome, homeFromEnvValue, PROVIDERS } from '../core/accounts.js';
 
 function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'sb-test-'));
+  return tempDir('sb-test-');
 }
 
 test('registry roundtrip through a file', () => {
@@ -209,7 +209,7 @@ test('a vendor folder another product also writes to is not claimed on sight', (
 test('detectDefaults registers nothing for a tool this machine does not have', () => {
   // Installing a tool created the folder, Switchboard registered it, and uninstalling
   // left the account behind holding a section and a tray row open.
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-defaults-'));
+  const homeDir = tempDir('sb-defaults-');
   try {
     fs.mkdirSync(path.join(homeDir, '.codex'));
     fs.mkdirSync(path.join(homeDir, '.qwen'));

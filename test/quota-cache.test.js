@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { sharedQuotaKey, readSharedQuota, writeSharedQuota, sharedProviderQuota, lastSharedQuota, quotaCacheFile, SHARED_QUOTA_TTL_MS } from '../core/quota-cache.js';
 
 const LIVE = { windows: [{ key: 'week', label: 'Week (all models)', usedPercent: 12, resetsAt: null }], source: 'token', vendor: 'Anthropic' };
 
 function tempFile() {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-qc-')), 'quota-cache.json');
+  return path.join(tempDir('sb-qc-'), 'quota-cache.json');
 }
 
 test('readSharedQuota serves only a fresh reading filed under the same key', () => {
@@ -49,7 +49,7 @@ test('writeSharedQuota shares only successful live readings', () => {
 });
 
 test('sharedQuotaKey changes when the credential file changes, so re-auth invalidates', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-qk-'));
+  const home = tempDir('sb-qk-');
   const missing = sharedQuotaKey('claude', home);
   assert.match(missing, /:missing$/);
 
@@ -64,9 +64,9 @@ test('sharedQuotaKey changes when the credential file changes, so re-auth invali
 test('sharedProviderQuota fetches live once, then serves the shared reading', async () => {
   // dataDir() reads APPDATA at call time, so point the shared file at a temp dir.
   const prevAppData = process.env.APPDATA;
-  process.env.APPDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-appdata-'));
+  process.env.APPDATA = tempDir('sb-appdata-');
   try {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-qp-'));
+    const home = tempDir('sb-qp-');
     const future = Date.now() + 60 * 60 * 1000;
     fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt: future } }));
     const account = { id: 'acct-1', provider: 'claude', home };
@@ -116,9 +116,9 @@ test('lastSharedQuota answers at any age, and past a credential rewrite', () => 
 // per cooldown for as long as the endpoint stayed flaky.
 test('a rate-limited tick cannot make a known week turnover vanish', async () => {
   const prevAppData = process.env.APPDATA;
-  process.env.APPDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-appdata3-'));
+  process.env.APPDATA = tempDir('sb-appdata3-');
   try {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-qp3-'));
+    const home = tempDir('sb-qp3-');
     const now = Date.now();
     const weekReset = now + 6 * 60 * 60 * 1000;
     fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt: now + 60 * 60 * 1000 } }));
@@ -154,9 +154,9 @@ test('a rate-limited tick cannot make a known week turnover vanish', async () =>
 
 test('sharedProviderQuota does not share a failed reading, so the next caller retries', async () => {
   const prevAppData = process.env.APPDATA;
-  process.env.APPDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-appdata2-'));
+  process.env.APPDATA = tempDir('sb-appdata2-');
   try {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-qp2-'));
+    const home = tempDir('sb-qp2-');
     const future = Date.now() + 60 * 60 * 1000;
     fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt: future } }));
     const account = { id: 'acct-2', provider: 'claude', home };

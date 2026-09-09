@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import {
   CARRYABLE_HARNESSES,
   projectSlug,
@@ -21,7 +21,7 @@ import {
 
 /** A pair of account folders and a working directory, thrown away after each test. */
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switchboard-carry-'));
+  const root = tempDir('switchboard-carry-');
   return {
     root,
     fromHome: path.join(root, 'account-a'),

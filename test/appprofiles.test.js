@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import {
   APP_PROFILES,
   appProfileDef,
@@ -18,7 +19,7 @@ import { readDesktopOrganization } from '../core/quota.js';
 
 /** A machine with a standard Claude Desktop profile and some folders around it. */
 function makeMachine() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-profiles-'));
+  const root = tempDir('sb-profiles-');
   const homeDir = path.join(root, 'home');
   const appData = path.join(root, 'appdata');
   const make = (dir, marker) => {
@@ -131,7 +132,7 @@ test('looksLikeProfile wants evidence the app has actually run there', () => {
 });
 
 test('a profile reports the account of its newest usage sample, or nothing at all', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-org-'));
+  const root = tempDir('sb-org-');
   const write = (name, body) => {
     const dir = path.join(root, name);
     fs.mkdirSync(dir);
@@ -161,7 +162,7 @@ test('a Windows app id yields a package family only when it really is a packaged
 });
 
 test('the program file is only reported when it is genuinely there', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-pkg-'));
+  const root = tempDir('sb-pkg-');
   fs.mkdirSync(path.join(root, 'app'), { recursive: true });
   fs.writeFileSync(path.join(root, 'app', 'Claude.exe'), 'binary');
   const query = async () => root;

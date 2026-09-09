@@ -1,8 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { TOOLS } from '../core/providers.js';
 import {
   LIVE_SOURCES,
@@ -15,7 +14,7 @@ import {
 } from '../core/provider-status.js';
 
 function tmpFile() {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-provider-status-')), 'status-cache.json');
+  return path.join(tempDir('sb-provider-status-'), 'status-cache.json');
 }
 
 test('every tool in the Providers tab is accounted for, live or static, never both', () => {

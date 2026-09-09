@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { parseRunArgs, parseRunSpec, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
 
 test('parseRunArgs steals its own flags and leaves the rest to the child', () => {
@@ -80,7 +80,7 @@ test('parseRunSpec rejects anything that is not a usable spec', () => {
 });
 
 test('loadRunSpec reads a file and reports an unreadable one clearly', () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'switchboard-spec-')), 'spec.json');
+  const file = path.join(tempDir('switchboard-spec-'), 'spec.json');
   fs.writeFileSync(file, '{"harnessArgs":{"claude":["-p"]}}', 'utf8');
 
   assert.deepEqual(loadRunSpec(file).harnessArgs.claude, ['-p']);

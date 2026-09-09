@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { readSharedStatus, writeSharedStatus, SHARED_STATUS_TTL_MS } from '../core/status-cache.js';
 
 function tmpFile() {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-status-cache-')), 'status-cache.json');
+  return path.join(tempDir('sb-status-cache-'), 'status-cache.json');
 }
 
 test('a reading survives the round trip and carries its age', () => {
@@ -34,7 +34,7 @@ test('a clock that moved backwards is treated as absent, not as a future reading
 });
 
 test('a missing or corrupt cache file reads as absent rather than throwing', () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-status-cache-')), 'missing.json');
+  const file = path.join(tempDir('sb-status-cache-'), 'missing.json');
   assert.equal(readSharedStatus('claude', Date.now(), file), null);
   fs.writeFileSync(file, '{not json');
   assert.equal(readSharedStatus('claude', Date.now(), file), null);

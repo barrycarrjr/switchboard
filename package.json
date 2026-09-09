@@ -15,6 +15,7 @@
   },
   "scripts": {
     "start": "electron .",
+    "pretest": "node test-support/sweep-temp.js",
     "test": "node --test",
     "icons": "node scripts/make-icons.js",
     "catalog": "node scripts/update-catalog.js",

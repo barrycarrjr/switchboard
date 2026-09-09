@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { validRepoSlug, checkAppUpdate, downloadUpdate } from '../core/updatecheck.js';
 
 const release = (tag, withAsset = true) => ({
@@ -60,7 +60,7 @@ test('no repo configured is its own named error', async () => {
 });
 
 test('downloadUpdate writes the public asset into the target dir', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-u-'));
+  const dir = tempDir('sb-u-');
   const bytes = Buffer.from('MZ fake installer');
   const file = await downloadUpdate({
     repo: 'o/r',
@@ -74,7 +74,7 @@ test('downloadUpdate writes the public asset into the target dir', async () => {
 });
 
 test('downloadUpdate streams with progress when the response has a body reader', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-u2-'));
+  const dir = tempDir('sb-u2-');
   const parts = [Buffer.from('MZ part one '), Buffer.from('part two')];
   const total = parts[0].length + parts[1].length;
   let i = 0;

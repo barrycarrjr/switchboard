@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { stripCustomBaseUrls, applyFix, REMOVABLE_USER_ENV_VARS } from '../core/fixes.js';
 
 test('stripCustomBaseUrls comments out custom endpoints and keeps vendor ones', () => {
@@ -24,7 +24,7 @@ test('stripCustomBaseUrls reports no change when nothing matches', () => {
 });
 
 test('applyFix codex-remove-baseurl writes a backup then the transformed file', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-f-'));
+  const home = tempDir('sb-f-');
   const file = path.join(home, 'config.toml');
   fs.writeFileSync(file, 'base_url = "http://127.0.0.1:9999/v1"\n');
   const r = applyFix('codex-remove-baseurl', { home });

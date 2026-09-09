@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 
 const NOW = Date.parse('2026-08-19T22:00:00.000Z');
 
 function tmp(name) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `sb-status-${name}-`));
+  return tempDir(`sb-status-${name}-`);
 }
 
 function claudeAccount(label, id) {
