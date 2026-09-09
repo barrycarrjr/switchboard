@@ -137,7 +137,8 @@
   .signin-status.warn strong{color:var(--warn)}
   .signin-status.unknown strong{color:var(--info)}
   .signin-verified{color:var(--muted);font-size:.7rem}
-  .signin-status .btn{min-height:32px;margin-left:auto;padding:4px 9px;flex:0 0 auto}
+  .signin-status .btn{min-height:32px;padding:4px 9px;flex:0 0 auto}
+  .signin-actions{display:flex;gap:6px;margin-left:auto;flex:0 0 auto}
   .addbtn{width:100%;font:inherit;font-size:.83rem;padding:7px;border:1px dashed #b9c0c9;border-radius:8px;background:none;color:var(--muted);cursor:pointer;margin:4px 0 2px}
   .addbtn:hover{color:var(--accent);border-color:var(--accent)}
   .tool-shelf{display:none}
@@ -246,7 +247,7 @@
     .provider-summary{text-align:left}
     .account-actions{width:100%;justify-content:flex-start;margin-left:0}
     .signin-status{align-items:flex-start;flex-wrap:wrap}
-    .signin-status .btn{margin-left:15px}
+    .signin-actions{margin-left:15px}
   }
   @media (max-width:500px){
     .tab{padding-left:8px;padding-right:8px}
@@ -631,8 +632,8 @@ function cardUsage(card) {
   return { summary, content };
 }
 
-/** The sign-in half of a card. `button` is the caller's node so it can keep it. */
-function cardSignIn(card, { signedIn, detail, level = 'ok', note = null, button = null }) {
+/** The sign-in half of a card. The buttons are the caller's own nodes, so it keeps them. */
+function cardSignIn(card, { signedIn, detail, level = 'ok', note = null, button = null, buttons = null }) {
   const unknown = signedIn == null;
   const needsSignIn = signedIn === false || level === 'warn';
   const tone = needsSignIn ? ' warn' : unknown ? ' unknown' : '';
@@ -643,7 +644,12 @@ function cardSignIn(card, { signedIn, detail, level = 'ok', note = null, button 
   status.appendChild(dot);
   status.appendChild(el('strong', null, esc(detail)));
   if (note) status.appendChild(el('span', 'signin-verified', esc(note)));
-  if (button) status.appendChild(button);
+  const row = (buttons ?? [button]).filter(Boolean);
+  if (row.length) {
+    const actions = el('div', 'signin-actions');
+    for (const item of row) actions.appendChild(item);
+    status.appendChild(actions);
+  }
   area.appendChild(status);
   return area;
 }
@@ -748,6 +754,18 @@ function switchBlockedReason(label, login) {
   return `${detail}. Sign ${label} in before making it the default.`;
 }
 
+/**
+ * Whether a card offers to sign this account out.
+ *
+ * Two things have to be true. The vendor must publish a sign-out command of its own,
+ * because Switchboard never deletes a credential file itself, and there has to be a
+ * login there to remove: on a signed-out or unreadable folder the button would either
+ * do nothing or claim to have removed something nobody could see.
+ */
+function offersSignOut(provider, login) {
+  return Boolean(provider?.canSignOut) && login?.signedIn === true;
+}
+
 /** One registered account: the only card here that can switch, rename and report usage. */
 function accountCard(p, account) {
   const a = account;
@@ -786,6 +804,28 @@ function accountCard(p, account) {
     } catch (e) {
       toast('Could not open sign-in: ' + (e.message || e));
     }
+  };
+
+  /**
+   * Sign this account out through the vendor's own logout command.
+   *
+   * The default account is warned about by name: everything new on this machine picks it
+   * up, so signing it out is the one case where the next terminal opened stops working
+   * rather than simply this card going grey.
+   */
+  const signOutAccount = async () => {
+    const consequence = isDefault
+      ? `\n\n${a.label} is the account new ${p.name} sessions use, so they will have no login until it is signed in again.`
+      : '';
+    if (!confirm(`Sign "${a.label}" out of ${p.name}? The folder stays registered and is never deleted.${consequence}`)) return;
+    signOutButton.disabled = true;
+    try {
+      const result = await sb.signout(a.id);
+      toast(result.detail);
+    } catch (e) {
+      toast('Sign-out failed: ' + (e.message || e));
+    }
+    renderAccounts();
   };
 
   const titleId = `account-${p.id}-${a.id}`.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -987,12 +1027,19 @@ function accountCard(p, account) {
     ? 'Re-authenticate'
     : (login.signedIn === false || login.level === 'warn') ? 'Sign in'
       : login.signedIn == null ? 'Open account terminal' : 'Re-authenticate';
+  const signInButton = cardButton(signAction, openAccountSignin, { title: `Opens a terminal preset to ${a.label}` });
+  const signOutButton = offersSignOut(p, login)
+    ? cardButton('Sign out', signOutAccount, {
+      ghost: true,
+      title: `Runs ${p.name}'s own sign-out for ${a.label} (the folder is never deleted)`,
+    })
+    : null;
   cardSignIn(card, {
     signedIn: login.signedIn,
     level: login.level,
     detail: login.detail,
     note: login.verified ? 'Status checked by Claude Code' : null,
-    button: cardButton(signAction, openAccountSignin, { title: `Opens a terminal preset to ${a.label}` }),
+    buttons: [signInButton, signOutButton],
   });
   return card;
 }

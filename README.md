@@ -31,6 +31,16 @@ For deep-dives into architecture, guides, and full command references, see the *
   launched tools inherit it. Running processes are untouched. `switchboard run` does not
   read that default at all: it pins each command it launches to the account of the lane
   it picked, so a switch never disturbs a run already under way.
+- Signing in and signing out both stay the vendor's own job. The card's Re-authenticate
+  button opens a terminal already pointed at that account's folder, which is also how you
+  move a folder to a different subscription or replace a login the vendor has stopped
+  accepting. Sign out runs the vendor's own logout command against that folder and then
+  reports what the folder actually looks like, rather than trusting the command's exit
+  code. Switchboard never deletes a credential file itself, so the button only appears for
+  a tool that publishes a logout command (Claude Code and Codex do; Gemini CLI and Qwen
+  Code sign out from inside their own sessions) and only while there is a login there to
+  remove. Removing an account is a different thing again: it unregisters the folder and
+  leaves the login in place.
 - A desktop app follows the same switch where the app can. Claude Desktop keeps each
   account in its own data folder, so the Apps tab names the account its Launch button
   will open (the one that is the machine default right now) and puts the others behind

@@ -126,6 +126,41 @@ test('an account and a vendor-managed tool build the same card', () => {
   );
 });
 
+test('the sign-in area carries both of its buttons, grouped together', () => {
+  const { cardShell, cardSignIn } = load(['cardArea', 'cardShell', 'cardSignIn'], ['cardShell', 'cardSignIn']);
+  const { card } = cardShell({ titleId: 'account-claude-1', title: 'Main Account' });
+  const reauth = { tag: 'button', className: 'btn', textContent: 'Re-authenticate' };
+  const signout = { tag: 'button', className: 'btn ghost', textContent: 'Sign out' };
+  const area = cardSignIn(card, { signedIn: true, detail: 'Signed in', buttons: [reauth, signout] });
+
+  const status = area.children.find((c) => String(c.className).startsWith('signin-status'));
+  const row = status.children.find((c) => c.className === 'signin-actions');
+  assert.deepEqual(row.children.map((c) => c.textContent), ['Re-authenticate', 'Sign out']);
+
+  // A card with one button keeps the same shape, so the two never sit differently.
+  const { card: single } = cardShell({ titleId: 'account-tool-copilot', title: 'Copilot CLI' });
+  const only = cardSignIn(single, { signedIn: false, detail: 'Not signed in', button: reauth });
+  const onlyStatus = only.children.find((c) => String(c.className).startsWith('signin-status'));
+  assert.equal(onlyStatus.children.filter((c) => c.className === 'signin-actions').length, 1);
+});
+
+/**
+ * Signing out removes something, so the button may only appear where it can actually do
+ * that: a vendor with its own logout command, and a login that is really there. Gemini
+ * CLI and Qwen Code sign out from inside their own sessions, and a button that quietly
+ * did nothing would be worse than no button.
+ */
+test('sign-out is offered only where the vendor has a logout command and a login to remove', () => {
+  const { offersSignOut } = load(['offersSignOut'], ['offersSignOut']);
+  const claude = { id: 'claude', canSignOut: true };
+  const gemini = { id: 'gemini', canSignOut: false };
+  assert.equal(offersSignOut(claude, { signedIn: true }), true);
+  assert.equal(offersSignOut(claude, { signedIn: false }), false, 'nothing to sign out of');
+  assert.equal(offersSignOut(claude, { signedIn: null }), false, 'an unreadable status is not a login');
+  assert.equal(offersSignOut(gemini, { signedIn: true }), false, 'no vendor command to run');
+  assert.equal(offersSignOut(undefined, { signedIn: true }), false);
+});
+
 test('an unregistered folder is offered as the same card, with Register on it', () => {
   const { candidateCard } = load(
     ['setUsageSummary', 'showUsageState', 'cardArea', 'cardShell', 'cardButton', 'cardUsage', 'candidateCard'],

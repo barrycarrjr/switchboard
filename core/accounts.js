@@ -33,6 +33,7 @@ export const PROVIDERS = {
     loginHint: 'claude auth login --claudeai',
     loginCmd: 'claude auth login --claudeai',
     loginNote: 'Complete the browser sign-in; this terminal is scoped to this account.',
+    logout: { bin: 'claude', args: ['auth', 'logout'] },
     quota: 'claude',
     note: "Anthropic's terminal agent. Each account keeps its own config folder, so several subscriptions can share one machine.",
   },
@@ -45,6 +46,7 @@ export const PROVIDERS = {
     credFile: 'auth.json',
     loginHint: 'codex login',
     loginCmd: 'codex login',
+    logout: { bin: 'codex', args: ['logout'] },
     quota: 'codex',
     note: "OpenAI's terminal agent. Signs in with a ChatGPT account or an API key.",
     usageUrl: 'https://chatgpt.com/codex/settings/usage',
@@ -59,6 +61,8 @@ export const PROVIDERS = {
     loginHint: 'gemini (then choose "Login with Google")',
     loginCmd: 'gemini',
     loginNote: 'Choose "Login with Google" when the CLI asks how to authenticate.',
+    logout: null,
+    logoutNote: 'Gemini CLI signs out only from inside its own session, so Switchboard has no command to offer.',
     // Antigravity keeps its own state in ~/.gemini too, so the folder existing is no
     // evidence that Gemini CLI is signed in there. Only a credential file is.
     sharedDirName: true,
@@ -76,6 +80,8 @@ export const PROVIDERS = {
     loginHint: 'qwen (then choose "Qwen OAuth")',
     loginCmd: 'qwen',
     loginNote: 'Choose "Qwen OAuth" when the CLI asks how to authenticate.',
+    logout: null,
+    logoutNote: 'Qwen Code signs out only from inside its own session, so Switchboard has no command to offer.',
     quota: null,
     quotaNote: 'Qwen publishes no usage endpoint for OAuth sign-ins, so Switchboard has nothing honest to show.',
     note: 'Alibaba\'s terminal agent. Sign in with Qwen OAuth in its own config folder.',

@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('sb', {
   register: (candidate) => ipcRenderer.invoke('sb:register', candidate),
   fix: (action, args) => ipcRenderer.invoke('sb:fix', action, args),
   signin: (accountId) => ipcRenderer.invoke('sb:signin', accountId),
+  signout: (accountId) => ipcRenderer.invoke('sb:signout', accountId),
   quota: (accountId, force = false) => ipcRenderer.invoke('sb:quota', accountId, force),
   setUsageSource: (accountId) => ipcRenderer.invoke('sb:setUsageSource', accountId),
   openExternal: (url) => ipcRenderer.invoke('sb:openExternal', url),

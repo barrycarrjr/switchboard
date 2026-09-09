@@ -11,6 +11,7 @@ import { lastSharedQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota
 import { fetchAllProviderStatus } from '../core/provider-status.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
+import { signOutAccount, signoutSupported } from '../core/signout.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import { validateLaneTokens, mergeLaneTokenResults } from '../core/lane-tokens.js';
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, resolvePackagedExe, APPS } from '../core/apps.js';
@@ -183,6 +184,9 @@ async function stateSnapshot(forceAuthAccountId = null) {
       activeHome: activeHome(p.id),
       hasQuota: Boolean(p.quota),
       quotaNote: p.quotaNote ?? null,
+      // Whether the vendor publishes a sign-out command of its own. A card only offers
+      // the button for a tool that does; see core/signout.js.
+      canSignOut: Boolean(p.logout),
       note: p.note ?? null,
       usageUrl: p.usageUrl ?? null,
     };
@@ -836,6 +840,26 @@ ipcMain.handle('sb:signin', (_e, accountId) => {
     env: { ...accountScopedEnv(account, process.env), ...signinEnv },
   }).unref();
   return { ok: true };
+});
+
+ipcMain.handle('sb:signout', async (_e, accountId) => {
+  const account = registry().accounts.find((a) => a.id === accountId);
+  if (!account) throw new Error(`no such account: ${accountId}`);
+  const def = PROVIDERS[account.provider];
+  if (!signoutSupported(account.provider)) {
+    throw new Error(`${def?.name ?? account.provider} has no sign-out command Switchboard can run`);
+  }
+  // An in-flight request still holds the credential this is about to remove, so it is
+  // dropped before the command runs and the stored reading after it: neither may outlive
+  // the sign-in it was taken with.
+  quotaInflight.delete(accountId);
+  const executable = await toolExecutable(account.provider);
+  const result = await signOutAccount(account, { executable });
+  authCache.delete(accountId);
+  quotaCache.delete(accountId);
+  quotaInflight.delete(accountId);
+  refresh();
+  return result;
 });
 
 ipcMain.handle('sb:install', (_e, toolId, mode = 'install') => {

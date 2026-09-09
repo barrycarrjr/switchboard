@@ -6,52 +6,20 @@ import { readUserEnv, readMachineEnv } from './env.js';
 import { accountScopedEnv, CLAUDE_CREDENTIAL_ENV_VARS, PROVIDERS } from './accounts.js';
 import { toEpochMs, readClaudeAccountIdentity } from './quota.js';
 import { laneTokenIdentityMatches } from './lane-tokens.js';
+import { cliLaunch } from './cli-launch.js';
 
 const runFile = promisify(execFile);
 
 const DAY = 24 * 60 * 60 * 1000;
 const CLAUDE_AUTH_STATUS_ARGS = Object.freeze(['auth', 'status', '--json']);
-const WINDOWS_BATCH_SHIM = /\.(?:cmd|bat)$/i;
 
 /**
  * Build the deliberately fixed Claude status command without asking Node for a shell.
- *
- * Native executables can be passed straight to `execFile`, including absolute paths with
- * spaces. Windows npm shims are batch files, though, so CreateProcess cannot run them
- * directly. For those only, invoke cmd.exe explicitly with AutoRun and delayed expansion
- * disabled. The executable is the sole interpolated value; it stays inside quotes, and
- * characters that cmd expands even inside quotes are rejected. The status arguments are
- * constants rather than command input.
+ * The launch shape, and the reasoning behind it, live in core/cli-launch.js; the status
+ * arguments are constants rather than command input.
  */
 export function claudeAuthStatusLaunch(executable = 'claude') {
-  const file = String(executable ?? '').trim();
-  if (!file) throw new Error('Claude executable is required');
-
-  if (!WINDOWS_BATCH_SHIM.test(file)) {
-    return {
-      file,
-      args: [...CLAUDE_AUTH_STATUS_ARGS],
-      options: { shell: false },
-    };
-  }
-
-  // Quotes and control characters cannot occur in a normal Windows filename. Percent is
-  // legal but would trigger cmd.exe environment expansion even inside a quoted token, so
-  // decline that pathological path rather than risk executing a different command.
-  if (/[\u0000-\u001f"%]/.test(file)) {
-    throw new Error('Unsafe Claude batch-shim path');
-  }
-
-  return {
-    file: 'cmd.exe',
-    args: ['/d', '/s', '/v:off', '/c', `""${file}" auth status --json"`],
-    options: {
-      shell: false,
-      // Preserve the canonical cmd.exe /s /c outer-quote form above. Node must not apply
-      // a second Windows argv quoting pass to the command string.
-      windowsVerbatimArguments: true,
-    },
-  };
+  return cliLaunch(executable, CLAUDE_AUTH_STATUS_ARGS, { label: 'Claude' });
 }
 
 function scopesWith(name, env) {
