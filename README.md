@@ -172,6 +172,14 @@ reads the test sources and fails if one is missing. This is not housekeeping for
 sake: these directories used to be left in `%TEMP%` forever, about 1,900 a day, and `%TEMP%`
 is shared with every other program on the machine.
 
+Tests also never touch the app's own data. `npm test` loads
+`test-support/isolate-appdata.js` into every test process, which points `APPDATA` at a
+throwaway folder before any test runs, so nothing a test writes through `dataDir()` can land
+beside the real settings, accounts or usage cache, and no result depends on what that
+folder holds on the machine running the suite. `test/isolation.test.js` fails if the script
+stops loading it. A suite that writes app data should still set its own `APPDATA`, so it is
+safe when run on its own with `node --test`.
+
 `npm run catalog` regenerates `core/catalog-remote.json` from Docker's published MCP
 catalogue over plain HTTPS. Docker itself is not needed, to regenerate it or to use it: the
 result is data we ship, not a dependency. It keeps only servers reachable at an https

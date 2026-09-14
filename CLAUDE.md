@@ -54,6 +54,11 @@ sweeps stale temp dirs; run it through npm rather than bare `node --test` when y
   `test/tempdir.test.js` reads the test sources and fails if a prefix is missing. Helpers
   live in `test-support/` because `node --test` would execute anything under `test/` as a
   suite.
+- **Tests never touch the real app data folder.** `npm test` loads
+  `test-support/isolate-appdata.js`, which points `APPDATA` at a throwaway folder in every
+  test process, and `test/isolation.test.js` fails if that line leaves the script. Still set
+  `APPDATA` (or pass an explicit file) in any suite that writes through `dataDir()`, so a
+  bare `node --test` of that one file is safe too.
 - UI tests (`test/ui-*.test.js`) lift functions out of `index.html` by text: `lift()` finds a
   line starting `const name = ` or `function name(` and, for a function, reads to the next
   line that is exactly `}`. So keep page-level helpers at column 0 with their closing brace

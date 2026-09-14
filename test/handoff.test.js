@@ -2,8 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { tempDir } from '../test-support/tempdir.js';
 import { formatHandoff, getHandoffPath, writeHandoff, readHandoff, generateHandoffPrompt } from '../core/handoff.js';
 import { dataDir } from '../core/paths.js';
+
+// Handoffs are written under dataDir(), which is the real app's data folder unless APPDATA
+// says otherwise. These tests wrote and deleted a file beside the real handoffs, so a test
+// that failed half way would have left one there. They get a folder of their own, whether
+// or not the suite-wide isolation in test-support/isolate-appdata.js is loaded.
+process.env.APPDATA = tempDir('sb-handoff-appdata-');
 
 test('formatHandoff produces the required markdown schema', () => {
   const md = formatHandoff({

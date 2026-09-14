@@ -16,7 +16,7 @@
   "scripts": {
     "start": "electron .",
     "pretest": "node test-support/sweep-temp.js",
-    "test": "node --test",
+    "test": "node --import ./test-support/isolate-appdata.js --test",
     "icons": "node scripts/make-icons.js",
     "catalog": "node scripts/update-catalog.js",
     "dist": "electron-builder --win nsis"

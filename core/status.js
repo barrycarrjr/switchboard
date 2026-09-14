@@ -19,6 +19,10 @@ export async function collectStatus({
   fetchImpl = fetch,
   envReader = readUserEnv,
   now = Date.now(),
+  // Where readings are shared with the tray and other commands. Left alone it is the
+  // app's own file; a test passes a scratch one, because a test that did not was found
+  // to have written invented accounts into a machine's real usage cache.
+  quotaCacheFile = undefined,
 } = {}) {
   const usageSources = settings.usageSources ?? {};
   const providers = await Promise.all(Object.values(PROVIDERS).map(async (def) => {
@@ -28,7 +32,7 @@ export async function collectStatus({
     const accounts = await Promise.all(mine.map(async (a) => {
       const login = accountLoginState(a, now);
       const quota = def.quota && login.signedIn
-        ? await sharedProviderQuota(a, { fetchImpl, usageSource: usageSources[a.id] ?? null, now })
+        ? await sharedProviderQuota(a, { fetchImpl, usageSource: usageSources[a.id] ?? null, now, file: quotaCacheFile })
         : null;
       return { id: a.id, label: a.label, home: a.home, active: active?.id === a.id, login, quota };
     }));

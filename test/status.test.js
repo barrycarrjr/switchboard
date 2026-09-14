@@ -4,11 +4,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
 import { collectStatus, formatStatus } from '../core/status.js';
+import { quotaCacheFile } from '../core/quota-cache.js';
 
 const NOW = Date.parse('2026-08-19T22:00:00.000Z');
 
 function tmp(name) {
   return tempDir(`sb-status-${name}-`);
+}
+
+// collectStatus shares what it reads in the usage cache the tray and the CLI use. These
+// tests once wrote their invented accounts into a machine's real copy of that file, so
+// each hands collectStatus a scratch one of its own.
+function scratchCache() {
+  return path.join(tmp('cache'), 'quota-cache.json');
 }
 
 function claudeAccount(label, id) {
@@ -39,6 +47,7 @@ test('collectStatus reports every provider, marks the active account, and attach
       'tok-claude-secondary': { five_hour: { utilization: 99 }, seven_day: { utilization: 100 } },
     }),
     now: NOW,
+    quotaCacheFile: scratchCache(),
   });
 
   const claude = status.providers.find((p) => p.id === 'claude');
@@ -63,11 +72,29 @@ test('an account that is not signed in is never asked for usage', async () => {
     envReader: () => null,
     fetchImpl: async () => { called = true; return { ok: true, json: async () => ({}) }; },
     now: NOW,
+    quotaCacheFile: scratchCache(),
   });
   const account = status.providers[0].accounts[0];
   assert.equal(called, false);
   assert.equal(account.quota, null);
   assert.equal(account.login.signedIn, false);
+});
+
+test('collectStatus shares its readings in the cache file it is given, never the app\'s own', async () => {
+  const account = claudeAccount('Primary', 'claude-cache-check');
+  const file = scratchCache();
+  await collectStatus({
+    registry: { accounts: [account] },
+    envReader: () => null,
+    fetchImpl: usageFetch({ 'tok-claude-cache-check': { five_hour: { utilization: 5 } } }),
+    now: NOW,
+    quotaCacheFile: file,
+  });
+  const shared = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(shared['claude-cache-check'].result.windows[0].usedPercent, 5, 'the reading landed in the scratch file');
+  let appOwn = {};
+  try { appOwn = JSON.parse(fs.readFileSync(quotaCacheFile(), 'utf8')); } catch { /* no file at all is the best answer */ }
+  assert.equal(appOwn['claude-cache-check'], undefined, 'and not in the file the app itself reads');
 });
 
 test('formatStatus shows the numbers, the source, and when it was true', () => {
