@@ -250,6 +250,31 @@ test('a lane is the same card as the account it points at', () => {
   assert.equal(billing.children[1].children[0].innerHTML, 'Subscription');
 });
 
+// Lanes could always be dragged into a new order, but only a grab cursor said so, and only
+// once the pointer was over a card, so the order read as fixed. A reorderable lane now
+// carries a grip at its left edge.
+test('a lane that can be reordered shows a grip on its left, and one that cannot does not', () => {
+  const { laneCard } = load(['cardArea', 'dragHandle', 'cardShell', 'cardButton', 'laneCard'], ['laneCard']);
+  const lane = { id: 'lane-1', provider: 'anthropic', harness: 'claude', accountId: 'claude-1', billing: 'subscription' };
+
+  const [head] = laneCard(lane, { id: 'claude-1', label: 'Main Account' }, { onRemove() {}, reorderable: true }).children;
+  assert.deepEqual(head.children.map((c) => c.className), ['drag-handle', 'account-identity', 'account-actions'], 'the grip comes first, at the left');
+  const grip = head.children[0];
+  assert.equal(grip.title, 'Drag to reorder', 'hovering it says what it is for');
+  assert.equal(grip.attrs['aria-hidden'], 'true', 'a picture of what the mouse can do, not a control');
+
+  const [single] = laneCard(lane, { id: 'claude-1', label: 'Main Account' }, { onRemove() {} }).children;
+  assert.deepEqual(single.children.map((c) => c.className), ['account-identity', 'account-actions'], 'nothing to reorder, no grip');
+});
+
+test('the lanes and the apps list both draw the grip only when there are two to reorder', () => {
+  assert.match(HTML, /const reorderable = data\.lanes\.length > 1;/);
+  assert.match(HTML, /card\.draggable = reorderable;/);
+  assert.match(HTML, /const reorderable = apps\.length > 1;/);
+  assert.match(HTML, /row\.draggable = reorderable;/);
+  assert.match(HTML, /if \(reorderable\) row\.appendChild\(dragHandle\(\)\);/);
+});
+
 test('a metered lane with no budget says so, and offers the button that fixes it', () => {
   const { laneCard } = load(['cardArea', 'cardShell', 'cardButton', 'laneCard'], ['laneCard']);
   const lane = { id: 'lane-2', provider: 'openai', harness: 'codex', accountId: 'codex-1', billing: 'metered' };

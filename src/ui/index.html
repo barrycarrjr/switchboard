@@ -92,6 +92,12 @@
   .account-card[draggable="true"]{cursor:grab}
   .account-card.dragging{opacity:.45}
   .account-card.dragover{box-shadow:0 -3px 0 0 var(--accent)}
+  /* The grip on anything that can be dragged into a new order. A grab cursor alone only
+     appeared on hover, so a reorderable list read as fixed. Two columns of three dots,
+     drawn here so it needs no icon font. */
+  .drag-handle{flex:0 0 auto;align-self:center;width:10px;height:18px;color:var(--muted);opacity:.85;cursor:grab;background-image:radial-gradient(circle,currentColor 1.4px,transparent 1.7px);background-size:5px 6px;background-position:0 0}
+  [draggable="true"]:hover .drag-handle{opacity:1;color:var(--accent)}
+  .dragging .drag-handle{cursor:grabbing}
   .about-lead{font-size:.9rem;line-height:1.5;margin:0 0 6px}
   .lane-billing{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:.78rem;margin-bottom:5px}
   .lane-billing .chip{margin-left:0}
@@ -565,7 +571,7 @@ function renderUsageWindows(host, summary, q, onRefresh = null, now = Date.now()
  * its sign-in is. A tool that cannot report usage says so inside the usage area
  * rather than getting a card shape of its own, so the page reads as one system.
  */
-function cardShell({ titleId, title, badge = null, person = null, folder = null, actions = [], accent = false }) {
+function cardShell({ titleId, title, badge = null, person = null, folder = null, actions = [], accent = false, handle = false }) {
   const card = el('article', 'acct account-card' + (accent ? ' is-default' : ''));
   card.setAttribute('aria-labelledby', titleId);
   const header = el('header', 'account-head');
@@ -589,6 +595,7 @@ function cardShell({ titleId, title, badge = null, person = null, folder = null,
     open.addEventListener('click', () => sb.openPath(folder));
     identity.appendChild(open);
   }
+  if (handle) header.appendChild(dragHandle());
   header.appendChild(identity);
   const actionRow = el('div', 'account-actions');
   for (const action of actions) actionRow.appendChild(action);
@@ -1417,11 +1424,24 @@ async function renderProviders() {
 }
 
 /**
+ * The grip shown on anything that can be dragged into a new order. The lanes and the
+ * apps list could always be reordered, but only a grab cursor said so, and only once the
+ * pointer happened to be over them, so both read as fixed lists. Hidden from screen
+ * readers, because the grip is a picture of what the mouse can do, not a control.
+ */
+function dragHandle() {
+  const grip = el('span', 'drag-handle');
+  grip.setAttribute('aria-hidden', 'true');
+  grip.title = 'Drag to reorder';
+  return grip;
+}
+
+/**
  * One lane: an account, the billing it runs on, and what "switchboard run" may spend
  * there. The same card as an account, because a lane IS an account, seen from the
  * failover order rather than from the machine default.
  */
-function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove = null } = {}) {
+function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove = null, reorderable = false } = {}) {
   const billing = lane.billing === 'metered' ? 'Metered (API)' : 'Subscription';
   const actions = [];
   if (lane.billing === 'metered' && onSetBudget) {
@@ -1433,6 +1453,7 @@ function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove =
     title: account ? account.label : 'Account missing',
     person: `${lane.provider} via ${lane.harness}`,
     actions,
+    handle: reorderable,
   });
   // A lane that cannot be chosen is tinted like a signed-out account, so a problem
   // looks the same wherever it appears.
@@ -1480,8 +1501,10 @@ async function renderLanes() {
   if (!isCurrentRender('lanes', seq)) return;
   const panel = el('div');
 
+  // Reordering takes two lanes, so a single lane gets neither the grip nor the hint.
+  const reorderable = data.lanes.length > 1;
   const section = toolSection('lanes', 'Execution Lanes', data.lanes.length
-    ? `${data.lanes.length} lane${data.lanes.length === 1 ? '' : 's'} · drag to reorder`
+    ? `${data.lanes.length} lane${data.lanes.length === 1 ? '' : 's'}${reorderable ? ' · drag to reorder' : ''}`
     : 'No lanes yet');
   const lanesInfo = el('p', 'panelnote', 'Lanes define the fallback order and settings for "switchboard run". The first lane that is healthy gets the work, and a run stopped by a provider limit starts again in the next one. Between two Claude accounts the conversation goes with it, so the next account carries on mid-task rather than starting over. For any other hop between Claude and Codex, it writes a handoff from what the spent session said it did.');
   lanesInfo.style.marginTop = '0';
@@ -1496,6 +1519,7 @@ async function renderLanes() {
   for (const lane of data.lanes) {
     const account = state.accounts.find((a) => a.id === lane.accountId);
     const card = laneCard(lane, account, {
+      reorderable,
       budget: data.spendPolicies[lane.id]?.budget ?? null,
       onSetBudget: async () => {
         const current = data.spendPolicies[lane.id]?.budget || '';
@@ -1519,7 +1543,7 @@ async function renderLanes() {
       },
     });
 
-    card.draggable = true;
+    card.draggable = reorderable;
     card.addEventListener('dragstart', () => { draggedId = lane.id; card.classList.add('dragging'); });
     card.addEventListener('dragend', () => { draggedId = null; card.classList.remove('dragging'); });
     card.addEventListener('dragover', (ev) => { if (draggedId && draggedId !== lane.id) { ev.preventDefault(); card.classList.add('dragover'); } });
@@ -1648,10 +1672,14 @@ async function renderApps() {
   panel.appendChild(el('div', 'grouphead', 'Applications'));
   const appIds = apps.map((x) => x.id);
   let draggedId = null;
+  // The same grip the lanes have, and for the same reason: only a grab cursor on hover
+  // said this list could be reordered.
+  const reorderable = apps.length > 1;
   for (const a of apps) {
     const row = el('div', 'prov');
-    row.draggable = true;
+    row.draggable = reorderable;
     row.dataset.appId = a.id;
+    if (reorderable) row.appendChild(dragHandle());
     row.addEventListener('dragstart', () => { draggedId = a.id; row.classList.add('dragging'); });
     row.addEventListener('dragend', () => { draggedId = null; row.classList.remove('dragging'); });
     row.addEventListener('dragover', (ev) => { if (draggedId && draggedId !== a.id) { ev.preventDefault(); row.classList.add('dragover'); } });
