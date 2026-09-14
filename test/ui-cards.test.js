@@ -321,6 +321,50 @@ test('the account card puts that refusal on the switch button', () => {
   assert.match(HTML, /title: blocked \?\?/, 'the reason becomes the hover text');
 });
 
+/**
+ * With lanes and the watch switching automatically, a switch made on a card is put back
+ * within five minutes, so the card says where the choice is made instead. Whether that
+ * applies, and the words, come from core with the state; the card only draws them.
+ */
+const SWITCH_HELPERS = ['cardButton', 'switchBlockedReason', 'switchControl'];
+
+test('with the default following the lanes, a card says so where the switch would be', () => {
+  const { switchControl } = load(SWITCH_HELPERS, ['switchControl']);
+  const note = 'New Claude Code sessions follow your lane order while the watch is set to switch automatically.';
+  const p = { id: 'claude', name: 'Claude Code', followsLanes: true, followsLanesNote: note };
+  const control = switchControl(p, { id: 'b', label: 'Secondary' }, { signedIn: true });
+  assert.equal(control.innerHTML, 'Set by lane order');
+  assert.equal(control.className, 'btn link', 'quiet, and not the primary action it replaces');
+  assert.equal(control.title, note, 'hovering it says why, and how to choose by hand');
+  assert.ok(!control.disabled, 'it takes you to the lanes rather than sitting there inert');
+});
+
+test('otherwise a card offers the switch exactly as before, refusal included', () => {
+  const { switchControl } = load(SWITCH_HELPERS, ['switchControl']);
+  const p = { id: 'claude', name: 'Claude Code', followsLanes: false, followsLanesNote: null };
+  const live = switchControl(p, { id: 'b', label: 'Secondary' }, { signedIn: true });
+  assert.equal(live.innerHTML, 'Switch to this');
+  assert.equal(live.className, 'btn primary');
+  assert.equal(live.title, 'Use Secondary for new Claude Code sessions');
+  const refused = switchControl(p, { id: 'b', label: 'Secondary' }, { signedIn: false, detail: 'Not signed in' });
+  assert.equal(refused.disabled, true);
+});
+
+test('the section summary says the account in use comes from the lane order when it does', () => {
+  const { accountsSectionSummary } = load(['accountsSectionSummary'], ['accountsSectionSummary']);
+  assert.equal(accountsSectionSummary(2, 0, { label: 'Main Account' }, true), 'New sessions use: Main Account, set by lane order · 2 accounts');
+  assert.equal(accountsSectionSummary(2, 0, { label: 'Main Account' }), 'New sessions use: Main Account · 2 accounts');
+});
+
+test('the lanes page says what the watch setting adds to the order', () => {
+  const { lanesWatchNote } = load(['lanesWatchNote'], ['lanesWatchNote']);
+  assert.match(lanesWatchNote('auto'), /new terminals follow this order too/);
+  assert.match(lanesWatchNote('auto'), /does not offer to switch it by hand/);
+  assert.match(lanesWatchNote('notify'), /suggests moving/);
+  assert.equal(lanesWatchNote('off'), null, 'doing nothing adds nothing');
+  assert.equal(lanesWatchNote(undefined), null);
+});
+
 test('a disabled card button says why and cannot be clicked', () => {
   const { cardButton } = load(['cardButton'], ['cardButton']);
   let ran = 0;

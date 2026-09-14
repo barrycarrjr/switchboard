@@ -31,6 +31,13 @@ For deep-dives into architecture, guides, and full command references, see the *
   launched tools inherit it. Running processes are untouched. `switchboard run` does not
   read that default at all: it pins each command it launches to the account of the lane
   it picked, so a switch never disturbs a run already under way.
+- With the watch set to "Switch automatically", a tool that has lanes follows its lane
+  order instead of a choice made by hand, because the watch would switch a hand-picked
+  account straight back at its next check. So for that tool the Accounts page and the
+  tray show which account is in use but do not offer to switch it, and say where the
+  choice is made. Reorder the lanes to change it, or set the watch to "Tell me" or "Do
+  nothing" to choose by hand again. `switchboard use` still switches from a terminal,
+  since it cannot tell whether a watch is running, and says what one would do.
 - Signing in and signing out both stay the vendor's own job. The card's Re-authenticate
   button opens a terminal already pointed at that account's folder, which is also how you
   move a folder to a different subscription or replace a login the vendor has stopped
@@ -266,6 +273,11 @@ qualifies, because pay-per-use quota does not expire, and the usual rules still 
 signed-in account with a current reading and room on both windows is trusted with the
 default, and a default whose own meter merely failed to read is left where it is rather than
 bounced on a blip.
+
+On "Tell me", the tray says each suggestion once instead of on every five-minute pass, and
+"no account has room" once for each time it ends. A suggestion is said again only after the
+account in use has changed, or after the watch setting is chosen again. A switch the watch
+makes on "Switch automatically" is always reported.
 
 `switchboard run` is the execution broker. It reads where every lane stands, takes the
 first healthy one, and launches the vendor's own CLI with an environment scoped to that

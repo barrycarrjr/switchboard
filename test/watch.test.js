@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decideDefaultSwitch, isSpent, planDefaultSwitches, SWITCH_COOLDOWN_MS } from '../core/watch.js';
+import { decideDefaultSwitch, freshNotices, isSpent, planDefaultSwitches, SWITCH_COOLDOWN_MS } from '../core/watch.js';
+import { defaultFollowsLanes } from '../core/lanes.js';
 
 const acct = (id) => ({ id, provider: 'claude', label: id, home: `/x/${id}` });
 const snap = (session, week, extra = {}) => ({
@@ -671,7 +672,7 @@ test('the detour undoes itself: after the reset, lane priority takes the default
   });
   assert.equal(decision.kind, 'switch');
   assert.equal(decision.to, 'a');
-  assert.match(decision.reason, /Lane priority/);
+  assert.match(decision.reason, /first ready account in your lane order/);
 });
 
 test('an expiring lane already holding the default is left alone', () => {
@@ -720,7 +721,7 @@ test('an expiring lane that is signed out falls through to the ordinary order', 
   });
   assert.equal(decision.kind, 'switch');
   assert.equal(decision.to, 'a');
-  assert.match(decision.reason, /Lane priority/);
+  assert.match(decision.reason, /first ready account in your lane order/);
 });
 
 test('an expiring lane on cooldown falls through to the ordinary order', () => {
@@ -740,7 +741,7 @@ test('an expiring lane on cooldown falls through to the ordinary order', () => {
   });
   assert.equal(decision.kind, 'switch');
   assert.equal(decision.to, 'a');
-  assert.match(decision.reason, /Lane priority/);
+  assert.match(decision.reason, /first ready account in your lane order/);
 });
 
 test('the soonest-expiring lane heads the queue when several qualify', () => {
@@ -813,7 +814,7 @@ test('a default on an account with no lane is still reclaimed by the pool', () =
   });
   assert.equal(decision.kind, 'switch');
   assert.equal(decision.to, 'a');
-  assert.match(decision.reason, /Lane priority/);
+  assert.match(decision.reason, /first ready account in your lane order/);
 });
 
 test('a signed-out default still hands over; that is a reading, not the lack of one', () => {
@@ -908,7 +909,7 @@ test('a switch lane order wanted anyway is not called a spend-down', () => {
   });
   assert.equal(decision.kind, 'switch');
   assert.equal(decision.to, 'a');
-  assert.match(decision.reason, /Lane priority/);
+  assert.match(decision.reason, /first ready account in your lane order/);
 });
 
 test('a metered lane has nothing that expires', () => {
@@ -945,4 +946,114 @@ test('a metered lane is judged by its spend policy, not by a usage meter it does
     snapshots: { a: snap(5, 10) },
   });
   assert.equal(decision.to, 'b');
+});
+
+// ---- A choice made by hand, and what the watch says about it ----
+
+// The premise behind withholding "Switch to this": with lanes and the watch switching
+// automatically, an account picked by hand is put back at the very next pass. If this
+// ever stops being true, the button should come back, and this test is what says so.
+test('an account picked by hand while the default follows the lanes is switched straight back', () => {
+  const lanes = [laneFor('l-a', 'a'), laneFor('l-b', 'b')];
+  assert.equal(defaultFollowsLanes({ quotaWatch: 'auto', lanes }, 'claude'), true);
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/b'), // the hand-picked account
+    settings: { quotaWatch: 'auto', lanes, lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(3, 0), b: snap(8, 82) },
+  });
+  assert.equal(decision.kind, 'switch');
+  assert.equal(decision.to, 'a');
+});
+
+test('the reason names accounts the way the rest of the app does, never a lane id', () => {
+  const registry = { accounts: [
+    { id: 'a', provider: 'claude', label: 'Main Account', home: '/x/a' },
+    { id: 'b', provider: 'claude', label: 'Secondary', home: '/x/b' },
+  ] };
+  const lanes = [laneFor('lane-1789146805336', 'a'), laneFor('lane-1789146805999', 'b')];
+
+  const [back] = planDefaultSwitches({
+    ...planBase,
+    registry,
+    envReader: envSaying('/x/b'),
+    settings: { quotaWatch: 'notify', lanes, lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(3, 0), b: snap(8, 82) },
+  });
+  assert.equal(back.reason, 'Main Account is the first ready account in your lane order');
+
+  const [away] = planDefaultSwitches({
+    ...planBase,
+    registry,
+    settings: { quotaWatch: 'notify', lanes, lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(92, 10), b: snap(8, 20) },
+  });
+  assert.equal(away.reason, 'Main Account is close to its limit; Secondary is the first ready account in your lane order');
+
+  const [spend] = planDefaultSwitches({
+    ...planBase,
+    registry,
+    settings: { quotaWatch: 'notify', lanes, lastAutoSwitchAt: 0 },
+    snapshots: {
+      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+      b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
+    },
+  });
+  assert.equal(spend.reason, 'Secondary has unused quota that expires soon; spending it down before Main Account');
+  for (const d of [back, away, spend]) assert.doesNotMatch(d.reason, /lane-\d/);
+});
+
+// "Tell me" repeated its suggestion on every five-minute pass for as long as the default
+// sat off the first lane, which could be all day, and that is a state somebody who chose
+// "Tell me" over "Switch automatically" may have picked on purpose.
+const suggestion = (from = 'b', to = 'a') => ({ kind: 'suggest', provider: 'claude', from, to, reason: 'r' });
+
+test('an unchanged suggestion is said once, not on every pass', () => {
+  const active = { claude: 'b' };
+  let memory = {};
+  const said = [];
+  for (let pass = 0; pass < 12; pass++) {
+    const d = suggestion();
+    const result = freshNotices([d], memory, active);
+    memory = result.memory;
+    said.push(result.notices.length);
+  }
+  assert.deepEqual(said, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'an hour of passes, one notification');
+});
+
+test('a pass with nothing to say forgets nothing, so a reading that failed once does not repeat it', () => {
+  const active = { claude: 'b' };
+  let { memory } = freshNotices([suggestion()], {}, active);
+  ({ memory } = freshNotices([], memory, active));
+  assert.equal(freshNotices([suggestion()], memory, active).notices.length, 0);
+});
+
+test('a different suggestion is news, and so is the same one after the account has moved', () => {
+  let { memory } = freshNotices([suggestion('b', 'a')], {}, { claude: 'b' });
+  assert.equal(freshNotices([suggestion('b', 'c')], memory, { claude: 'b' }).notices.length, 1, 'somewhere else to go');
+
+  ({ memory } = freshNotices([], memory, { claude: 'a' })); // switched, by hand or from the notification
+  ({ memory } = freshNotices([], memory, { claude: 'b' })); // and back again later
+  assert.equal(freshNotices([suggestion('b', 'a')], memory, { claude: 'b' }).notices.length, 1, 'coming back to it is said again');
+});
+
+test('running out is said once for each time it ends, and a switch is always reported', () => {
+  const active = { claude: 'a' };
+  const out = (resetsAt) => ({ kind: 'exhausted', provider: 'claude', resetsAt });
+  let { notices, memory } = freshNotices([out(5_000)], {}, active);
+  assert.equal(notices.length, 1);
+  ({ notices, memory } = freshNotices([out(5_000)], memory, active));
+  assert.equal(notices.length, 0);
+  ({ notices, memory } = freshNotices([out(9_000)], memory, active));
+  assert.equal(notices.length, 1, 'a later end is a new state of affairs');
+
+  const pass = freshNotices([{ kind: 'switch', provider: 'claude', from: 'a', to: 'b' }, { kind: 'pin-blocked', provider: 'claude' }], memory, active);
+  assert.deepEqual(pass.notices, [], 'switches and the override alarm are not remembered here; the tray reports them itself');
+});
+
+test('what was said about one tool never silences another', () => {
+  const active = { claude: 'b', codex: 'y' };
+  let { memory } = freshNotices([suggestion('b', 'a')], {}, active);
+  const codex = { kind: 'suggest', provider: 'codex', from: 'b', to: 'a', reason: 'r' };
+  assert.equal(freshNotices([codex], memory, active).notices.length, 1);
 });

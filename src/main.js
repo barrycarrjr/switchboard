@@ -29,7 +29,8 @@ const pkgMeta = createRequire(import.meta.url)('../package.json');
 function effectiveUpdateRepo() {
   return loadSettings().updateRepo ?? pkgMeta.updateRepo ?? null;
 }
-import { planDefaultSwitches } from '../core/watch.js';
+import { freshNotices, planDefaultSwitches } from '../core/watch.js';
+import { defaultFollowsLanes, followsLanesNote } from '../core/lanes.js';
 import { addLane, removeLane, reorderLanes, setLaneBudget } from '../core/lane-admin.js';
 import { accountNote, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
@@ -169,18 +170,24 @@ function saveRecoveryConfig(kind) {
 
 async function stateSnapshot(forceAuthAccountId = null) {
   const reg = registry();
+  const settings = loadSettings();
   // Whether each tool is actually on this machine. Through detectInstalled, which only
   // looks for the executable: asking each tool its version is what makes a full detect
   // take seconds, and the Accounts page has no use for the version.
   const installed = new Set((await detectInstalled()).filter((t) => t.installed).map((t) => t.id));
   const providers = {};
   for (const p of Object.values(PROVIDERS)) {
+    // Decided in core and sent with its wording, so the page offers a switch exactly
+    // when the tray and the switch itself would allow one. See defaultFollowsLanes.
+    const followsLanes = defaultFollowsLanes(settings, p.id);
     providers[p.id] = {
       id: p.id,
       name: p.name,
       envVar: p.envVar,
       installed: installed.has(p.id),
       activeAccountId: activeAccount(reg, p.id)?.id ?? null,
+      followsLanes,
+      followsLanesNote: followsLanes ? followsLanesNote(p.name) : null,
       activeHome: activeHome(p.id),
       hasQuota: Boolean(p.quota),
       quotaNote: p.quotaNote ?? null,
@@ -197,7 +204,7 @@ async function stateSnapshot(forceAuthAccountId = null) {
     ...a,
     login: await cachedLoginState(a, a.id === forceAuthAccountId),
   })));
-  return { accounts, providers, version: app.getVersion() };
+  return { accounts, providers, watchMode: settings.quotaWatch, version: app.getVersion() };
 }
 
 function showWindow(hash = '') {
@@ -334,6 +341,7 @@ function trayInputs() {
     alsoSignedIn: trayFacts.alsoSignedIn,
     terminals: trayFacts.terminals,
     watchMode: settings.quotaWatch,
+    lanes: settings.lanes,
     overrideBlocking: configuredClaudeOverrides().length > 0,
     strandedProviders: stranded,
     update: trayFacts.update,
@@ -361,6 +369,7 @@ function buildTrayMenu(inputs = trayInputs()) {
           label: row.label,
           type: 'radio',
           checked: row.checked,
+          enabled: row.enabled !== false,
           click: () => switchDefaultTo(row.accountId),
         };
       case 'submenu':
@@ -400,6 +409,17 @@ function buildTrayMenu(inputs = trayInputs()) {
 }
 
 /**
+ * Why an account may not be made the default by hand right now, or null. The tray rows
+ * and the Accounts page stop offering the switch in this state, but a menu or a card
+ * drawn before the lanes or the watch setting changed can still ask, and a switch the
+ * watch undoes within minutes is worse than a refusal that says where the choice lives.
+ */
+function manualSwitchRefusal(account) {
+  if (!account || !defaultFollowsLanes(loadSettings(), account.provider)) return null;
+  return followsLanesNote(PROVIDERS[account.provider]?.name ?? account.provider);
+}
+
+/**
  * A tray click must never take the app down, so a failure is shown rather than thrown.
  *
  * The registry is read here rather than trusted from when the menu was built: it may have
@@ -409,7 +429,10 @@ function buildTrayMenu(inputs = trayInputs()) {
  */
 function switchDefaultTo(accountId) {
   try {
-    setActive(registry(), accountId);
+    const reg = registry();
+    const refusal = manualSwitchRefusal(reg.accounts.find((a) => a.id === accountId));
+    if (refusal) throw new Error(refusal);
+    setActive(reg, accountId);
     refresh();
   } catch (e) {
     refresh();
@@ -451,11 +474,16 @@ function setWatchMode(mode) {
   const settings = loadSettings();
   settings.quotaWatch = mode;
   saveSettings(settings);
+  // Choosing a mode again is asking to be told again.
+  watchNotices = {};
   refresh();
   if (mode !== 'off') runQuotaWatch();
 }
 
 let pinNotified = false;
+// What the watch has already told the user, so an unchanged suggestion or "no account has
+// room" is said once rather than every five minutes. See freshNotices.
+let watchNotices = {};
 
 function configuredClaudeOverrides() {
   return configuredClaudeCredentialOverrides({
@@ -549,7 +577,12 @@ async function runQuotaWatch() {
       now: Date.now(),
     });
 
+    const activeIds = Object.fromEntries(Object.keys(PROVIDERS).map((id) => [id, activeAccount(reg, id)?.id ?? null]));
+    const { notices, memory } = freshNotices(switchDecisions, watchNotices, activeIds);
+    watchNotices = memory;
+
     for (const decision of switchDecisions) {
+      if ((decision.kind === 'exhausted' || decision.kind === 'suggest') && !notices.includes(decision)) continue;
       if (decision.kind === 'pin-blocked') {
         if (!pinNotified) {
           pinNotified = true;
@@ -743,6 +776,8 @@ ipcMain.handle('sb:setActive', async (_e, id) => {
   const reg = registry();
   const chosen = reg.accounts.find((a) => a.id === id);
   if (!chosen) throw new Error(`no such account: ${id}`);
+  const refusal = manualSwitchRefusal(chosen);
+  if (refusal) throw new Error(refusal);
   // The button for a signed-out account is disabled, but a card drawn before the login
   // went stale could still send this. The usage watch refuses the same switch, so the
   // deliberate one is refused too rather than pointing new terminals at a dead folder.
@@ -1359,10 +1394,14 @@ ipcMain.handle('sb:getLanes', () => {
 // The lane rules live in core so a lane added here and a lane added from a terminal are
 // the same shape, checked the same way. The renderer sends the account and the billing;
 // which harness and vendor that implies is not its decision to make.
+// Each lane change ends with refresh(): whether a tool has lanes decides whether the tray
+// and the Accounts page offer to switch its account by hand (see defaultFollowsLanes), so
+// both are redrawn at once rather than at the next watch pass.
 ipcMain.handle('sb:addLane', (_e, wanted) => {
   try {
     const { settings, lane } = addLane(loadSettings(), wanted, registry().accounts);
     saveSettings(settings);
+    refresh();
     return { ok: true, lane };
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
@@ -1372,6 +1411,7 @@ ipcMain.handle('sb:addLane', (_e, wanted) => {
 ipcMain.handle('sb:removeLane', (_e, laneId) => {
   try {
     saveSettings(removeLane(loadSettings(), laneId));
+    refresh();
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
@@ -1380,6 +1420,7 @@ ipcMain.handle('sb:removeLane', (_e, laneId) => {
 
 ipcMain.handle('sb:updateLaneOrder', (_e, laneIds) => {
   saveSettings(reorderLanes(loadSettings(), laneIds));
+  refresh();
   return { ok: true };
 });
 

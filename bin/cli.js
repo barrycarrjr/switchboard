@@ -12,7 +12,7 @@ import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTo
 import { readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
-import { selectLane, laneAnswersTo, selectionFailure } from '../core/lanes.js';
+import { selectLane, laneAnswersTo, selectionFailure, defaultFollowsLanes, switchedAgainstLanesNote } from '../core/lanes.js';
 import { readHandoff, writeHandoff, generateHandoffPrompt } from '../core/handoff.js';
 import { CARRYABLE_HARNESSES, callerManagesSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest, transcriptSupport } from '../core/transcripts.js';
 import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
@@ -652,6 +652,7 @@ async function main() {
       if (!account) { out('No matching account. See: switchboard accounts'); process.exitCode = 1; return; }
       setActive(registry, account.id);
       out(`New terminals and apps will use ${PROVIDERS[account.provider].name} account "${account.label}". Running processes are unchanged.`);
+      if (defaultFollowsLanes(loadSettings(), account.provider)) out(switchedAgainstLanesNote(PROVIDERS[account.provider].name));
       return;
     }
     case 'detect': {

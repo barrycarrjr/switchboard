@@ -1,3 +1,4 @@
+import { defaultFollowsLanes } from './lanes.js';
 import { readable, spentEvidence } from './lanes-util.js';
 
 /**
@@ -87,6 +88,7 @@ export function trayModel({
   alsoSignedIn = [],
   terminals = [],
   watchMode = 'off',
+  lanes = [],
   overrideBlocking = false,
   strandedProviders = [],
   update = null,
@@ -102,7 +104,11 @@ export function trayModel({
   for (const provider of providers) {
     const mine = accounts.filter((a) => a.provider === provider.id);
     if (!mine.length) continue; // a tool with no accounts is the window's business
-    rows.push({ kind: 'heading', label: provider.name });
+    // When the watch keeps this tool on its lane order, a row picked here would be
+    // switched straight back, so the rows still show which account is in use but no
+    // longer offer to change it, and the heading says why. See defaultFollowsLanes.
+    const followsLanes = defaultFollowsLanes({ quotaWatch: watchMode, lanes }, provider.id);
+    rows.push({ kind: 'heading', label: followsLanes ? `${provider.name}, set by lane order` : provider.name });
     for (const account of mine) {
       const note = notes[account.id];
       rows.push({
@@ -110,6 +116,7 @@ export function trayModel({
         accountId: account.id,
         label: note ? `${account.label}, ${note}` : account.label,
         checked: activeIds[provider.id] === account.id,
+        enabled: !followsLanes,
       });
     }
     rows.push({ kind: 'separator' });

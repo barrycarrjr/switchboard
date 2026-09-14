@@ -278,7 +278,7 @@ export function planDefaultSwitches({
 
       // A switch that exists only because of the spend-down reorder, as opposed to one
       // lane order wanted anyway. It decides the reason below: when a lane jumped the
-      // queue, calling it the highest lane with room would be false.
+      // queue, calling it the first ready account in the order would be false.
       const spendDownOnly = expiring.includes(selected.lane) && selected.lane !== plainPick?.lane;
 
       if (provider === 'claude' && pinPresent) {
@@ -298,16 +298,19 @@ export function planDefaultSwitches({
       const sinceAuto = now - (settings.lastAutoSwitchAt ?? 0);
       if (sinceAuto >= 0 && sinceAuto < SWITCH_COOLDOWN_MS) continue;
 
+      // The reason ends up in a notification, so it names accounts the way the rest of
+      // the app does. It used to name the lane's id, which is a timestamp nobody has seen.
+      const target = accounts.find((a) => a.id === selected.lane.accountId)?.label ?? selected.lane.accountId;
       decisions.push({
         kind: mode === 'auto' ? 'switch' : 'suggest',
         provider,
         to: selected.lane.accountId,
         from: active.id,
         reason: spendDownOnly
-          ? `${selected.lane.id} has unused quota that expires soon; spending it down before ${active.label}`
+          ? `${target} has unused quota that expires soon; spending it down before ${active.label}`
           : isRunningOut(snapshots[active.id]) === true
-            ? `${active.label} is close to its limit; ${selected.lane.id} is the highest ${provider} lane with room`
-            : `Lane priority dictates ${selected.lane.id} is the highest healthy ${provider} account`,
+            ? `${active.label} is close to its limit; ${target} is the first ready account in your lane order`
+            : `${target} is the first ready account in your lane order`,
       });
       continue;
     }
@@ -329,4 +332,48 @@ export function planDefaultSwitches({
   }
 
   return decisions;
+}
+
+/** What makes two decisions the same piece of news, or null for a kind never repeated. */
+function noticeKey(decision) {
+  if (decision.kind === 'suggest') return `suggest:${decision.from}:${decision.to}`;
+  if (decision.kind === 'exhausted') return `exhausted:${decision.resetsAt ?? ''}`;
+  return null;
+}
+
+/**
+ * Which of a pass's decisions are news, given what earlier passes already said.
+ *
+ * The watch decides afresh every five minutes, and a decision that has not changed is not
+ * worth saying again. Shown on every pass, "Tell me" became a reminder every five minutes
+ * for as long as the default sat anywhere but the first lane with room, which is a state
+ * somebody who chose "Tell me" over "Switch automatically" may well have picked on
+ * purpose, and "no account has room" repeated itself until a window reset. So each is
+ * said once. A suggestion is the same one while it would move the same account to the
+ * same account, and running out is the same while it ends at the same time. When the
+ * account a tool is set to changes, everything said about that tool is forgotten, so
+ * coming back to the same state later is said again. A pass with nothing to say forgets
+ * nothing, because a reading that failed once is not a change of situation.
+ *
+ * Only suggestions and running out are remembered. A switch changes the machine and is
+ * always reported, and the override alarm keeps its own once-per-run flag in the tray.
+ *
+ * Pure: memory in, memory out, so the tray keeps it between passes and a test can walk
+ * it through a day of them.
+ */
+export function freshNotices(decisions = [], memory = {}, activeIds = {}) {
+  const next = {};
+  for (const [provider, entry] of Object.entries(memory)) {
+    if (entry && entry.active === (activeIds[provider] ?? null)) next[provider] = { active: entry.active, said: [...entry.said] };
+  }
+  const notices = [];
+  for (const decision of decisions) {
+    const key = noticeKey(decision);
+    if (!key) continue;
+    const entry = next[decision.provider] ??= { active: activeIds[decision.provider] ?? null, said: [] };
+    if (entry.said.includes(key)) continue;
+    entry.said.push(key);
+    notices.push(decision);
+  }
+  return { notices, memory: next };
 }

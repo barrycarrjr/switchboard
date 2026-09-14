@@ -38,6 +38,11 @@
   .btn[disabled]{opacity:.6;cursor:default}
   .btn.ghost{border:none;background:none;color:var(--muted);padding:3px 6px}
   .btn.ghost:hover{color:var(--bad)}
+  /* Takes you to where something is decided, rather than doing it. Quiet like ghost,
+     but it turns the accent colour on hover, because ghost's red means "removes". */
+  .btn.link{border:none;background:none;color:var(--muted);padding:3px 6px;text-decoration:underline dotted;text-underline-offset:3px}
+  .btn.link:hover{color:var(--accent)}
+  .account-actions .btn.link{padding:4px 7px}
   /* Registered, but the client says it has no sign-in for it yet. */
   .btn.pending{border-color:var(--warn,#c98a00);color:var(--warn,#c98a00);background:#fff8e8}
   .subtabs{display:flex;gap:6px;margin:2px 0 10px}
@@ -592,8 +597,8 @@ function cardShell({ titleId, title, badge = null, person = null, folder = null,
   return { card, name };
 }
 
-function cardButton(label, onClick, { primary = false, ghost = false, title = null, disabled = false } = {}) {
-  const button = el('button', 'btn' + (primary ? ' primary' : '') + (ghost ? ' ghost' : ''), esc(label));
+function cardButton(label, onClick, { primary = false, ghost = false, link = false, title = null, disabled = false } = {}) {
+  const button = el('button', 'btn' + (primary ? ' primary' : '') + (ghost ? ' ghost' : '') + (link ? ' link' : ''), esc(label));
   button.type = 'button';
   // A disabled button keeps its title, so hovering it still says why it cannot be used.
   // The handler is left off rather than trusting the browser to swallow the click, so
@@ -727,9 +732,9 @@ function shelfNote(provider, accounts) {
  * that all quietly did nothing read as a working account, so the section is hidden now
  * and the shelf accounts for it instead. See `splitToolsByPresence`.
  */
-function accountsSectionSummary(accountCount, candidateCount, active) {
+function accountsSectionSummary(accountCount, candidateCount, active, followsLanes = false) {
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-  if (active) return `New sessions use: ${active.label} · ${plural(accountCount, 'account')}`;
+  if (active) return `New sessions use: ${active.label}${followsLanes ? ', set by lane order' : ''} · ${plural(accountCount, 'account')}`;
   if (accountCount) return `${plural(accountCount, 'account')} · the folder in use is not registered`;
   return `${plural(candidateCount, 'folder')} found, none registered yet`;
 }
@@ -758,6 +763,36 @@ function switchBlockedReason(label, login) {
   if (login?.signedIn !== false) return null;
   const detail = String(login.detail || 'Not signed in').replace(/\.+$/, '');
   return `${detail}. Sign ${label} in before making it the default.`;
+}
+
+/**
+ * What a card offers for making its account the one new sessions use.
+ *
+ * Normally the switch. When the tool's default follows its lane order, the watch would
+ * switch a choice made here straight back within five minutes, so the card says where
+ * the choice is made instead and takes you there. The decision and its wording both come
+ * from core (defaultFollowsLanes), so this cannot offer what the tray refuses.
+ */
+function switchControl(p, a, login) {
+  if (p.followsLanes) {
+    return cardButton('Set by lane order', () => openTab('lanes'), {
+      link: true,
+      title: p.followsLanesNote || 'New sessions follow your lane order.',
+    });
+  }
+  const blocked = switchBlockedReason(a.label, login);
+  return cardButton('Switch to this', async () => {
+    try {
+      await sb.setActive(a.id);
+      toast(`New terminals and apps will use ${p.name}: ${a.label}. Running processes are unchanged.`);
+    } catch (e) {
+      toast('Switch failed: ' + (e.message || e));
+    }
+  }, {
+    primary: true,
+    disabled: Boolean(blocked),
+    title: blocked ?? `Use ${a.label} for new ${p.name} sessions`,
+  });
 }
 
 /**
@@ -836,21 +871,7 @@ function accountCard(p, account) {
 
   const titleId = `account-${p.id}-${a.id}`.replace(/[^a-zA-Z0-9_-]/g, '-');
   const actions = [];
-  if (!isDefault) {
-    const blocked = switchBlockedReason(a.label, login);
-    actions.push(cardButton('Switch to this', async () => {
-      try {
-        await sb.setActive(a.id);
-        toast(`New terminals and apps will use ${p.name}: ${a.label}. Running processes are unchanged.`);
-      } catch (e) {
-        toast('Switch failed: ' + (e.message || e));
-      }
-    }, {
-      primary: true,
-      disabled: Boolean(blocked),
-      title: blocked ?? `Use ${a.label} for new ${p.name} sessions`,
-    }));
-  }
+  if (!isDefault) actions.push(switchControl(p, a, login));
   const rename = cardButton('Rename', () => startRename());
   rename.setAttribute('aria-label', `Rename ${a.label}`);
   actions.push(rename);
@@ -1215,7 +1236,7 @@ async function renderAccounts() {
       .sort((a, b) => Number(b.id === p.activeAccountId) - Number(a.id === p.activeAccountId));
     const found = (state.candidates || []).filter((x) => x.provider === p.id);
     const active = mine.find((a) => a.id === p.activeAccountId);
-    const section = toolSection(p.id, p.name, accountsSectionSummary(mine.length, found.length, active));
+    const section = toolSection(p.id, p.name, accountsSectionSummary(mine.length, found.length, active, p.followsLanes === true));
 
     if (mine.length) {
       const accountGrid = el('div', 'account-grid');
@@ -1433,6 +1454,18 @@ function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove =
   return card;
 }
 
+/**
+ * What the watch setting adds to the lane order, in one sentence, or null when it adds
+ * nothing. This page described lanes as the order for "switchboard run" alone, while the
+ * watch on "Switch automatically" also keeps new terminals on them. That is how a switch
+ * made on the Accounts page came to be undone with nothing on screen saying why.
+ */
+function lanesWatchNote(watchMode) {
+  if (watchMode === 'auto') return 'The tray is set to switch automatically, so new terminals follow this order too: each tool uses its first ready account in this list, and the Accounts page does not offer to switch it by hand.';
+  if (watchMode === 'notify') return 'The tray is set to tell you, so it suggests moving each tool\'s new terminals to its first ready account in this list.';
+  return null;
+}
+
 async function renderLanes() {
   const seq = beginRender('lanes');
   const realPanel = $('#tab-lanes');
@@ -1453,6 +1486,8 @@ async function renderLanes() {
   const lanesInfo = el('p', 'panelnote', 'Lanes define the fallback order and settings for "switchboard run". The first lane that is healthy gets the work, and a run stopped by a provider limit starts again in the next one. Between two Claude accounts the conversation goes with it, so the next account carries on mid-task rather than starting over. For any other hop between Claude and Codex, it writes a handoff from what the spent session said it did.');
   lanesInfo.style.marginTop = '0';
   section.appendChild(lanesInfo);
+  const watchNote = data.lanes.length ? lanesWatchNote(state.watchMode) : null;
+  if (watchNote) section.appendChild(el('p', 'panelnote', esc(watchNote)));
 
   const laneIds = data.lanes.map((l) => l.id);
   let draggedId = null;

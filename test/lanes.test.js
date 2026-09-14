@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { laneStatus, selectLane, laneAnswersTo, selectionFailure, worthSwitchingTo, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
+import { laneStatus, selectLane, laneAnswersTo, selectionFailure, worthSwitchingTo, defaultFollowsLanes, followsLanesNote, switchedAgainstLanesNote, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
 import { expiringWeek, hasHeadroom, isRunningOut, spentEvidence, tightestWindow, SPEND_DOWN_HORIZON_MS, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
 
 function makeLane(id, accountId, billing = 'subscription') {
@@ -532,6 +532,47 @@ test('no selection at all never switches anything', () => {
   assert.equal(worthSwitchingTo(null), false);
   assert.equal(worthSwitchingTo(undefined), false);
   assert.equal(worthSwitchingTo({ lane: makeLane('l1', 'a1') }), false, 'a result with no status is not a vouched one');
+});
+
+// ---- When the default belongs to the lane order ----
+//
+// On 2026-09-14 "Switch to this" was clicked on a second Claude account while the watch was
+// set to switch automatically and both accounts were lanes. The switch worked, and a few
+// minutes later the watch put the default back on the first lane, as it is meant to. The
+// button was the thing that was wrong: it offered a choice the app was about to undo.
+
+test('the default follows the lanes only with the watch switching automatically', () => {
+  const lanes = [makeLane('l1', 'a1'), makeLane('l2', 'a2')];
+  assert.equal(defaultFollowsLanes({ quotaWatch: 'auto', lanes }, 'claude'), true);
+  assert.equal(defaultFollowsLanes({ quotaWatch: 'notify', lanes }, 'claude'), false, 'telling you moves nothing');
+  assert.equal(defaultFollowsLanes({ quotaWatch: 'off', lanes }, 'claude'), false);
+});
+
+test('the default follows the lanes only for a tool that has some', () => {
+  const codexOnly = [{ ...makeLane('l1', 'c1'), harness: 'codex', provider: 'openai' }];
+  assert.equal(defaultFollowsLanes({ quotaWatch: 'auto', lanes: codexOnly }, 'claude'), false, 'Claude has no order to follow');
+  assert.equal(defaultFollowsLanes({ quotaWatch: 'auto', lanes: codexOnly }, 'codex'), true);
+  assert.equal(defaultFollowsLanes({ quotaWatch: 'auto', lanes: [] }, 'claude'), false);
+  assert.equal(defaultFollowsLanes({ quotaWatch: 'auto' }, 'claude'), false, 'settings with no lanes key at all');
+  assert.equal(defaultFollowsLanes(null, 'claude'), false);
+});
+
+// Built from code points so this file keeps to the no-dash rule it is checking.
+const DASHES = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
+
+test('where the switch is withheld, the words say how to choose by hand', () => {
+  const note = followsLanesNote('Claude Code');
+  assert.match(note, /^New Claude Code sessions follow your lane order/);
+  assert.match(note, /Reorder the lanes/);
+  assert.match(note, /"Tell me" or "Do nothing"/, 'names the tray settings that give the choice back');
+  assert.doesNotMatch(note, DASHES, 'no dashes in user-facing words');
+});
+
+test('a switch made from a terminal anyway says what a running watch will do', () => {
+  const note = switchedAgainstLanesNote('Claude Code');
+  assert.match(note, /if the tray app or "switchboard watch" is running/, 'it cannot know that a watch is running, so it does not claim one');
+  assert.match(note, /first ready account in your lane order/);
+  assert.doesNotMatch(note, DASHES);
 });
 
 // Headroom: how full a window may get before an account stops being somewhere to send new

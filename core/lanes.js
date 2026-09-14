@@ -85,6 +85,45 @@ export function worthSwitchingTo(selected) {
 }
 
 /**
+ * Whether a tool's machine default follows its lane order, so that choosing an account
+ * by hand is not offered.
+ *
+ * With the watch on "Switch automatically", planDefaultSwitches keeps a tool that has
+ * lanes on the first lane with room, so an account picked by hand is switched straight
+ * back at the next pass, within five minutes. A switch offered in that state only
+ * appears to work, and that is how it was found: the button did its job and the default
+ * quietly went back. The Accounts page, the tray menu, the switch itself and
+ * `switchboard use` all ask this one question, so none of them can offer what another
+ * would undo.
+ *
+ * Nothing moves a choice made by hand when the watch only tells you or does nothing, or
+ * when the tool has no lanes, so the switch stays on offer then, exactly as before.
+ */
+export function defaultFollowsLanes(settings, provider) {
+  return settings?.quotaWatch === 'auto'
+    && (settings.lanes ?? []).some((lane) => lane?.harness === provider);
+}
+
+/**
+ * The same fact in words, for wherever a switch by hand would otherwise be offered. It
+ * says how to get the choice back, because a control that disappears without saying
+ * where it went reads as a fault.
+ */
+export function followsLanesNote(toolName) {
+  return `New ${toolName} sessions follow your lane order while the watch is set to switch automatically. Reorder the lanes to change which account they use, or set "When an account runs out" to "Tell me" or "Do nothing" in the tray menu to choose one by hand.`;
+}
+
+/**
+ * What `switchboard use` says after switching in that state anyway. Unlike the tray, a
+ * terminal command cannot tell whether any watch is running to undo the switch, and no
+ * command changes the watch setting, so refusing could leave a machine with no way to
+ * switch from a terminal at all. It switches, and says what a running watch will do.
+ */
+export function switchedAgainstLanesNote(toolName) {
+  return `Note: ${toolName} has lanes and the watch is set to switch automatically, so if the tray app or "switchboard watch" is running, it will move new ${toolName} sessions back to the first ready account in your lane order at its next check. Reorder the lanes to change which account that is.`;
+}
+
+/**
  * The three ways lane selection can come up empty. They are kept apart because a caller
  * does something different about each: configure lanes, correct the request, or wait.
  *

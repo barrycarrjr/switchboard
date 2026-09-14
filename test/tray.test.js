@@ -48,6 +48,32 @@ test('the account in use is the one ticked, per tool', () => {
   assert.deepEqual(ticked, ['claude-account-2', 'codex-default'], 'one per tool, and only the active one');
 });
 
+// With lanes and the watch switching automatically, a row picked here would be switched
+// straight back within five minutes, so the rows stop being choices for that tool only.
+const LANES = [
+  { id: 'lane-1', harness: 'claude', provider: 'anthropic', accountId: 'claude-default', billing: 'subscription' },
+  { id: 'lane-2', harness: 'claude', provider: 'anthropic', accountId: 'claude-account-2', billing: 'subscription' },
+];
+
+test('a tool whose default follows its lanes shows its accounts without offering to switch', () => {
+  const rows = model({ watchMode: 'auto', lanes: LANES });
+  const claude = kinds(rows, 'account').filter((r) => r.accountId.startsWith('claude'));
+  assert.deepEqual(claude.map((r) => r.enabled), [false, false]);
+  assert.deepEqual(claude.filter((r) => r.checked).map((r) => r.accountId), ['claude-account-2'], 'the one in use is still ticked');
+  assert.ok(kinds(rows, 'heading').some((r) => r.label === 'Claude Code, set by lane order'), 'and the heading says why');
+  const codex = kinds(rows, 'account').find((r) => r.accountId === 'codex-default');
+  assert.equal(codex.enabled, true, 'a tool with no lanes is untouched');
+  assert.ok(kinds(rows, 'heading').some((r) => r.label === 'Codex'));
+});
+
+test('the rows stay choices when the watch only tells you, does nothing, or there are no lanes', () => {
+  for (const over of [{ watchMode: 'notify', lanes: LANES }, { watchMode: 'off', lanes: LANES }, { watchMode: 'auto', lanes: [] }]) {
+    const rows = model(over);
+    assert.ok(kinds(rows, 'account').every((r) => r.enabled === true), JSON.stringify(over.watchMode));
+    assert.ok(kinds(rows, 'heading').some((r) => r.label === 'Claude Code'));
+  }
+});
+
 test('a tool with no accounts of its own is left out', () => {
   const rows = model({ accounts: ACCOUNTS.filter((a) => a.provider === 'claude') });
   assert.ok(!kinds(rows, 'heading').some((r) => r.label === 'Codex'), 'the window is where you add one');
