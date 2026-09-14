@@ -75,6 +75,13 @@ const QUOTA_REASONS = {
   unavailable: 'usage unavailable right now',
 };
 
+const REFRESH_PROBLEMS = {
+  auth: 'was skipped because the sign-in needs a refresh',
+  'rate-limited': 'was rate-limited',
+  'no-credentials': 'had no readable usage credential',
+  unavailable: 'failed',
+};
+
 function quotaLines(quota, now) {
   if (!quota) return [];
   if (quota.error) return [QUOTA_REASONS[quota.error] ?? QUOTA_REASONS.unavailable];
@@ -90,6 +97,9 @@ function quotaLines(quota, now) {
   if (quota.plan) notes.push(`plan: ${quota.plan}`);
   if (quota.source === 'session-log') notes.push(`from this account's last session, ${ago(quota.sampledAt, now)}`);
   if (quota.source === 'desktop') notes.push(`via Claude Desktop, sampled ${ago(quota.sampledAt, now)}`);
+  // A last known reading kept because the newer check failed. Its age is the whole
+  // point, so it is said even though a fresh reading from the same source says nothing.
+  if (quota.refreshError && quota.observedAt) notes.push(`last checked ${ago(quota.observedAt, now)}, a newer check ${REFRESH_PROBLEMS[quota.refreshError] ?? REFRESH_PROBLEMS.unavailable}`);
   if (quota.stale) notes.push('stale');
   if (notes.length) lines.push(`(${notes.join('; ')})`);
   return lines;

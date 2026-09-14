@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { WINDOW_LIFETIME_MS } from './lanes-util.js';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const OAUTH_BETA = 'oauth-2025-04-20';
@@ -265,6 +266,12 @@ export function readDesktopOrganization(profileDir) {
  * long as the endpoint stayed flaky. Only clocks are carried, never percentages, and
  * only clocks still in the future: a turnover that has passed says nothing about the
  * window that replaced it.
+ *
+ * A clock also belongs to one window, so it is carried only onto a sample taken inside
+ * that window. A Claude Desktop sample from the night before a weekly reset was handed
+ * the new week's turnover, and last week's usage was shown as this week's. A sample
+ * that predates the window keeps no clock at all, and a window whose length is not
+ * known cannot show that its sample is inside it.
  */
 export function inheritResetTimes(fresh, previous, now = Date.now()) {
   if (!fresh?.windows || fresh.error || !previous?.windows) return fresh;
@@ -280,9 +287,42 @@ export function inheritResetTimes(fresh, previous, now = Date.now()) {
   const windows = fresh.windows.map((w) => {
     if (w.resetsAt != null) return w;
     const before = previous.windows.find((p) => p.key === w.key);
-    return before?.resetsAt != null && before.resetsAt > now ? { ...w, resetsAt: before.resetsAt } : w;
+    if (before?.resetsAt == null || before.resetsAt <= now) return w;
+    if (fresh.sampledAt != null) {
+      const lifetime = WINDOW_LIFETIME_MS[w.key];
+      if (lifetime == null || fresh.sampledAt < before.resetsAt - lifetime) return w;
+    }
+    return { ...w, resetsAt: before.resetsAt };
   });
   return { ...fresh, windows };
+}
+
+/**
+ * Whether a snapshot the fallback ladder just produced is older than the reading
+ * already held for the same account, so the held reading should stay on show.
+ *
+ * The ladder answers "what can be read right now", which is the right question when
+ * nothing is held and the wrong one when something is. One rate-limited check swapped a
+ * live reading taken minutes earlier for Claude Desktop's sample from the night before,
+ * so an account that had just been read at 0% of its week showed 94%. Newer figures
+ * win whichever source they came from, so a snapshot taken after the held reading
+ * still replaces it.
+ *
+ * Only a snapshot can lose this way: a live answer is the newest thing there is, and a
+ * failure is not a reading at all. The two must agree on whose figures they are, as for
+ * inheritResetTimes. When neither names an account, as with Codex, both came from the
+ * same account folder, which is the only identity that tool has.
+ *
+ * `heldReceivedAt` is when a live reading arrived, which only the caller knows; a
+ * snapshot carries its own sample time and that is used instead.
+ */
+export function heldReadingIsNewer(fresh, held, heldReceivedAt = null) {
+  if (!fresh?.windows || fresh.error || fresh.source === 'token') return false;
+  if (!held?.windows || held.error) return false;
+  if ((fresh.organizationUuid ?? null) !== (held.organizationUuid ?? null)) return false;
+  const heldAt = held.sampledAt ?? heldReceivedAt;
+  if (heldAt == null || fresh.sampledAt == null) return false;
+  return heldAt > fresh.sampledAt;
 }
 
 /**

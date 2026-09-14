@@ -213,6 +213,30 @@ test('the same reading drawn after its window turned over says so, rather than r
   assert.equal(line.className, 'quota-reset past', 'and it is marked, not just worded differently');
 });
 
+test('a window that has turned over no longer headlines the card', () => {
+  const { renderUsageWindows, createElement } = load(USAGE_HELPERS, ['renderUsageWindows']);
+  const host = createElement('div');
+  const summary = createElement('span');
+  const now = Date.parse('2026-09-14T15:30:00Z');
+  const session = { key: 'session', label: 'Session (5h)', usedPercent: 95, resetsAt: Date.parse('2026-09-14T15:20:00Z') };
+  const week = { key: 'week', label: 'Week (all models)', usedPercent: 40, resetsAt: Date.parse('2026-09-21T07:00:00Z') };
+  const reading = {
+    windows: [session, week],
+    source: 'token',
+    vendor: 'Anthropic',
+    observedAt: Date.parse('2026-09-14T15:00:00Z'),
+    cached: true,
+    refreshError: 'rate-limited',
+  };
+
+  renderUsageWindows(host, summary, reading, null, now);
+  assert.equal(summary.textContent, 'Week (all models): 40% used', 'the spent session has reset, so the week is where it stands');
+
+  renderUsageWindows(host, summary, { ...reading, windows: [session] }, null, now);
+  assert.equal(summary.textContent, 'Reset since this reading', 'no figure left that describes a running window');
+  assert.equal(summary.className, 'usage-summary warn');
+});
+
 test('the moment of drawing is the caller\'s to state, so the verdict cannot be frozen at first draw', () => {
   const before = drawn(Date.parse('2026-08-31T17:48:59Z'));
   const after = drawn(Date.parse('2026-08-31T17:49:01Z'));

@@ -109,6 +109,25 @@ test('formatStatus shows the numbers, the source, and when it was true', () => {
   assert.match(text, /not set up on this machine \(no X:\\home\\\.qwen\)/);
 });
 
+test('formatStatus says when a last known reading was taken, and that the newer check failed', () => {
+  const text = formatStatus({
+    generatedAt: NOW,
+    providers: [{
+      id: 'claude', name: 'Claude Code', envVar: 'CLAUDE_CONFIG_DIR', envValue: 'X:\\home\\.claude',
+      activeHome: 'X:\\home\\.claude', activeHomeExists: true, activeAccountId: 'a1', hasQuota: true, quotaNote: null,
+      accounts: [{
+        id: 'a1', label: 'Primary', home: 'X:\\home\\.claude', active: true,
+        login: { signedIn: true, level: 'ok', detail: 'Signed in' },
+        quota: {
+          source: 'token', cached: true, observedAt: NOW - 12 * 60_000, refreshError: 'rate-limited',
+          windows: [{ key: 'week', label: 'Week', usedPercent: 0, resetsAt: NOW + 3600_000 }],
+        },
+      }],
+    }],
+  });
+  assert.match(text, /last checked 12 min ago, a newer check was rate-limited/);
+});
+
 test('formatStatus names an unreadable window instead of printing a zero', () => {
   const provider = (error) => ({
     generatedAt: NOW,

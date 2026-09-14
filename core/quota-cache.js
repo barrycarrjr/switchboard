@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { dataDir, writeJsonAtomic } from './paths.js';
 import { PROVIDERS } from './accounts.js';
-import { inheritResetTimes, providerQuota } from './quota.js';
+import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota } from './quota.js';
 
 /**
  * A quota reading shared across processes, on disk.
@@ -87,9 +87,11 @@ export function writeSharedQuota(accountId, key, result, at = Date.now(), file =
 }
 
 /**
- * The last shared reading for one account at ANY age, for turnover-time inheritance
- * only. An old reading's future resetsAt is still the truth, because the schedule
- * does not move, while its percentages are never served past the TTL.
+ * The last shared reading for one account at ANY age, with `observedAt` saying when it
+ * arrived. It is used for turnover-time inheritance, because an old reading's future
+ * resetsAt is still the truth, and to decide whether a fallback snapshot is older than
+ * it. Its percentages are served past the TTL only in that second case, marked as the
+ * last known reading and stale once they are old enough.
  *
  * Deliberately NOT key-checked, unlike readSharedQuota. The key embeds the credential
  * file's size and mtime, and the CLI rewrites that file on every token refresh, which
@@ -102,7 +104,7 @@ export function lastSharedQuota(accountId, file = quotaCacheFile()) {
   try {
     const entry = JSON.parse(fs.readFileSync(file, 'utf8'))?.[accountId];
     if (!entry?.result || entry.result.error) return null;
-    return entry.result;
+    return typeof entry.at === 'number' ? { ...entry.result, observedAt: entry.at } : entry.result;
   } catch {
     return null;
   }
@@ -113,13 +115,22 @@ export function lastSharedQuota(accountId, file = quotaCacheFile()) {
  * reading, otherwise fetch live and share the result. The CLI's one quota path.
  * A fetched reading missing turnover times (the Desktop fallback never has them)
  * inherits any still-future ones the last shared reading knew; see inheritResetTimes.
+ *
+ * A fallback snapshot older than the last shared reading does not replace it: the
+ * shared reading is served instead, saying the newer check failed, and stale past the
+ * same bound the tray uses. See heldReadingIsNewer.
  */
 export async function sharedProviderQuota(account, { usageSource = null, now = Date.now(), fetchImpl = fetch, file = quotaCacheFile() } = {}) {
   const key = sharedQuotaKey(account.provider, account.home);
   const hit = readSharedQuota(account.id, key, now, file);
   if (hit) return hit;
   const fetched = await providerQuota(account.provider, account.home, { fetchImpl, usageSource, now });
-  const result = inheritResetTimes(fetched, lastSharedQuota(account.id, file), now);
+  const held = lastSharedQuota(account.id, file);
+  const result = inheritResetTimes(fetched, held, now);
+  if (heldReadingIsNewer(result, held, held?.observedAt)) {
+    const aged = now - held.observedAt > DESKTOP_STALE_MS;
+    return { ...held, cached: true, refreshError: result.fallbackReason ?? 'unavailable', ...(aged ? { stale: true } : {}) };
+  }
   writeSharedQuota(account.id, key, result, Date.now(), file);
   return result;
 }

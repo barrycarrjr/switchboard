@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
-import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, inheritResetTimes, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexSessionQuota, codexAccountQuota, codexLiveRateLimits, fetchCodexQuota, readCodexAuth, providerQuota } from '../core/quota.js';
+import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, inheritResetTimes, heldReadingIsNewer, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexSessionQuota, codexAccountQuota, codexLiveRateLimits, fetchCodexQuota, readCodexAuth, providerQuota } from '../core/quota.js';
 
 // A window's turnover time is schedule knowledge, not a meter level: once read, it
 // stays true until that instant passes, however many later readings fail to restate
@@ -71,6 +71,104 @@ test('inheritResetTimes passes errors and shapeless readings through untouched',
   assert.equal(inheritResetTimes(fresh, null, 1_000_000), fresh);
   assert.equal(inheritResetTimes(fresh, { error: 'unavailable' }, 1_000_000), fresh);
   assert.equal(inheritResetTimes(null, previous, 1_000_000), null);
+});
+
+// A clock belongs to one window. The case from 2026-09-14: Claude Desktop's last sample
+// of an account was taken the evening before its weekly reset, a live reading taken
+// after the reset knew the next turnover, and the sample was handed that turnover, so
+// the week that had just ended was shown as the one now running.
+test('inheritResetTimes gives no clock to a sample taken before that window opened', () => {
+  const NOW = Date.parse('2026-09-14T12:30:00Z');
+  const previous = previousFor([
+    { key: 'session', usedPercent: 3, resetsAt: Date.parse('2026-09-14T15:20:00Z') },
+    { key: 'week', usedPercent: 0, resetsAt: Date.parse('2026-09-21T07:00:00Z') },
+  ]);
+  const lastWeek = {
+    windows: [
+      { key: 'session', usedPercent: 2, resetsAt: null },
+      { key: 'week', usedPercent: 94, resetsAt: null },
+    ],
+    source: 'desktop',
+    sampledAt: Date.parse('2026-09-13T21:42:00Z'),
+    organizationUuid: ORG,
+  };
+  const merged = inheritResetTimes(lastWeek, previous, NOW);
+  assert.equal(merged.windows.find((w) => w.key === 'week').resetsAt, null, 'the week it describes ended at the reset');
+  assert.equal(merged.windows.find((w) => w.key === 'session').resetsAt, null, 'and so did its five-hour window');
+});
+
+test('inheritResetTimes still carries a clock onto a sample taken inside that window', () => {
+  const NOW = Date.parse('2026-09-14T12:30:00Z');
+  const weekReset = Date.parse('2026-09-21T07:00:00Z');
+  const previous = previousFor([{ key: 'week', usedPercent: 10, resetsAt: weekReset }]);
+  const thisWeek = {
+    windows: [{ key: 'week', usedPercent: 12, resetsAt: null }],
+    source: 'desktop',
+    sampledAt: Date.parse('2026-09-14T07:00:01Z'),
+    organizationUuid: ORG,
+  };
+  assert.equal(inheritResetTimes(thisWeek, previous, NOW).windows[0].resetsAt, weekReset);
+});
+
+test('inheritResetTimes gives no clock to a sample whose window length it does not know', () => {
+  const NOW = 1_000_000;
+  const previous = previousFor([{ key: 'monthly', usedPercent: 10, resetsAt: NOW + 9_000 }]);
+  const fresh = { windows: [{ key: 'monthly', usedPercent: 12, resetsAt: null }], sampledAt: NOW - 1_000, organizationUuid: ORG };
+  assert.equal(inheritResetTimes(fresh, previous, NOW).windows[0].resetsAt, null,
+    'without the length there is no telling whether the sample is inside the window');
+});
+
+// A fallback snapshot is what could be read once the live check failed, which is not the
+// same as the newest thing known. The case from 2026-09-14: a live reading of 0% of the
+// week, then one rate-limited check, and the card showed Claude Desktop's sample from
+// the night before in its place, at 94%.
+test('heldReadingIsNewer keeps a live reading over an older snapshot of the same account', () => {
+  const held = { windows: [{ key: 'week', usedPercent: 0 }], source: 'token', organizationUuid: ORG };
+  const snapshot = {
+    windows: [{ key: 'week', usedPercent: 94 }],
+    source: 'desktop',
+    sampledAt: Date.parse('2026-09-13T21:42:00Z'),
+    organizationUuid: ORG,
+    fallbackReason: 'rate-limited',
+  };
+  assert.equal(heldReadingIsNewer(snapshot, held, Date.parse('2026-09-14T12:25:00Z')), true);
+});
+
+test('heldReadingIsNewer lets a snapshot taken after the held reading replace it', () => {
+  const held = { windows: [{ key: 'week', usedPercent: 10 }], source: 'token', organizationUuid: ORG };
+  const snapshot = { windows: [{ key: 'week', usedPercent: 12 }], source: 'desktop', sampledAt: 2_000, organizationUuid: ORG };
+  assert.equal(heldReadingIsNewer(snapshot, held, 1_000), false);
+  assert.equal(heldReadingIsNewer(snapshot, held, 2_000), false, 'a tie goes to the fresh snapshot, as it always did');
+});
+
+test('heldReadingIsNewer never holds back a live answer, and a failure is not its question', () => {
+  const held = { windows: [{ key: 'week', usedPercent: 10 }], source: 'token', organizationUuid: ORG };
+  const live = { windows: [{ key: 'week', usedPercent: 12 }], source: 'token', organizationUuid: ORG };
+  assert.equal(heldReadingIsNewer(live, held, 5_000), false);
+  assert.equal(heldReadingIsNewer({ error: 'rate-limited' }, held, 5_000), false);
+  assert.equal(heldReadingIsNewer(null, held, 5_000), false);
+});
+
+test('heldReadingIsNewer compares only figures that belong to the same account', () => {
+  const snapshot = { windows: [{ key: 'week', usedPercent: 94 }], source: 'desktop', sampledAt: 1_000, organizationUuid: 'org-B' };
+  const held = { windows: [{ key: 'week', usedPercent: 0 }], source: 'token', organizationUuid: 'org-A' };
+  assert.equal(heldReadingIsNewer(snapshot, held, 5_000), false, 'another subscription\'s figures are not newer, only different');
+  assert.equal(heldReadingIsNewer(snapshot, { ...held, organizationUuid: undefined }, 5_000), false, 'an unnamed side cannot be matched');
+  // Codex names no account on either side: both readings came from the account's own folder.
+  const codexHeld = { windows: [{ key: 'week', usedPercent: 21 }], source: 'token' };
+  const codexLog = { windows: [{ key: 'week', usedPercent: 40 }], source: 'session-log', sampledAt: 1_000 };
+  assert.equal(heldReadingIsNewer(codexLog, codexHeld, 5_000), true);
+});
+
+test('heldReadingIsNewer dates a held snapshot by its sample, and gives up when a time is missing', () => {
+  const older = { windows: [{ key: 'week', usedPercent: 94 }], source: 'desktop', sampledAt: 2_000, organizationUuid: ORG };
+  const heldSnapshot = { windows: [{ key: 'week', usedPercent: 10 }], source: 'desktop', sampledAt: 3_000, organizationUuid: ORG };
+  assert.equal(heldReadingIsNewer(older, heldSnapshot, 1_000), true, 'when it was sampled, not when it was read');
+  const held = { windows: [{ key: 'week', usedPercent: 0 }], source: 'token', organizationUuid: ORG };
+  assert.equal(heldReadingIsNewer(older, held, null), false, 'a held reading of unknown age cannot be shown to be newer');
+  assert.equal(heldReadingIsNewer({ ...older, sampledAt: null }, held, 5_000), false, 'nor an undated snapshot to be older');
+  assert.equal(heldReadingIsNewer(older, null, 5_000), false);
+  assert.equal(heldReadingIsNewer(older, { error: 'unavailable' }, 5_000), false);
 });
 
 test('toExactPercent reads every value as a percent, clamps, and passes null through', () => {

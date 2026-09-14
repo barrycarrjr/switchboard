@@ -492,7 +492,11 @@ function renderUsageWindows(host, summary, q, onRefresh = null, now = Date.now()
   const measured = windows
     .filter((w) => w.usedPercent != null && Number.isFinite(Number(w.usedPercent)))
     .map((w) => ({ window: w, pct: Number(w.usedPercent) }));
-  const highest = measured.sort((a, b) => b.pct - a.pct)[0];
+  // A window whose turnover has passed describes usage that has since reset, so it may
+  // not headline the card. Its own row still shows the figure and says it may be stale;
+  // only the headline, which reads as "where this account stands now", leaves it out.
+  const running = measured.filter((m) => !(m.window.resetsAt && Number(m.window.resetsAt) < now));
+  const highest = running.sort((a, b) => b.pct - a.pct)[0];
   if (highest) {
     const reached = highest.pct >= 100 ? ' · limit reached' : '';
     setUsageSummary(
@@ -500,6 +504,8 @@ function renderUsageWindows(host, summary, q, onRefresh = null, now = Date.now()
       `${highest.window.label}: ${highest.pct}% used${reached}`,
       highest.pct >= 90 ? 'hot' : highest.pct >= 70 ? 'warn' : '',
     );
+  } else if (measured.length) {
+    setUsageSummary(summary, 'Reset since this reading', 'warn');
   } else {
     setUsageSummary(summary, 'No percentage reported');
   }

@@ -62,6 +62,11 @@ For deep-dives into architecture, guides, and full command references, see the *
   log, says why it is standing in, and always shows when the snapshot was taken rather
   than passing it off as live. Gemini and Qwen publish nothing, and the card says so
   instead of showing an empty bar.
+- A fallback never replaces something newer. When a live check fails and the snapshot
+  standing in was taken before the last live reading, the card keeps that reading, says
+  the newer check failed, and marks it stale once it is old enough to be. A snapshot is
+  also never given the reset time of a window that began after it was taken, so last
+  week's usage cannot pass for this week's.
 - The Apps tab shows what is actually running. An app card gets a green corner dot while
   a process of that app is alive, matched by its program file (or, for a Store app, the
   package folder its processes run from) so a same-named file elsewhere never counts. A

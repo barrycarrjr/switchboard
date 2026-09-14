@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, accountScopedEnv, configuredClaudeCredentialOverrides, PROVIDERS } from '../core/accounts.js';
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
 import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
-import { DESKTOP_STALE_MS, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
+import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
 import { lastSharedQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
 import { fetchAllProviderStatus } from '../core/provider-status.js';
 import { applyFix } from '../core/fixes.js';
@@ -1218,14 +1218,22 @@ async function cachedQuota(account, force = false) {
       allowDesktopFallback: desktopFallbackIsUnambiguous(account, reg.accounts),
     });
     const completedAt = Date.now();
+    // The reading already on show and when it arrived: the one in memory, or the shared
+    // file's when the app restarted and the in-memory cache is empty.
+    const shared = hit?.result ? null : lastSharedQuota(account.id);
+    const held = hit?.result
+      ? { result: hit.result, at: hit.at }
+      : shared ? { result: shared, at: shared.observedAt ?? null } : null;
     // A reading missing turnover times (the Desktop fallback never has them) inherits
     // any still-future ones the last reading knew, so a rate-limited tick cannot make
     // an account's known week turnover vanish; see inheritResetTimes, which refuses
-    // to carry a schedule across a change of account. The shared file stands in when
-    // the app restarted and the in-memory cache is empty.
-    const result = inheritResetTimes(fetched, hit?.result ?? lastSharedQuota(account.id), completedAt);
+    // to carry a schedule across a change of account.
+    const result = inheritResetTimes(fetched, held?.result ?? null, completedAt);
     const isCurrent = quotaInflight.get(account.id) === flight;
-    if (!result.error) {
+    // A fallback snapshot older than the reading on show is not a refresh, only a failed
+    // one, however readable it is. See heldReadingIsNewer.
+    const olderSnapshot = heldReadingIsNewer(result, held?.result, held?.at);
+    if (!result.error && !olderSnapshot) {
       if (isCurrent) quotaCache.set(account.id, { key, at: completedAt, lastAttemptAt: completedAt, lastError: null, result });
       // Shared with the CLI (and through it Paperclip and the Slack bridge), so the
       // app's five-minute watch is the one caller that actually spends requests.
@@ -1239,10 +1247,15 @@ async function cachedQuota(account, force = false) {
     // with no age limit at all (the CLI has the shared five-minute window and the
     // Desktop sample carries its own), so an outage could hold a reading current for
     // hours and let the watch move the default on percentages that had moved on.
-    if (hit?.result) {
-      if (isCurrent) quotaCache.set(account.id, { ...hit, key, lastAttemptAt: completedAt, lastError: result.error });
-      const aged = completedAt - hit.at > DESKTOP_STALE_MS;
-      return { ...hit.result, observedAt: hit.at, cached: true, refreshError: result.error, ...(aged ? { stale: true } : {}) };
+    // An outright failure keeps only what memory holds, as it always has; an older
+    // snapshot also gives way to the shared reading, which heldReadingIsNewer has
+    // already matched to the same account.
+    const keep = result.error ? (hit?.result ? held : null) : held;
+    if (keep) {
+      const refreshError = result.error ?? result.fallbackReason ?? 'unavailable';
+      if (isCurrent) quotaCache.set(account.id, { key, at: keep.at, lastAttemptAt: completedAt, lastError: refreshError, result: keep.result });
+      const aged = completedAt - keep.at > DESKTOP_STALE_MS;
+      return { ...keep.result, observedAt: keep.at, cached: true, refreshError, ...(aged ? { stale: true } : {}) };
     }
     if (isCurrent) quotaCache.set(account.id, { key, at: null, lastAttemptAt: completedAt, lastError: result.error, result: null });
     return result;

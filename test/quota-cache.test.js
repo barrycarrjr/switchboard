@@ -103,6 +103,7 @@ test('lastSharedQuota answers at any age, and past a credential rewrite', () => 
   // Far past the TTL: readSharedQuota refuses, the turnover-inheritance read does not.
   assert.equal(readSharedQuota('a1', 'k1', 1_000 + SHARED_QUOTA_TTL_MS + 1, file), null);
   assert.equal(lastSharedQuota('a1', file).windows[0].usedPercent, 12);
+  assert.equal(lastSharedQuota('a1', file).observedAt, 1_000, 'and says when it arrived, so a snapshot can be compared with it');
   assert.equal(lastSharedQuota('missing', file), null);
   assert.equal(lastSharedQuota('a1', path.join(path.dirname(file), 'absent.json')), null);
   writeSharedQuota('a2', 'k2', { error: 'rate-limited' }, 1_000, file);
@@ -121,12 +122,15 @@ test('a rate-limited tick cannot make a known week turnover vanish', async () =>
     const home = tempDir('sb-qp3-');
     const now = Date.now();
     const weekReset = now + 6 * 60 * 60 * 1000;
+    // Well past the TTL (the write stamps its own clock, so leave a margin).
+    const later = now + SHARED_QUOTA_TTL_MS + 60_000;
     fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt: now + 60 * 60 * 1000 } }));
     fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { organizationUuid: 'org-1', accountUuid: 'acct' } }));
     const desktopDir = path.join(process.env.APPDATA, 'Claude');
     fs.mkdirSync(desktopDir, { recursive: true });
+    // Sampled after the live reading below, so it is the newer figure and may stand in.
     fs.writeFileSync(path.join(desktopDir, 'plan-usage-history.json'), JSON.stringify({
-      samples: [{ t: now - 60_000, org: 'org-1', u: { fh: 12, sd: 67 } }],
+      samples: [{ t: later - 60_000, org: 'org-1', u: { fh: 12, sd: 67 } }],
     }));
     const account = { id: 'acct-3', provider: 'claude', home };
 
@@ -138,15 +142,59 @@ test('a rate-limited tick cannot make a known week turnover vanish', async () =>
     assert.equal(seeded.source, 'token');
     assert.equal(seeded.windows.find((w) => w.key === 'week').resetsAt, weekReset);
 
-    // Well past the TTL (the write stamps its own clock, so leave a margin), the
-    // endpoint rate-limits and the Desktop fallback answers instead.
-    const later = now + SHARED_QUOTA_TTL_MS + 60_000;
+    // The endpoint rate-limits and the Desktop fallback answers instead.
     const limited = async () => ({ ok: false, status: 429, json: async () => ({}) });
     const fallback = await sharedProviderQuota(account, { fetchImpl: limited, now: later });
     assert.equal(fallback.source, 'desktop');
     assert.equal(fallback.fallbackReason, 'rate-limited');
     assert.equal(fallback.windows.find((w) => w.key === 'week').resetsAt, weekReset, 'the still-future turnover is inherited');
     assert.equal(fallback.windows.find((w) => w.key === 'week').usedPercent, 67, 'percentages stay the fallback\'s own');
+  } finally {
+    process.env.APPDATA = prevAppData;
+  }
+});
+
+// The case from 2026-09-14. A live reading had the account at 0% of a week that had
+// begun that morning. One check was rate-limited, and the card showed Claude Desktop's
+// sample from the evening before the reset instead: 94%, beside the new week's turnover.
+test('a rate-limited check keeps the newer live reading rather than an older Desktop sample', async () => {
+  const prevAppData = process.env.APPDATA;
+  process.env.APPDATA = tempDir('sb-appdata4-');
+  try {
+    const home = tempDir('sb-qp4-');
+    const now = Date.now();
+    const hour = 60 * 60 * 1000;
+    const weekReset = now + 7 * 24 * hour - 5 * hour; // the week began five hours ago
+    fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt: now + hour } }));
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { organizationUuid: 'org-1', accountUuid: 'acct' } }));
+    const desktopDir = path.join(process.env.APPDATA, 'Claude');
+    fs.mkdirSync(desktopDir, { recursive: true });
+    fs.writeFileSync(path.join(desktopDir, 'plan-usage-history.json'), JSON.stringify({
+      samples: [{ t: now - 15 * hour, org: 'org-1', u: { fh: 2, sd: 94 } }],
+    }));
+    const account = { id: 'acct-4', provider: 'claude', home };
+
+    const good = async () => ({ ok: true, json: async () => ({
+      five_hour: { utilization: 3, resets_at: now + 3 * hour },
+      seven_day: { utilization: 0, resets_at: weekReset },
+    }) });
+    await sharedProviderQuota(account, { fetchImpl: good, now });
+
+    const limited = async () => ({ ok: false, status: 429, json: async () => ({}) });
+    const later = now + SHARED_QUOTA_TTL_MS + 60_000;
+    const kept = await sharedProviderQuota(account, { fetchImpl: limited, now: later });
+    assert.equal(kept.source, 'token', 'the live reading stays on show');
+    assert.equal(kept.windows.find((w) => w.key === 'week').usedPercent, 0);
+    assert.equal(kept.windows.find((w) => w.key === 'week').resetsAt, weekReset);
+    assert.equal(kept.refreshError, 'rate-limited', 'and it says the newer check failed');
+    assert.equal(kept.cached, true);
+    assert.equal(kept.stale, undefined, 'six minutes old is still current enough to act on');
+
+    // Past the staleness bound it stops claiming to be current, and still beats last week.
+    const aged = await sharedProviderQuota(account, { fetchImpl: limited, now: now + 20 * 60 * 1000 });
+    assert.equal(aged.source, 'token');
+    assert.equal(aged.windows.find((w) => w.key === 'week').usedPercent, 0);
+    assert.equal(aged.stale, true);
   } finally {
     process.env.APPDATA = prevAppData;
   }
