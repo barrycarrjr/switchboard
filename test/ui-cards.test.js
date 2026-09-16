@@ -458,3 +458,43 @@ test('the section summary says what it can, without claiming anything about inst
   assert.equal(accountsSectionSummary(2, 0, null), '2 accounts · the folder in use is not registered');
   assert.equal(accountsSectionSummary(0, 1, null), '1 folder found, none registered yet');
 });
+
+test('adding an account asks for a name, makes the account, and opens its sign-in', async () => {
+  const calls = [];
+  const src = [lift('el'), lift('esc'), lift('cardButton'), lift('addAccountForm'), 'return { addAccountForm };'].join('\n');
+  const { document } = makeDom();
+  const createElement = document.createElement;
+  document.createElement = (tag) => Object.assign(createElement(tag), { focus: () => {} });
+  const sb = {
+    createAccount: async (provider, label) => { calls.push(['create', provider, label]); return { ok: true, account: { id: 'claude-new', label } }; },
+    signin: async (id) => { calls.push(['signin', id]); return { ok: true }; },
+    addAccount: async () => { calls.push(['pick']); return { ok: false }; },
+  };
+  const toasts = [];
+  const { addAccountForm } = new Function('document', 'sb', 'toast', 'pollUntil', 'renderAccounts', 'addToolAccount', src)(
+    document, sb, (m) => toasts.push(m), () => calls.push(['poll']), () => {}, () => sb.addAccount(),
+  );
+  const slot = { replaced: null };
+  const button = { replaceWith: (form) => { slot.replaced = form; } };
+  addAccountForm({ id: 'claude', name: 'Claude Code' }, button);
+  const form = slot.replaced;
+  form.replaceWith = () => { slot.replaced = button; };
+  const [input, create] = form.children;
+
+  input.value = '   ';
+  create.click();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(calls, [], 'a blank name makes nothing');
+
+  input.value = 'Work';
+  create.click();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(calls, [['create', 'claude', 'Work'], ['signin', 'claude-new'], ['poll']]);
+  assert.match(toasts.at(-1), /Finish signing in/);
+
+  const existing = form.children.at(-1);
+  assert.match(existing.innerHTML, /already has a login/);
+  existing.click();
+  assert.equal(slot.replaced, button, 'picking a folder instead puts the add button back');
+  assert.deepEqual(calls.at(-1), ['pick']);
+});

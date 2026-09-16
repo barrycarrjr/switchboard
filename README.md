@@ -38,6 +38,13 @@ For deep-dives into architecture, guides, and full command references, see the *
   choice is made. Reorder the lanes to change it, or set the watch to "Tell me" or "Do
   nothing" to choose by hand again. `switchboard use` still switches from a terminal,
   since it cannot tell whether a watch is running, and says what one would do.
+- Adding an account asks only for a name. Switchboard makes a fresh folder for it
+  (`~/.claude-work` for a Claude Code account called Work, `~/work/.gemini` for Gemini CLI,
+  never reusing a folder that already exists) and opens the vendor's sign-in pointed at
+  it, so a subscription that has never been used on this machine can be added. A folder
+  that already holds a login can still be picked by hand from the same form.
+  `switchboard add <tool> <label>` does the same from a terminal when the folder is left
+  out.
 - Signing in and signing out both stay the vendor's own job. The card's Re-authenticate
   button opens a terminal already pointed at that account's folder, which is also how you
   move a folder to a different subscription or replace a login the vendor has stopped

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The scriptable core. Everything the tray can do, headless.
 import { spawn } from 'node:child_process';
-import { loadRegistry, saveRegistry, addAccount, removeAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, PROVIDERS, accountScopedEnv, configuredClaudeCredentialOverrides } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, createAccount, envValueForHome, removeAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, PROVIDERS, accountScopedEnv, configuredClaudeCredentialOverrides } from '../core/accounts.js';
 import { detectAll, detectInstalled, TOOLS, toolExecutable } from '../core/providers.js';
 import { runChecks, accountLoginState } from '../core/doctor.js';
 import { sharedProviderQuota } from '../core/quota-cache.js';
@@ -622,7 +622,7 @@ async function main() {
       return;
     }
     case 'accounts': {
-      if (registry.accounts.length === 0) { out(`No accounts registered. Add one: switchboard add <${providerList}> <label> <folder>`); return; }
+      if (registry.accounts.length === 0) { out(`No accounts registered. Add one: switchboard add <${providerList}> <label> [folder]`); return; }
       for (const a of registry.accounts) {
         const active = activeAccount(registry, a.provider)?.id === a.id;
         out(`${active ? '*' : ' '} ${a.id}  [${a.provider}] ${a.label}  ${a.home}`);
@@ -634,9 +634,13 @@ async function main() {
       if (!PROVIDERS[provider]) { out(`Unknown provider. Use one of: ${providerList}`); process.exitCode = 1; return; }
       // Tools whose variable names the folder ABOVE the config folder get it appended,
       // so a person can pass the folder they think of as the account.
-      const account = addAccount(registry, { provider, label, home: normalizeHome(provider, home) });
+      // No folder means an account that has never signed in here, so one is made for it.
+      const account = home
+        ? addAccount(registry, { provider, label, home: normalizeHome(provider, home) })
+        : createAccount(registry, { provider, label });
       saveRegistry(registry);
       out(`registered ${account.id} (${account.home})`);
+      if (!home) out(`Sign it in: run ${PROVIDERS[provider].loginHint} with ${PROVIDERS[provider].envVar} set to ${envValueForHome(PROVIDERS[provider], account.home)}`);
       return;
     }
     case 'remove': {
@@ -1046,7 +1050,7 @@ async function main() {
       out(`switchboard <status|accounts|add|remove|use|detect|providers|doctor|quota|lanes|lane-token|watch|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
-      out(`  add <${providerList}> <label> <folder>`);
+      out(`  add <${providerList}> <label> [folder]   leave out the folder for a brand-new account`);
       out('  remove <id>                 unregister (never deletes the folder)');
       out('  use <id>                    switch the current account');
       out('  detect                      register existing vendor folders');

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, accountScopedEnv, configuredClaudeCredentialOverrides, PROVIDERS } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, createAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, accountScopedEnv, configuredClaudeCredentialOverrides, PROVIDERS } from '../core/accounts.js';
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
 import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
 import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
@@ -792,6 +792,20 @@ ipcMain.handle('sb:setActive', async (_e, id) => {
   return { ok: true, account };
 });
 
+// A brand-new account: Switchboard makes the folder, and the page then opens sign-in.
+ipcMain.handle('sb:createAccount', (_e, provider, label) => {
+  const def = PROVIDERS[provider];
+  if (!def) throw new Error(`unknown provider: ${provider}`);
+  const reg = registry();
+  const account = createAccount(reg, { provider, label });
+  saveRegistry(reg);
+  quotaCache.clear();
+  quotaInflight.clear();
+  refresh();
+  return { ok: true, account };
+});
+
+// An account whose folder already exists somewhere, picked by hand.
 ipcMain.handle('sb:addAccount', async (_e, provider) => {
   const def = PROVIDERS[provider];
   if (!def) throw new Error(`unknown provider: ${provider}`);

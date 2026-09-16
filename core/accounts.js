@@ -214,6 +214,39 @@ export function addAccount(registry, { provider, label, home }) {
   return account;
 }
 
+/**
+ * A fresh, unused config folder for an account that has never signed in on this machine.
+ *
+ * Adding an account used to mean picking a folder, which only works for a login that
+ * already exists somewhere. Someone who has just bought a second subscription has no
+ * folder to pick, so Switchboard names one after the label instead. The names follow the
+ * same conventions detectCandidates scans for (~/.claude-work, ~/work/.gemini), so a
+ * folder made here is also recognised if its registration is ever lost.
+ */
+export function newAccountHome(provider, label, homeDir = os.homedir(), exists = fs.existsSync) {
+  const def = providerDef(provider);
+  const base = slug(label);
+  for (let n = 1; ; n++) {
+    const name = n === 1 ? base : `${base}-${n}`;
+    const home = def.envShape === 'parent'
+      ? path.join(homeDir, name, def.dirName)
+      : path.join(homeDir, `${def.dirName}-${name}`);
+    // A parent shaped home is refused if the folder above it exists at all, because that
+    // folder could be anything of the person's own and is about to become a stand-in home.
+    if (!exists(def.envShape === 'parent' ? path.dirname(home) : home)) return home;
+  }
+}
+
+/** Register a brand-new account in a folder made for it. The caller saves the registry. */
+export function createAccount(registry, { provider, label }, { homeDir = os.homedir() } = {}) {
+  const clean = String(label ?? '').trim();
+  if (!clean) throw new Error('a name for the account is required');
+  const home = newAccountHome(provider, clean, homeDir);
+  const account = addAccount(registry, { provider, label: clean, home });
+  fs.mkdirSync(home, { recursive: true });
+  return account;
+}
+
 /** Rename keeps the id stable so nothing that references the account breaks. */
 export function renameAccount(registry, id, label) {
   const account = registry.accounts.find((a) => a.id === id);

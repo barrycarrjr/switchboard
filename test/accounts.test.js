@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
-import { loadRegistry, saveRegistry, addAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, strayAccounts, envValueForHome, homeFromEnvValue, PROVIDERS } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, createAccount, newAccountHome, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, strayAccounts, envValueForHome, homeFromEnvValue, PROVIDERS } from '../core/accounts.js';
 
 function tmp() {
   return tempDir('sb-test-');
@@ -234,4 +234,38 @@ test('strayAccounts names registrations whose tool has gone, and nothing else', 
   assert.deepEqual(strayAccounts(reg, () => true), []);
   // No way to tell what is installed means no claim either way.
   assert.deepEqual(strayAccounts(reg, null), []);
+});
+
+test('a brand-new account gets its own folder named after it, without needing one to exist first', () => {
+  const dir = tmp();
+  const reg = { accounts: [] };
+  const account = createAccount(reg, { provider: 'claude', label: '  Work Max ' }, { homeDir: dir });
+  assert.equal(account.label, 'Work Max');
+  assert.equal(account.home, path.join(dir, '.claude-work-max'));
+  assert.ok(fs.statSync(account.home).isDirectory(), 'the folder is made so sign-in has somewhere to land');
+});
+
+test('a new account never reuses a folder that is already there, registered or not', () => {
+  const dir = tmp();
+  fs.mkdirSync(path.join(dir, '.claude-work'));
+  const reg = { accounts: [] };
+  assert.equal(createAccount(reg, { provider: 'claude', label: 'Work' }, { homeDir: dir }).home, path.join(dir, '.claude-work-2'));
+  assert.equal(createAccount(reg, { provider: 'claude', label: 'Work' }, { homeDir: dir }).home, path.join(dir, '.claude-work-3'));
+  assert.equal(reg.accounts.length, 2);
+});
+
+test('a new account for a tool whose variable names the folder above gets a folder that tool can read', () => {
+  const dir = tmp();
+  fs.mkdirSync(path.join(dir, 'work'));
+  const home = newAccountHome('gemini', 'Work', dir);
+  assert.equal(home, path.join(dir, 'work-2', '.gemini'), 'an existing folder of the person\'s own is never taken over');
+  const account = createAccount({ accounts: [] }, { provider: 'gemini', label: 'Work' }, { homeDir: dir });
+  assert.equal(account.home, home);
+});
+
+test('a new account needs a name, and a refused one leaves no folder behind', () => {
+  const dir = tmp();
+  assert.throws(() => createAccount({ accounts: [] }, { provider: 'claude', label: '   ' }, { homeDir: dir }), /name/);
+  assert.throws(() => createAccount({ accounts: [] }, { provider: 'nope', label: 'Work' }, { homeDir: dir }));
+  assert.deepEqual(fs.readdirSync(dir), []);
 });

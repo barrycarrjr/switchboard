@@ -152,6 +152,8 @@
   .signin-actions{display:flex;gap:6px;margin-left:auto;flex:0 0 auto}
   .addbtn{width:100%;font:inherit;font-size:.83rem;padding:7px;border:1px dashed #b9c0c9;border-radius:8px;background:none;color:var(--muted);cursor:pointer;margin:4px 0 2px}
   .addbtn:hover{color:var(--accent);border-color:var(--accent)}
+  .add-account-form{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:7px;border:1px dashed var(--accent);border-radius:8px;margin:4px 0 2px}
+  .add-account-form .account-name-input{font-weight:400;padding:5px 8px}
   .tool-shelf{display:none}
   .tool-shelf.open{display:grid;gap:6px;margin:6px 0 2px}
   .tool-row{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
@@ -756,6 +758,51 @@ async function addToolAccount(p) {
 }
 
 /**
+ * Add a brand-new account: ask only for a name, let Switchboard make the folder, then
+ * open the vendor's sign-in pointed at it.
+ *
+ * The button used to open a folder picker straight away, which only suits a login that
+ * already exists on this machine. Someone who has just bought another subscription has
+ * nothing to pick, so a name is the question and picking a folder is the side door.
+ */
+function addAccountForm(p, button) {
+  const form = el('div', 'add-account-form');
+  const input = el('input', 'account-name-input');
+  input.placeholder = 'Name, for example Work';
+  input.setAttribute('aria-label', `Name for the new ${p.name} account`);
+  const close = () => form.replaceWith(button);
+  const create = async () => {
+    const label = input.value.trim();
+    if (!label) { input.focus(); return; }
+    createButton.disabled = true;
+    try {
+      const r = await sb.createAccount(p.id, label);
+      await sb.signin(r.account.id);
+      toast(`Added "${r.account.label}". Finish signing in in the terminal that just opened.`);
+      pollUntil(
+        async () => (await sb.state(r.account.id)).accounts.find((a) => a.id === r.account.id)?.login?.signedIn === true,
+        () => { toast(`${r.account.label} is signed in.`); renderAccounts(); },
+        () => { toast(`Still waiting for ${r.account.label} to sign in. Use Sign in on its card to try again.`); renderAccounts(); },
+      );
+    } catch (e) {
+      createButton.disabled = false;
+      toast('Could not add that account: ' + (e.message || e));
+    }
+  };
+  const createButton = cardButton('Add and sign in', create, { primary: true });
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') create();
+    if (ev.key === 'Escape') { ev.preventDefault(); close(); }
+  });
+  form.appendChild(input);
+  form.appendChild(createButton);
+  form.appendChild(cardButton('Cancel', close, { ghost: true }));
+  form.appendChild(cardButton('Use a folder that already has a login', () => { close(); addToolAccount(p); }, { link: true }));
+  button.replaceWith(form);
+  input.focus();
+}
+
+/**
  * Why "Switch to this" is refused, or null when the switch may go ahead.
  *
  * An account with no usable login gives every new terminal a folder that cannot run
@@ -1259,7 +1306,7 @@ async function renderAccounts() {
 
     const add = el('button', 'addbtn', `+ Add ${esc(p.name)} account`);
     add.type = 'button';
-    add.addEventListener('click', () => addToolAccount(p));
+    add.addEventListener('click', () => addAccountForm(p, add));
     section.appendChild(add);
     panel.appendChild(section);
   }

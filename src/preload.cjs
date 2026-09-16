@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('sb', {
   configImport: () => ipcRenderer.invoke('sb:configImport'),
   setActive: (id) => ipcRenderer.invoke('sb:setActive', id),
   addAccount: (provider) => ipcRenderer.invoke('sb:addAccount', provider),
+  createAccount: (provider, label) => ipcRenderer.invoke('sb:createAccount', provider, label),
   removeAccount: (id) => ipcRenderer.invoke('sb:removeAccount', id),
   rename: (id, label) => ipcRenderer.invoke('sb:rename', id, label),
   providers: () => ipcRenderer.invoke('sb:providers'),
