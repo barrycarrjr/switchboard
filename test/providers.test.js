@@ -94,10 +94,11 @@ test('detectInstalled answers for every tool in the table, without running any o
   }
 });
 
-test("Muse Code is found when installed but offers no install button, since Meta ships no Windows install command", async () => {
+test("Muse Code installs with Meta's own Windows script, and Switchboard does not invent an uninstall for it", async () => {
   const { installCmdFor } = await import('../core/providers.js');
   const muse = TOOLS.find((t) => t.id === 'muse');
   assert.ok(muse, 'Muse Code is in the tool table');
   assert.equal(muse.bin, 'muse');
-  for (const mode of ['install', 'update', 'reinstall', 'uninstall']) assert.equal(installCmdFor(muse, mode), null, `no ${mode} command`);
+  assert.equal(installCmdFor(muse, 'install'), 'irm https://dev.meta.ai/install.ps1 | iex');
+  assert.equal(installCmdFor(muse, 'uninstall'), null);
 });
