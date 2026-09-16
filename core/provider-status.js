@@ -39,14 +39,15 @@ export const LIVE_SOURCES = {
 };
 
 /**
- * The other eight tools in core/providers.js are not skipped, they are answered
+ * The other nine tools in core/providers.js are not skipped, they are answered
  * honestly instead of guessed at. Each one is a real reason found by hand (see the
  * conversation that added this file), not a placeholder:
  *  - limited: the vendor has a status page, but it does not speak to this product
  *    specifically (Gemini and Antigravity share Google's general Cloud dashboard;
  *    JetBrains does not break Junie out from the rest of its services; Amp has its
  *    own page but Switchboard has not confirmed its data shape yet).
- *  - no-feed: the vendor publishes nothing public to check (Qwen / Alibaba).
+ *  - no-feed: the vendor publishes nothing public to check (Qwen / Alibaba, and
+ *    Meta for Muse Code).
  *  - not-applicable: the tool is not a hosted service of its own. Aider and OpenCode
  *    run against whichever model API you point them at, so their real health is
  *    whichever provider's card that is.
@@ -58,6 +59,7 @@ export const STATIC_SOURCES = {
   gemini: { tier: 'limited', pageUrl: 'https://status.cloud.google.com', summary: "Google does not publish one combined status feed for the Gemini API. The closest official signal is Google Cloud's general dashboard, which is not specific to this product." },
   junie: { tier: 'limited', pageUrl: 'https://status.jetbrains.com', summary: 'JetBrains has a status page, but it does not break out Junie or AI Assistant as their own component.' },
   qwen: { tier: 'no-feed', pageUrl: 'https://www.alibabacloud.com/status', summary: 'Alibaba does not publish a public status feed for Qwen, so this cannot be checked automatically.' },
+  muse: { tier: 'no-feed', pageUrl: null, summary: 'Meta does not publish a public status page for Muse Code, so this cannot be checked automatically.' },
   amp: { tier: 'limited', pageUrl: 'https://ampcodestatus.com', summary: 'Amp publishes its own status page, but Switchboard has not confirmed its data format yet.' },
   opencode: { tier: 'not-applicable', pageUrl: null, summary: "OpenCode is not a hosted service on its own. It runs against whichever model provider you connect it to, so its real health is that provider's card." },
   aider: { tier: 'not-applicable', pageUrl: null, summary: "Aider is not a hosted service either. It runs against whichever model API key you give it, so check that provider's card instead." },
@@ -133,7 +135,7 @@ async function fetchLiveStatus(source, fetchImpl, timeoutMs) {
  * Every tool in core/providers.js, keyed by id: a live reading for the five vendors
  * with a clean public feed (through the shared disk cache, so the tray, the CLI, and
  * every open Switchboard window share one set of requests), and the honest static
- * entry for the other eight. `force` skips the cache for the "Check now" button.
+ * entry for the other nine. `force` skips the cache for the "Check now" button.
  */
 export async function fetchAllProviderStatus({ fetchImpl = fetch, now = Date.now(), file = undefined, force = false, timeoutMs = 8000 } = {}) {
   const out = {};

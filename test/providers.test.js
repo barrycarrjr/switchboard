@@ -93,3 +93,11 @@ test('detectInstalled answers for every tool in the table, without running any o
     assert.ok(t.name);
   }
 });
+
+test("Muse Code is found when installed but offers no install button, since Meta ships no Windows install command", async () => {
+  const { installCmdFor } = await import('../core/providers.js');
+  const muse = TOOLS.find((t) => t.id === 'muse');
+  assert.ok(muse, 'Muse Code is in the tool table');
+  assert.equal(muse.bin, 'muse');
+  for (const mode of ['install', 'update', 'reinstall', 'uninstall']) assert.equal(installCmdFor(muse, mode), null, `no ${mode} command`);
+});
