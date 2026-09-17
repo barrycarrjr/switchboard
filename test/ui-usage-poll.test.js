@@ -21,7 +21,7 @@ const HTML = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.ur
 /** Pull one top-level `const x = ...` line or `function x() { ... }` block out of the page. */
 function lift(name) {
   const lines = HTML.split('\n');
-  const start = lines.findIndex((l) => l.startsWith(`const ${name} = `) || l.startsWith(`function ${name}(`));
+  const start = lines.findIndex((l) => l.startsWith(`const ${name} = `) || l.startsWith(`function ${name}(`) || l.startsWith(`async function ${name}(`));
   assert.ok(start >= 0, `found ${name} in index.html`);
   if (lines[start].startsWith('const ')) return lines[start];
   const end = lines.findIndex((l, i) => i > start && l === '}');
@@ -84,6 +84,8 @@ function load(names, exports, extras = {}) {
   const argNames = ['document', ...Object.keys(extras)];
   const src = [
     'let usageTimer = null;',
+    'let drawnSignIns = null;',
+    'function setDrawn(value) { drawnSignIns = value; }',
     lift('el'),
     lift('esc'),
     ...names.map(lift),
@@ -142,6 +144,26 @@ test('each render replaces the poll rather than stacking another one beside it',
   assert.deepEqual(cleared.slice(1), [1, 2], 'each render stops the one before it');
 });
 
+test('each tick checks the sign-in lines as well as the usage figures', () => {
+  let tick = null;
+  const checked = [];
+  const { watchAccountUsage } = load(
+    ['USAGE_POLL_MS', 'shouldPollUsage', 'watchAccountUsage'],
+    ['watchAccountUsage'],
+    {
+      setInterval: (fn) => { tick = fn; return 1; },
+      clearInterval: () => {},
+      isCurrentRender: () => true,
+      $: () => ({ classList: { contains: () => true } }),
+      refreshVisibleUsage: () => {},
+      refreshSignInsIfChanged: (seq) => checked.push(seq),
+    },
+  );
+  watchAccountUsage(7);
+  tick();
+  assert.deepEqual(checked, [7], 'the tick passes its own render along');
+});
+
 /* -------------------------- which cards get re-read ------------------------- */
 
 test('every drawn usage card is re-read, and a card holding the keyboard is left alone', () => {
@@ -172,6 +194,69 @@ test('every drawn usage card is re-read, and a card holding the keyboard is left
   document.activeElement = null;
   refreshVisibleUsage();
   assert.deepEqual(calls, ['first', 'second', 'first', 'second', 'busy'], 'it is read again once the keyboard has moved on');
+});
+
+/* ----------------------- the sign-in line kept current ---------------------- */
+
+/**
+ * On 2026-09-17 all three Claude logins died while the Accounts panel sat open. The
+ * usage boxes noticed; the sign-in lines kept saying "Signed in" because they were
+ * drawn once and never checked again.
+ */
+function loadSignIns({ fresh, current = true, focused = null }) {
+  const redraws = [];
+  const panel = { contains: (node) => node === 'inside' };
+  const api = load(
+    ['signInSignature', 'refreshSignInsIfChanged'],
+    ['signInSignature', 'refreshSignInsIfChanged', 'setDrawn'],
+    {
+      sb: { state: async () => { if (fresh instanceof Error) throw fresh; return fresh; } },
+      isCurrentRender: () => current,
+      $: () => panel,
+      renderAccounts: () => redraws.push('redraw'),
+    },
+  );
+  api.document.activeElement = focused;
+  return { ...api, redraws };
+}
+
+const signedIn = { id: 'claude-default', login: { signedIn: true, level: 'ok', detail: 'Signed in, login valid until 10/13/2026' } };
+const signedOut = { id: 'claude-default', login: { signedIn: false, level: 'warn', detail: 'Not signed in' } };
+
+function withDrawn(api, accounts) {
+  api.setDrawn(api.signInSignature(accounts));
+  return api;
+}
+
+test('the panel is redrawn when a sign-in has changed since it was drawn', async () => {
+  const api = withDrawn(loadSignIns({ fresh: { accounts: [signedOut] } }), [signedIn]);
+  assert.equal(await api.refreshSignInsIfChanged(1), true);
+  assert.deepEqual(api.redraws, ['redraw']);
+});
+
+test('nothing is redrawn while every sign-in still reads the same', async () => {
+  const api = withDrawn(loadSignIns({ fresh: { accounts: [{ ...signedIn, label: 'renamed elsewhere' }] } }), [signedIn]);
+  assert.equal(await api.refreshSignInsIfChanged(1), false);
+  assert.deepEqual(api.redraws, []);
+});
+
+test('the order accounts arrive in is not a change', () => {
+  const { signInSignature } = loadSignIns({ fresh: null });
+  const other = { id: 'claude-account-2', login: { signedIn: true, level: 'ok', detail: 'Signed in' } };
+  assert.equal(signInSignature([signedIn, other]), signInSignature([other, signedIn]));
+});
+
+test('a superseded render, a failed reading, or someone typing on the page never triggers a redraw', async () => {
+  const stale = withDrawn(loadSignIns({ fresh: { accounts: [signedOut] }, current: false }), [signedIn]);
+  assert.equal(await stale.refreshSignInsIfChanged(1), false, 'a newer render already owns the panel');
+
+  const broken = withDrawn(loadSignIns({ fresh: new Error('ipc gone') }), [signedIn]);
+  assert.equal(await broken.refreshSignInsIfChanged(1), false, 'a failed read is not a sign-out');
+
+  const typing = withDrawn(loadSignIns({ fresh: { accounts: [signedOut] }, focused: 'inside' }), [signedIn]);
+  assert.equal(await typing.refreshSignInsIfChanged(1), false, 'a redraw would wipe what they typed');
+
+  for (const api of [stale, broken, typing]) assert.deepEqual(api.redraws, []);
 });
 
 /* --------------------- the reading against the clock ------------------------ */
