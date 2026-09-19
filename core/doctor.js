@@ -74,6 +74,54 @@ export function claudeLoginState(oauth = {}, now = Date.now()) {
 }
 
 /**
+ * Claude's own record of a login the vendor refused to renew.
+ *
+ * When a refresh token comes back `invalid_grant`, Claude Code blanks both tokens and the
+ * access expiry in place and leaves the rest of the record alone, so the file is left with a
+ * refresh-token expiry still in the future. A working login carries at least one token, and a
+ * login that merely ran out of road has a refresh expiry in the past, so neither can be read
+ * this way.
+ *
+ * One other thing leaves the same marks: a login that moved to the system credential store,
+ * where the metadata can outlive the copy in the file. That one is signed in and would be
+ * accused of nothing. So this only ever describes a folder Claude itself has just called
+ * signed out, which settles the difference; the shape alone is not enough and the caller is
+ * the one who knows. Hence a returned sentence rather than a state of its own.
+ *
+ * Worth saying at all, because the usual cause is another program on the machine renewing the
+ * same login and not saving what it got back. A refresh token works exactly once, so whatever
+ * is left in the file is already dead and the next real run is what discovers it. Diagnosed
+ * 2026-09-19, when a Stream Deck usage widget did this to all three Claude accounts over two
+ * days; the plain "Not signed in" sent the search to Switchboard instead.
+ */
+export function claudeRenewalRefusal(oauth = {}, { fileWrittenAt = null, now = Date.now() } = {}) {
+  const hasAccess = typeof oauth.accessToken === 'string' && oauth.accessToken.length > 0;
+  const hasRefresh = typeof oauth.refreshToken === 'string' && oauth.refreshToken.length > 0;
+  if (hasAccess || hasRefresh) return null;
+  const refresh = toEpochMs(oauth.refreshTokenExpiresAt);
+  if (typeof refresh !== 'number' || refresh <= now) return null;
+  // A stamp from the future is a wrong clock or a restored folder, not a moment to report:
+  // "Signed out at 8:51 PM" while it is 5:51 PM reads as nonsense and invites a wrong guess.
+  const stamped = typeof fileWrittenAt === 'number' && Number.isFinite(fileWrittenAt)
+    && fileWrittenAt > 0 && fileWrittenAt <= now + 60 * 1000;
+  const at = stamped ? fileWrittenAt : null;
+  return {
+    reason: 'renewal-refused',
+    at,
+    detail: `Signed out${at == null ? '' : ` ${fmtWhen(at, now)}`}: this login's renewal was refused.`
+      + ' Another program may be renewing it without saving the new key.',
+  };
+}
+
+function credentialWrittenAt(credPath, statFile) {
+  try {
+    return statFile(credPath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Login state for one account, for the Accounts page as well as the Health tab.
  *
  * The Accounts page offers "Sign in / re-authenticate" on every card, and without this the
@@ -84,7 +132,7 @@ export function claudeLoginState(oauth = {}, now = Date.now()) {
  * the login behind them, so it reports being signed in and nothing more. Inventing a date
  * from the token it does have would repeat the mistake this check was just fixed for.
  */
-export function accountLoginState(account, now = Date.now(), readFile = fs.readFileSync) {
+export function accountLoginState(account, now = Date.now(), readFile = fs.readFileSync, statFile = fs.statSync) {
   const def = PROVIDERS[account?.provider];
   if (!def) return { signedIn: false, level: 'warn', detail: 'Unknown provider' };
   const credPath = path.join(account.home, def.credFile);
@@ -100,7 +148,16 @@ export function accountLoginState(account, now = Date.now(), readFile = fs.readF
     const hasAccess = typeof oauth.accessToken === 'string' && oauth.accessToken.length > 0;
     const hasRefresh = typeof oauth.refreshToken === 'string' && oauth.refreshToken.length > 0;
     if (!hasAccess && !hasRefresh) {
-      return { signedIn: false, level: 'warn', detail: 'Not signed in' };
+      // The refusal sentence is carried, not spoken: this reader cannot tell a refused
+      // renewal from a login that lives in the system store, and only a vendor probe can.
+      // Whoever has one attaches it; everyone else keeps the plain, safe line.
+      const refused = claudeRenewalRefusal(oauth, {
+        fileWrittenAt: credentialWrittenAt(credPath, statFile),
+        now,
+      });
+      return refused
+        ? { signedIn: false, level: 'warn', detail: 'Not signed in', ifSignedOut: refused }
+        : { signedIn: false, level: 'warn', detail: 'Not signed in' };
     }
     return { signedIn: true, ...claudeLoginState(oauth, now) };
   } catch {
@@ -168,7 +225,12 @@ export async function verifiedAccountLoginState(account, {
     return { signedIn: null, level: 'info', detail: 'Sign-in status unavailable', verified: false };
   }
   if (!status.loggedIn) {
-    return { signedIn: false, level: 'warn', detail: 'Not signed in', verified: true };
+    // Claude has just confirmed this account is signed out, which rules out the system-store
+    // reading of the same marks. Where the folder carries a reason, it can now be said.
+    const refused = fallback.ifSignedOut;
+    return refused
+      ? { signedIn: false, level: 'warn', detail: refused.detail, reason: refused.reason, verified: true }
+      : { signedIn: false, level: 'warn', detail: 'Not signed in', verified: true };
   }
   const isSubscription = status.authMethod === 'claude.ai'
     && (status.apiProvider == null || status.apiProvider === 'firstParty');
@@ -203,6 +265,22 @@ export async function verifiedAccountLoginState(account, {
 
 function fmtDate(ms) {
   return new Date(ms).toLocaleDateString();
+}
+
+/**
+ * "at 3:26 PM" for something that happened today, "on 17/09/2026" for anything older.
+ * A sign-out is usually discovered the same day, where the clock time is what lets somebody
+ * match it against whatever else was running; a date alone would not.
+ */
+function fmtWhen(ms, now) {
+  const when = new Date(ms);
+  const today = new Date(now);
+  const sameDay = when.getFullYear() === today.getFullYear()
+    && when.getMonth() === today.getMonth()
+    && when.getDate() === today.getDate();
+  return sameDay
+    ? `at ${when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+    : `on ${when.toLocaleDateString()}`;
 }
 
 /** "in 3 days" / "in about 5 hours", so a sub-day figure never rounds up to "1 days". */

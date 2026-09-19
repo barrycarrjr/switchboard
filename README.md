@@ -55,6 +55,14 @@ For deep-dives into architecture, guides, and full command references, see the *
   Code sign out from inside their own sessions) and only while there is a login there to
   remove. Removing an account is a different thing again: it unregisters the folder and
   leaves the login in place.
+- A Claude login the vendor refused to renew is named as such, with the time it happened,
+  rather than reported as a plain "Not signed in". Claude Code blanks both tokens in place
+  when a refresh is rejected and leaves a login expiry that is still in the future, which
+  nothing else does, so the card can say what happened. The usual cause is another program
+  on the machine renewing the same login and keeping what it got back: a refresh token
+  works exactly once, so the one left in the folder is already dead. Switchboard's own
+  readers never renew anything, and its sign-in check (`claude auth status`) makes no
+  network call at all.
 - A desktop app follows the same switch where the app can. Claude Desktop keeps each
   account in its own data folder, so the Apps tab names the account its Launch button
   will open (the one that is the machine default right now) and puts the others behind

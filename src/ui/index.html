@@ -141,10 +141,11 @@
   .quota-source.warn{background:var(--warn-bg);border-color:#ead69e}
   .quota-source.warn strong{color:var(--warn)}
   .signin-status{display:flex;align-items:center;gap:7px;min-width:0;color:var(--muted);font-size:.76rem;line-height:1.4;flex-wrap:wrap}
-  .signin-status .status-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .signin-headline{display:flex;align-items:flex-start;gap:7px;min-width:0;flex:0 1 auto}
+  .signin-status .status-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:0 0 auto;margin-top:.34em}
   .signin-status.warn .status-dot{background:var(--warn)}
   .signin-status.unknown .status-dot{background:var(--info)}
-  .signin-status strong{color:var(--ink);font-size:.78rem}
+  .signin-status strong{color:var(--ink);font-size:.78rem;min-width:0}
   .signin-status.warn strong{color:var(--warn)}
   .signin-status.unknown strong{color:var(--info)}
   .signin-verified{color:var(--muted);font-size:.7rem}
@@ -659,10 +660,15 @@ function cardSignIn(card, { signedIn, detail, level = 'ok', note = null, button 
   const tone = needsSignIn ? ' warn' : unknown ? ' unknown' : '';
   const { area } = cardArea(card, 'Sign-in', 'signin-area' + tone);
   const status = el('div', 'signin-status' + tone);
+  // The dot and the sentence travel together. A sentence long enough to wrap (a refused
+  // renewal names the time and the likely cause) would otherwise be bumped to the next line
+  // whole, leaving the dot stranded on a line of its own.
+  const headline = el('div', 'signin-headline');
   const dot = el('span', 'status-dot');
   dot.setAttribute('aria-hidden', 'true');
-  status.appendChild(dot);
-  status.appendChild(el('strong', null, esc(detail)));
+  headline.appendChild(dot);
+  headline.appendChild(el('strong', null, esc(detail)));
+  status.appendChild(headline);
   if (note) status.appendChild(el('span', 'signin-verified', esc(note)));
   const row = (buttons ?? [button]).filter(Boolean);
   if (row.length) {

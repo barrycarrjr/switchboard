@@ -343,6 +343,130 @@ test('a secure-storage tombstone is not mistaken for a working Claude login', ()
   assert.doesNotMatch(s.detail, /valid until/i);
 });
 
+// A refused renewal is worth saying out loud, because the fix is somewhere else entirely:
+// some other program on the machine renewed this login and kept the new key to itself.
+// Diagnosed 2026-09-19, when a plain "Not signed in" sent two days of searching the wrong way.
+
+function refusedTombstone(home, { now, writtenAt }) {
+  const file = path.join(home, '.credentials.json');
+  fs.writeFileSync(file, JSON.stringify({
+    claudeAiOauth: {
+      accessToken: '',
+      refreshToken: '',
+      expiresAt: 0,
+      refreshTokenExpiresAt: now + 29 * 24 * 60 * 60 * 1000,
+      subscriptionType: 'max',
+    },
+  }));
+  fs.utimesSync(file, new Date(writtenAt), new Date(writtenAt));
+  return file;
+}
+
+// The folder-only reader must not accuse anybody: these same marks are left behind by a login
+// that moved to the system credential store, and that account is signed in and at fault for
+// nothing. The sentence rides along as `ifSignedOut` until a vendor probe settles it.
+test('a refused renewal is carried as a reason, not spoken, until the vendor confirms the sign-out', () => {
+  const now = new Date('2026-09-19T20:00:00').getTime();
+  const home = tmpHome();
+  refusedTombstone(home, { now, writtenAt: new Date('2026-09-19T15:26:00').getTime() });
+  const s = accountLoginState({ provider: 'claude', home }, now);
+  assert.equal(s.signedIn, false);
+  assert.equal(s.level, 'warn');
+  assert.equal(s.detail, 'Not signed in');
+  assert.equal(s.ifSignedOut.reason, 'renewal-refused');
+  // Asserted on the shape, not on "3:26 PM": the clock time is rendered in the machine's own
+  // locale, and every EU and UK machine writes 15:26.
+  assert.match(s.ifSignedOut.detail, /^Signed out at .+: this login's renewal was refused\./);
+  assert.match(s.ifSignedOut.detail, /without saving the new key/i);
+  assert.equal(s.ifSignedOut.at, new Date('2026-09-19T15:26:00').getTime());
+});
+
+test('a refusal from an earlier day carries the date rather than a bare clock time', () => {
+  const now = new Date('2026-09-19T20:00:00').getTime();
+  const home = tmpHome();
+  refusedTombstone(home, { now, writtenAt: new Date('2026-09-17T09:15:00').getTime() });
+  const s = accountLoginState({ provider: 'claude', home }, now);
+  assert.match(s.ifSignedOut.detail, /Signed out on /);
+  assert.doesNotMatch(s.ifSignedOut.detail, /at \d/, 'a two-day-old time of day means nothing on its own');
+});
+
+// A stamp from the future is a wrong clock or a restored folder. The reason still stands; the
+// moment does not, and printing "signed out at 8:51 PM" at 5:51 PM would invite a wrong guess.
+test('a credential stamp from the future costs the time, not the reason', () => {
+  const now = new Date('2026-09-19T20:00:00').getTime();
+  const home = tmpHome();
+  refusedTombstone(home, { now, writtenAt: now + 3 * 60 * 60 * 1000 });
+  const s = accountLoginState({ provider: 'claude', home }, now);
+  assert.equal(s.ifSignedOut.reason, 'renewal-refused');
+  assert.equal(s.ifSignedOut.at, null);
+  assert.equal(s.ifSignedOut.detail.startsWith('Signed out: '), true);
+});
+
+// The two states look alike in the file and are not the same problem: one needs a fresh
+// sign-in, the other needs whatever is eating the refresh keys found and stopped.
+// Each of these is a different way to hold no usable login, and none of them is a refusal.
+// Offering a cause where there is none would send somebody hunting a program that is not there.
+test('the other ways a folder can hold no login carry no cause at all', () => {
+  const now = Date.now();
+  for (const [what, record] of [
+    ['a login that simply ran out', {
+      accessToken: '', refreshToken: '', expiresAt: 0, refreshTokenExpiresAt: now - 24 * 60 * 60 * 1000,
+    }],
+    ['a file with no claude record in it', null],
+    ['blank tokens with no login expiry to go with them', { accessToken: '', refreshToken: '', expiresAt: 0 }],
+  ]) {
+    const home = tmpHome();
+    fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify(record ? { claudeAiOauth: record } : { other: 1 }));
+    const s = accountLoginState({ provider: 'claude', home }, now);
+    assert.equal(s.detail, 'Not signed in', what);
+    assert.equal(s.ifSignedOut, undefined, what);
+  }
+
+  const never = accountLoginState({ provider: 'claude', home: tmpHome() }, now);
+  assert.equal(never.detail, 'Not signed in');
+  assert.equal(never.ifSignedOut, undefined);
+});
+
+test('an unreadable file timestamp costs the time but never the reason', () => {
+  const now = Date.now();
+  const home = tmpHome();
+  refusedTombstone(home, { now, writtenAt: now });
+  const s = accountLoginState({ provider: 'claude', home }, now, fs.readFileSync, () => {
+    throw new Error('stat refused');
+  });
+  assert.equal(s.ifSignedOut.reason, 'renewal-refused');
+  assert.equal(s.ifSignedOut.at, null);
+  assert.match(s.ifSignedOut.detail, /^Signed out: /);
+});
+
+test('the vendor probe keeps the refusal sentence when it agrees nobody is signed in', async () => {
+  const now = new Date('2026-09-19T20:00:00').getTime();
+  const home = tmpHome();
+  refusedTombstone(home, { now, writtenAt: new Date('2026-09-19T15:26:00').getTime() });
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, {
+    now,
+    runImpl: async () => ({ stdout: '{"loggedIn":false}' }),
+  });
+  assert.equal(s.signedIn, false);
+  assert.equal(s.verified, true);
+  assert.match(s.detail, /renewal was refused/i);
+});
+
+// The folder's own story is only ever an explanation for being signed out. A vendor that
+// says this account IS signed in (a system-store login, say) settles it, and that is exactly
+// the account the refusal sentence would wrongly accuse.
+test('a vendor-confirmed login is never contradicted by an old tombstone in the folder', async () => {
+  const now = Date.now();
+  const home = tmpHome();
+  refusedTombstone(home, { now, writtenAt: now });
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, {
+    now,
+    runImpl: async () => ({ stdout: '{"loggedIn":true,"authMethod":"claude.ai"}' }),
+  });
+  assert.equal(s.signedIn, true);
+  assert.doesNotMatch(s.detail, /refused/i);
+});
+
 test('parseClaudeAuthStatus allowlists the vendor status and account identity fields', () => {
   const signedIn = parseClaudeAuthStatus(JSON.stringify({
     loggedIn: true,
@@ -438,7 +562,10 @@ test('the vendor auth probe overrides a plausible but unusable credential tombst
   };
   const s = await verifiedAccountLoginState({ provider: 'claude', home }, { runImpl, now });
   assert.equal(s.signedIn, false);
-  assert.match(s.detail, /not signed in/i);
+  // This fixture is the shape Claude leaves after a refused renewal, and the vendor has just
+  // confirmed the sign-out, so the card may now say why. Either way: never a working login.
+  assert.equal(s.reason, 'renewal-refused');
+  assert.doesNotMatch(s.detail, /^Signed in/);
   assert.match(String(invocation.file), /claude/i);
   assert.deepEqual(invocation.args, ['auth', 'status', '--json']);
   assert.equal(invocation.options.env.CLAUDE_CONFIG_DIR, home);
