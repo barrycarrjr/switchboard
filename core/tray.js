@@ -248,16 +248,15 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
   }
   const warnings = trayWarnings(options).map((w) => w.label);
 
-  const title = 'Switchboard';
-  const complete = (groups) => [title, ...warnings, ...groups.flatMap((group) => group.lines)].join('\n');
+  const complete = (groups) => [...warnings, ...groups.flatMap((group) => group.lines)].join('\n') || 'No active accounts';
   const detailedText = complete(detailed);
   if (detailedText.length <= limit) return detailedText;
   const compactText = complete(compact);
   if (compactText.length <= limit) return compactText;
 
-  const kept = [title];
+  const kept = [];
   const keptUnits = [];
-  let used = title.length;
+  let used = 0;
   let dropped = 0;
   const units = [
     ...warnings.map((line) => ({ lines: [line], count: 1 })),
@@ -265,7 +264,7 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
   ];
   for (let index = 0; index < units.length; index += 1) {
     const unit = units[index];
-    const added = unit.lines.reduce((sum, line) => sum + 1 + line.length, 0);
+    const added = unit.lines.join('\n').length + (kept.length ? 1 : 0);
     if (used + added <= limit) {
       kept.push(...unit.lines);
       keptUnits.push({ ...unit, added });
@@ -278,7 +277,8 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
   // Give a whole provider group back if that is what it takes to admit there are more.
   while (dropped > 0) {
     const tail = `and ${dropped} more`;
-    if (used + 1 + tail.length <= limit) {
+    const added = tail.length + (kept.length ? 1 : 0);
+    if (used + added <= limit) {
       kept.push(tail);
       break;
     }
@@ -288,5 +288,5 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
     used -= removed.added;
     dropped += removed.count;
   }
-  return kept.join('\n');
+  return kept.join('\n') || 'No active accounts';
 }

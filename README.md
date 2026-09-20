@@ -94,8 +94,9 @@ For deep-dives into architecture, guides, and full command references, see the *
   Accounts page or an enabled quota watch, using a compact layout when that is what lets
   all of them fit in Windows' tooltip limit. Each provider is a heading, with its accounts
   indented beneath it in the same current-account-first order as the Accounts page. Normal
-  reads are shared for five minutes, and a
-  rate-limited response backs automatic checks off for thirty minutes. A rejected
+  reads are shared for five minutes. The icon already identifies Switchboard, so the hover
+  spends none of the limit repeating the app name. A rate-limited response backs automatic
+  checks off for thirty minutes. A rejected
   credential backs off for an hour unless the credential file changes. A newer sign-in
   check on the Accounts page also clears any older tray warning.
 - A fallback never replaces something newer. When a live check fails and the snapshot

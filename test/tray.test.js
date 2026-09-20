@@ -290,7 +290,11 @@ const tip = (over = {}) => trayTooltip({
 });
 
 test('the hover names the account each tool is set to', () => {
-  assert.equal(tip(), 'Switchboard\nClaude Code:\n\u2003Secondary\nCodex:\n\u2003Default');
+  assert.equal(tip(), 'Claude Code:\n\u2003Secondary\nCodex:\n\u2003Default');
+});
+
+test('the hover does not spend the Windows limit repeating the app name', () => {
+  assert.doesNotMatch(tip(), /^Switchboard(?:\n|$)/);
 });
 
 test('the hover shows five-hour and weekly usage for every active account', () => {
@@ -299,7 +303,7 @@ test('the hover shows five-hour and weekly usage for every active account', () =
       'claude-account-2': { windows: [{ key: 'session', usedPercent: 56 }, { key: 'week', usedPercent: 90 }] },
       'codex-default': { windows: [{ key: 'session', usedPercent: 19 }, { key: 'week', usedPercent: 68 }] },
     },
-  }), 'Switchboard\nClaude Code:\n\u2003Secondary, 5h 56%, week 90%\nCodex:\n\u2003Default, 5h 19%, week 68%');
+  }), 'Claude Code:\n\u2003Secondary, 5h 56%, week 90%\nCodex:\n\u2003Default, 5h 19%, week 68%');
 });
 
 test('cached usage from another signed-in account is also put in the hover', () => {
@@ -308,7 +312,7 @@ test('cached usage from another signed-in account is also put in the hover', () 
     quotas: {
       'claude-default': { windows: [{ key: 'session', usedPercent: 99 }, { key: 'week', usedPercent: 100 }] },
     },
-  }), 'Switchboard\nClaude Code:\n\u2003Secondary\n\u2003Main Account, 5h 99%, week 100%\nCodex:\n\u2003Default');
+  }), 'Claude Code:\n\u2003Secondary\n\u2003Main Account, 5h 99%, week 100%\nCodex:\n\u2003Default');
 });
 
 test('all four signed-in usage accounts fit in the real Windows tooltip limit', () => {
@@ -335,7 +339,6 @@ test('all four signed-in usage accounts fit in the real Windows tooltip limit', 
     },
   });
   assert.equal(text, [
-    'Switchboard',
     'Claude Code:',
     '\u2003primary-acct-1 5h88% wk95%',
     '\u2003backup-acct 5h0% wk97%',
@@ -343,7 +346,7 @@ test('all four signed-in usage accounts fit in the real Windows tooltip limit', 
     'Codex:',
     '\u2003Default wk21%',
   ].join('\n'));
-  assert.equal(text.length, TOOLTIP_LIMIT);
+  assert.equal(text.length, TOOLTIP_LIMIT - 'Switchboard\n'.length);
 });
 
 test('a signed-out state takes precedence over usage from the old login', () => {
@@ -361,7 +364,7 @@ test('the state of the account in use is said where the account is named', () =>
 
 test('an account you are not on is still mentioned when it needs attention', () => {
   const lines = tip({ notes: { 'claude-default': 'out of quota' } }).split('\n');
-  assert.deepEqual(lines, ['Switchboard', 'Claude Code:', '\u2003Secondary', '\u2003Main Account, out of quota', 'Codex:', '\u2003Default']);
+  assert.deepEqual(lines, ['Claude Code:', '\u2003Secondary', '\u2003Main Account, out of quota', 'Codex:', '\u2003Default']);
 });
 
 test('an account that is simply ready adds nothing to the hover', () => {
@@ -385,7 +388,7 @@ test('the hover never exceeds what Windows will show, and counts what it left ou
   assert.match(text.split('\n').at(-1), /^and \d+ more$/);
   // Every provider that survived kept its account beneath it: no orphaned heading or
   // account line is passed off as a complete group.
-  const lines = text.split('\n').slice(1, -1);
+  const lines = text.split('\n').slice(0, -1);
   for (let i = 0; i < lines.length; i += 2) {
     assert.match(lines[i], /^A tool with a long name \d:$/);
     assert.match(lines[i + 1], /^\u2003An account with a long label \d$/);
@@ -393,7 +396,7 @@ test('the hover never exceeds what Windows will show, and counts what it left ou
 });
 
 test('an empty machine says so in the hover too', () => {
-  assert.equal(trayTooltip({ providers: PROVIDERS, accounts: [] }), 'Switchboard\nNo accounts set up yet, open Switchboard');
+  assert.equal(trayTooltip({ providers: PROVIDERS, accounts: [] }), 'No accounts set up yet, open Switchboard');
 });
 
 test('the resident tray pass forwards every cached usage reading without polling providers when switching is off', () => {
