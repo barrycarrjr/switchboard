@@ -222,8 +222,11 @@ async function stateSnapshot(forceAuthAccountId = null) {
       notesChanged = true;
     }
   }
-  if (notesChanged) {
-    trayFacts.notes = notes;
+  const signedIn = Object.fromEntries(accounts.map((account) => [account.id, account.login?.signedIn ?? null]));
+  const signedInChanged = JSON.stringify(signedIn) !== JSON.stringify(trayFacts.signedIn);
+  trayFacts.notes = notes;
+  trayFacts.signedIn = signedIn;
+  if (notesChanged || signedInChanged) {
     refreshTray();
   }
   return { accounts, providers, watchMode: settings.quotaWatch, version: app.getVersion() };
@@ -299,7 +302,9 @@ function createWindow() {
  */
 // installedProviders starts null, meaning "not yet detected": the menu shows every
 // provider until the first detect lands, rather than briefly hiding tools that are there.
-let trayFacts = { terminals: [], alsoSignedIn: [], notes: {}, quotas: {}, update: null, installedProviders: null };
+let trayFacts = {
+  terminals: [], alsoSignedIn: [], notes: {}, quotas: {}, signedIn: {}, update: null, installedProviders: null,
+};
 
 async function refreshTrayFacts() {
   if (factsInFlight) return;
@@ -361,6 +366,7 @@ function trayInputs() {
     activeIds,
     notes: trayFacts.notes,
     quotas: trayFacts.quotas,
+    signedIn: trayFacts.signedIn,
     alsoSignedIn: trayFacts.alsoSignedIn,
     terminals: trayFacts.terminals,
     watchMode: settings.quotaWatch,
@@ -569,12 +575,11 @@ async function runQuotaWatch() {
 
     // The hover is useful even when automatic switching is off, but it must not create
     // background vendor traffic of its own. Read every sign-in so a stale warning cannot
-    // survive a newer Accounts-page check. For active accounts, reuse only an in-memory
-    // or shared reading unless the enabled watch already needs a live quota check.
+    // survive a newer Accounts-page check. Reuse only in-memory or shared readings for
+    // every account unless the enabled watch already needs a live quota check.
     const snapshots = {};
     const loginStates = {};
     const activeIds = Object.fromEntries(Object.keys(PROVIDERS).map((id) => [id, activeAccount(reg, id)?.id ?? null]));
-    const activeQuotaAccountIds = new Set(Object.values(activeIds).filter(Boolean));
     const liveQuotaAccountIds = new Set();
     if (settings.quotaWatch !== 'off') {
       const watchProviders = new Set(['claude']);
@@ -588,7 +593,7 @@ async function runQuotaWatch() {
       const reads = [cachedLoginState(a)];
       if (PROVIDERS[a.provider]?.quota) {
         if (liveQuotaAccountIds.has(a.id)) reads.push(cachedQuota(a));
-        else if (activeQuotaAccountIds.has(a.id)) reads.push(Promise.resolve(cachedQuotaIfPresent(a)));
+        else reads.push(Promise.resolve(cachedQuotaIfPresent(a)));
       }
       const [, snapshot] = await Promise.all(reads);
       // The Accounts page may have forced a newer verification while quota was in
@@ -611,6 +616,7 @@ async function runQuotaWatch() {
     }
     trayFacts.notes = notes;
     trayFacts.quotas = snapshots;
+    trayFacts.signedIn = Object.fromEntries(reg.accounts.map((a) => [a.id, loginStates[a.id]?.signedIn ?? null]));
     refreshTray();
 
     if (settings.quotaWatch === 'off') return;

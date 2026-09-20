@@ -302,12 +302,46 @@ test('the hover shows five-hour and weekly usage for every active account', () =
   }), 'Switchboard\nClaude Code: Secondary, 5h 56%, week 90%\nCodex: Default, 5h 19%, week 68%');
 });
 
-test('usage from an inactive account is not put in the hover', () => {
+test('cached usage from another signed-in account is also put in the hover', () => {
   assert.equal(tip({
+    signedIn: { 'claude-default': true },
     quotas: {
       'claude-default': { windows: [{ key: 'session', usedPercent: 99 }, { key: 'week', usedPercent: 100 }] },
     },
-  }), tip());
+  }), 'Switchboard\nClaude Code: Secondary\n  Main Account, 5h 99%, week 100%\nCodex: Default');
+});
+
+test('all four signed-in usage accounts fit in the real Windows tooltip limit', () => {
+  const accounts = [
+    { id: 'primary', provider: 'claude', label: 'primary-acct-1' },
+    { id: 'backup', provider: 'claude', label: 'backup-acct' },
+    { id: 'secondary', provider: 'claude', label: 'secondary-acct2' },
+    { id: 'codex', provider: 'codex', label: 'Default' },
+  ];
+  const quota = (session, week) => ({ windows: [
+    { key: 'session', usedPercent: session },
+    { key: 'week', usedPercent: week },
+  ] });
+  const text = trayTooltip({
+    providers: PROVIDERS,
+    accounts,
+    activeIds: { claude: 'primary', codex: 'codex' },
+    signedIn: Object.fromEntries(accounts.map((account) => [account.id, true])),
+    quotas: {
+      primary: quota(88, 95),
+      backup: quota(0, 97),
+      secondary: quota(0, 100),
+      codex: { windows: [{ key: 'week', usedPercent: 21 }] },
+    },
+  });
+  assert.equal(text, [
+    'Switchboard',
+    'Claude Code: primary-acct-1 5h88% wk95%',
+    '  backup-acct 5h0% wk97%',
+    '  secondary-acct2 5h0% wk100%',
+    'Codex: Default wk21%',
+  ].join('\n'));
+  assert.equal(text.length, TOOLTIP_LIMIT);
 });
 
 test('a signed-out state takes precedence over usage from the old login', () => {
@@ -325,7 +359,7 @@ test('the state of the account in use is said where the account is named', () =>
 
 test('an account you are not on is still mentioned when it needs attention', () => {
   const lines = tip({ notes: { 'claude-default': 'out of quota' } }).split('\n');
-  assert.deepEqual(lines, ['Switchboard', 'Claude Code: Secondary', 'Codex: Default', 'Main Account, out of quota']);
+  assert.deepEqual(lines, ['Switchboard', 'Claude Code: Secondary', '  Main Account, out of quota', 'Codex: Default']);
 });
 
 test('an account that is simply ready adds nothing to the hover', () => {
@@ -334,7 +368,7 @@ test('an account that is simply ready adds nothing to the hover', () => {
 
 test('what is wrong is said before what is merely worth knowing', () => {
   const lines = tip({ update: 'v0.13.0', notes: { 'claude-default': 'out of quota' } }).split('\n');
-  assert.ok(lines.indexOf('Update available: v0.13.0') < lines.indexOf('Main Account, out of quota'));
+  assert.ok(lines.indexOf('Update available: v0.13.0') < lines.findIndex((line) => line.includes('Main Account, out of quota')));
 });
 
 test('the hover never exceeds what Windows will show, and counts what it left out', () => {
@@ -355,21 +389,22 @@ test('an empty machine says so in the hover too', () => {
   assert.equal(trayTooltip({ providers: PROVIDERS, accounts: [] }), 'Switchboard\nNo accounts set up yet, open Switchboard');
 });
 
-test('the resident tray pass forwards cached active usage without polling providers when switching is off', () => {
+test('the resident tray pass forwards every cached usage reading without polling providers when switching is off', () => {
   const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
   const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
-  const collect = main.indexOf('const activeQuotaAccountIds = new Set(Object.values(activeIds).filter(Boolean));');
+  const collect = main.indexOf('else reads.push(Promise.resolve(cachedQuotaIfPresent(a)));');
   const store = main.indexOf('trayFacts.quotas = snapshots;', collect);
   const gate = main.indexOf("if (settings.quotaWatch === 'off') return;", collect);
-  assert.ok(collect >= 0 && store > collect, 'the tray gathers and stores active-account usage');
+  assert.ok(collect >= 0 && store > collect, 'the tray gathers and stores all cache-only account usage');
   assert.ok(gate > store, 'the switching-mode gate comes after the hover facts are current');
-  assert.match(main, /else if \(activeQuotaAccountIds\.has\(a\.id\)\) reads\.push\(Promise\.resolve\(cachedQuotaIfPresent\(a\)\)\);/);
+  assert.doesNotMatch(main, /activeQuotaAccountIds/, 'cache-only tray usage is not restricted to the selected defaults');
   assert.match(main, /const QUOTA_TTL_MS = 5 \* 60 \* 1000;/, 'normal automatic reads are shared for five minutes');
   assert.match(main, /const RATE_LIMIT_BACKOFF_MS = 30 \* 60 \* 1000;/, 'a 429 slows automatic checks down further');
   assert.match(main, /const AUTH_FAILURE_BACKOFF_MS = 60 \* 60 \* 1000;/, 'a refused credential is not retried in a tight loop');
   assert.match(main, /function quotaAccountCacheKey\(account\)[\s\S]*credentialStamp\(account\)/, 'changing the credential ends its old cooldown');
   assert.match(main, /if \(!force && !hit\) \{\s+const shared = readSharedQuota\(/, 'a reading another process already made prevents a duplicate request');
   assert.match(main, /quotas: trayFacts\.quotas,/, 'the pure tooltip receives those snapshots');
+  assert.match(main, /signedIn: trayFacts\.signedIn,/, 'the pure tooltip knows which registered accounts are signed in');
 });
 
 test('quota replies update only the tray instead of recursively redrawing the Accounts page', () => {

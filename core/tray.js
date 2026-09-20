@@ -61,6 +61,19 @@ export function accountUsage(snapshot) {
   return shown.length ? shown.join(', ') : null;
 }
 
+/** The same two meters, squeezed enough for several accounts in the Windows tooltip. */
+function compactAccountUsage(snapshot) {
+  if (!readable(snapshot)) return null;
+  const values = [
+    ['5h', pct(snapshot, 'session')],
+    ['wk', pct(snapshot, 'week')],
+  ];
+  const shown = values
+    .filter(([, value]) => value != null && Number.isFinite(Number(value)))
+    .map(([label, value]) => `${label}${Number(value)}%`);
+  return shown.length ? shown.join(' ') : null;
+}
+
 /** The three things the watch can do when an account runs out, in plain words. */
 export const WATCH_MODES = [
   ['off', 'Do nothing'],
@@ -190,8 +203,8 @@ export function trayModel({
 export const TOOLTIP_LIMIT = 127;
 
 /**
- * The hover text: what each tool is set to, and anything about that which is not
- * simply ready.
+ * The hover text: every signed-in account, its usage when already cached, and anything
+ * about it which is not simply ready.
  *
  * It takes the same input as the menu and says the same things in the same words,
  * because a hover that disagrees with the menu underneath it is worse than one that
@@ -201,35 +214,56 @@ export const TOOLTIP_LIMIT = 127;
  * out the ones that do.
  */
 export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
-  const { providers = [], accounts = [], activeIds = {}, notes = {}, quotas = {} } = options;
-  const chosen = [];
-  const attention = [];
+  const {
+    providers = [], accounts = [], activeIds = {}, notes = {}, quotas = {}, signedIn = {},
+  } = options;
+  const detailed = [];
+  const compact = [];
   for (const provider of providers) {
-    for (const account of accounts.filter((a) => a.provider === provider.id)) {
+    const mine = accounts
+      .filter((a) => a.provider === provider.id)
+      .sort((a, b) => Number(activeIds[provider.id] === b.id) - Number(activeIds[provider.id] === a.id));
+    let first = true;
+    for (const account of mine) {
       const note = notes[account.id];
       const usage = accountUsage(quotas[account.id]);
+      const compactUsage = compactAccountUsage(quotas[account.id]);
+      const selected = activeIds[provider.id] === account.id;
+      // A cached usage reading is itself evidence that this account was active. The
+      // explicit sign-in state also keeps a ready account visible before it has a reading.
+      if (!selected && signedIn[account.id] !== true && !usage && !note) continue;
       // A previous reading belongs to the login that produced it. Once that login is
       // known to be gone, saying so is more useful than repeating its old percentages.
-      const activeDetail = note === 'signed out' ? note : (usage ?? note);
-      const named = note ? `${account.label}, ${note}` : account.label;
-      if (activeIds[provider.id] === account.id) {
-        chosen.push(`${provider.name}: ${account.label}${activeDetail ? `, ${activeDetail}` : ''}`);
-      }
-      // An account you are not on can still be the thing you needed to know about.
-      else if (note) attention.push(named);
+      const detail = note === 'signed out' ? note : (usage ?? note);
+      const shortDetail = note === 'signed out' ? note : (compactUsage ?? note);
+      const prefix = first ? `${provider.name}: ` : '  ';
+      detailed.push(`${prefix}${account.label}${detail ? `, ${detail}` : ''}`);
+      compact.push(`${prefix}${account.label}${shortDetail ? ` ${shortDetail}` : ''}`);
+      first = false;
     }
   }
   const warnings = trayWarnings(options).map((w) => w.label);
 
   const title = 'Switchboard';
+  const complete = (lines) => [title, ...warnings, ...lines].join('\n');
+  const detailedText = complete(detailed);
+  if (detailedText.length <= limit) return detailedText;
+  const compactText = complete(compact);
+  if (compactText.length <= limit) return compactText;
+
   const kept = [title];
   let used = title.length;
   let dropped = 0;
-  for (const line of [...chosen, ...warnings, ...attention]) {
+  const lines = [...warnings, ...compact];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (used + 1 + line.length <= limit) {
       kept.push(line);
       used += 1 + line.length;
-    } else dropped += 1;
+    } else {
+      dropped = lines.length - index;
+      break;
+    }
   }
   // Give a line back if that is what it takes to admit there are more.
   while (dropped > 0 && kept.length > 1) {
