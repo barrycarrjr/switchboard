@@ -201,6 +201,7 @@ export function trayModel({
  * without saying so, which is why the text below is fitted here rather than there.
  */
 export const TOOLTIP_LIMIT = 127;
+const TOOLTIP_INDENT = '\u2003';
 
 /**
  * The hover text: every signed-in account, its usage when already cached, and anything
@@ -223,7 +224,8 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
     const mine = accounts
       .filter((a) => a.provider === provider.id)
       .sort((a, b) => Number(activeIds[provider.id] === b.id) - Number(activeIds[provider.id] === a.id));
-    let first = true;
+    const detailedAccounts = [];
+    const compactAccounts = [];
     for (const account of mine) {
       const note = notes[account.id];
       const usage = accountUsage(quotas[account.id]);
@@ -236,44 +238,55 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
       // known to be gone, saying so is more useful than repeating its old percentages.
       const detail = note === 'signed out' ? note : (usage ?? note);
       const shortDetail = note === 'signed out' ? note : (compactUsage ?? note);
-      const prefix = first ? `${provider.name}: ` : '  ';
-      detailed.push(`${prefix}${account.label}${detail ? `, ${detail}` : ''}`);
-      compact.push(`${prefix}${account.label}${shortDetail ? ` ${shortDetail}` : ''}`);
-      first = false;
+      detailedAccounts.push(`${TOOLTIP_INDENT}${account.label}${detail ? `, ${detail}` : ''}`);
+      compactAccounts.push(`${TOOLTIP_INDENT}${account.label}${shortDetail ? ` ${shortDetail}` : ''}`);
+    }
+    if (detailedAccounts.length) {
+      detailed.push({ lines: [`${provider.name}:`, ...detailedAccounts], count: detailedAccounts.length });
+      compact.push({ lines: [`${provider.name}:`, ...compactAccounts], count: compactAccounts.length });
     }
   }
   const warnings = trayWarnings(options).map((w) => w.label);
 
   const title = 'Switchboard';
-  const complete = (lines) => [title, ...warnings, ...lines].join('\n');
+  const complete = (groups) => [title, ...warnings, ...groups.flatMap((group) => group.lines)].join('\n');
   const detailedText = complete(detailed);
   if (detailedText.length <= limit) return detailedText;
   const compactText = complete(compact);
   if (compactText.length <= limit) return compactText;
 
   const kept = [title];
+  const keptUnits = [];
   let used = title.length;
   let dropped = 0;
-  const lines = [...warnings, ...compact];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (used + 1 + line.length <= limit) {
-      kept.push(line);
-      used += 1 + line.length;
+  const units = [
+    ...warnings.map((line) => ({ lines: [line], count: 1 })),
+    ...compact,
+  ];
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index];
+    const added = unit.lines.reduce((sum, line) => sum + 1 + line.length, 0);
+    if (used + added <= limit) {
+      kept.push(...unit.lines);
+      keptUnits.push({ ...unit, added });
+      used += added;
     } else {
-      dropped = lines.length - index;
+      dropped = units.slice(index).reduce((sum, rest) => sum + rest.count, 0);
       break;
     }
   }
-  // Give a line back if that is what it takes to admit there are more.
-  while (dropped > 0 && kept.length > 1) {
+  // Give a whole provider group back if that is what it takes to admit there are more.
+  while (dropped > 0) {
     const tail = `and ${dropped} more`;
     if (used + 1 + tail.length <= limit) {
       kept.push(tail);
       break;
     }
-    used -= 1 + kept.pop().length;
-    dropped += 1;
+    const removed = keptUnits.pop();
+    if (!removed) break;
+    kept.splice(kept.length - removed.lines.length, removed.lines.length);
+    used -= removed.added;
+    dropped += removed.count;
   }
   return kept.join('\n');
 }

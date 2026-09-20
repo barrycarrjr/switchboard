@@ -290,7 +290,7 @@ const tip = (over = {}) => trayTooltip({
 });
 
 test('the hover names the account each tool is set to', () => {
-  assert.equal(tip(), 'Switchboard\nClaude Code: Secondary\nCodex: Default');
+  assert.equal(tip(), 'Switchboard\nClaude Code:\n\u2003Secondary\nCodex:\n\u2003Default');
 });
 
 test('the hover shows five-hour and weekly usage for every active account', () => {
@@ -299,7 +299,7 @@ test('the hover shows five-hour and weekly usage for every active account', () =
       'claude-account-2': { windows: [{ key: 'session', usedPercent: 56 }, { key: 'week', usedPercent: 90 }] },
       'codex-default': { windows: [{ key: 'session', usedPercent: 19 }, { key: 'week', usedPercent: 68 }] },
     },
-  }), 'Switchboard\nClaude Code: Secondary, 5h 56%, week 90%\nCodex: Default, 5h 19%, week 68%');
+  }), 'Switchboard\nClaude Code:\n\u2003Secondary, 5h 56%, week 90%\nCodex:\n\u2003Default, 5h 19%, week 68%');
 });
 
 test('cached usage from another signed-in account is also put in the hover', () => {
@@ -308,7 +308,7 @@ test('cached usage from another signed-in account is also put in the hover', () 
     quotas: {
       'claude-default': { windows: [{ key: 'session', usedPercent: 99 }, { key: 'week', usedPercent: 100 }] },
     },
-  }), 'Switchboard\nClaude Code: Secondary\n  Main Account, 5h 99%, week 100%\nCodex: Default');
+  }), 'Switchboard\nClaude Code:\n\u2003Secondary\n\u2003Main Account, 5h 99%, week 100%\nCodex:\n\u2003Default');
 });
 
 test('all four signed-in usage accounts fit in the real Windows tooltip limit', () => {
@@ -336,10 +336,12 @@ test('all four signed-in usage accounts fit in the real Windows tooltip limit', 
   });
   assert.equal(text, [
     'Switchboard',
-    'Claude Code: primary-acct-1 5h88% wk95%',
-    '  backup-acct 5h0% wk97%',
-    '  secondary-acct2 5h0% wk100%',
-    'Codex: Default wk21%',
+    'Claude Code:',
+    '\u2003primary-acct-1 5h88% wk95%',
+    '\u2003backup-acct 5h0% wk97%',
+    '\u2003secondary-acct2 5h0% wk100%',
+    'Codex:',
+    '\u2003Default wk21%',
   ].join('\n'));
   assert.equal(text.length, TOOLTIP_LIMIT);
 });
@@ -349,17 +351,17 @@ test('a signed-out state takes precedence over usage from the old login', () => 
     notes: { 'claude-account-2': 'signed out' },
     quotas: { 'claude-account-2': { windows: [{ key: 'session', usedPercent: 56 }, { key: 'week', usedPercent: 90 }] } },
   }).split('\n');
-  assert.ok(lines.includes('Claude Code: Secondary, signed out'));
+  assert.ok(lines.includes('\u2003Secondary, signed out'));
 });
 
 test('the state of the account in use is said where the account is named', () => {
   const lines = tip({ notes: { 'claude-account-2': 'out until 7:00 PM' } }).split('\n');
-  assert.ok(lines.includes('Claude Code: Secondary, out until 7:00 PM'));
+  assert.ok(lines.includes('\u2003Secondary, out until 7:00 PM'));
 });
 
 test('an account you are not on is still mentioned when it needs attention', () => {
   const lines = tip({ notes: { 'claude-default': 'out of quota' } }).split('\n');
-  assert.deepEqual(lines, ['Switchboard', 'Claude Code: Secondary', '  Main Account, out of quota', 'Codex: Default']);
+  assert.deepEqual(lines, ['Switchboard', 'Claude Code:', '\u2003Secondary', '\u2003Main Account, out of quota', 'Codex:', '\u2003Default']);
 });
 
 test('an account that is simply ready adds nothing to the hover', () => {
@@ -381,8 +383,13 @@ test('the hover never exceeds what Windows will show, and counts what it left ou
   const text = trayTooltip({ providers, accounts: many, activeIds: Object.fromEntries(providers.map((p, i) => [p.id, `acct-${i}`])) });
   assert.ok(text.length <= TOOLTIP_LIMIT, `${text.length} characters is more than Windows shows`);
   assert.match(text.split('\n').at(-1), /^and \d+ more$/);
-  // Every line that survived is a whole line: nothing is cut mid-word.
-  for (const line of text.split('\n').slice(1, -1)) assert.match(line, /^A tool with a long name \d: An account with a long label \d$/);
+  // Every provider that survived kept its account beneath it: no orphaned heading or
+  // account line is passed off as a complete group.
+  const lines = text.split('\n').slice(1, -1);
+  for (let i = 0; i < lines.length; i += 2) {
+    assert.match(lines[i], /^A tool with a long name \d:$/);
+    assert.match(lines[i + 1], /^\u2003An account with a long label \d$/);
+  }
 });
 
 test('an empty machine says so in the hover too', () => {

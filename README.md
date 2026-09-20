@@ -92,7 +92,9 @@ For deep-dives into architecture, guides, and full command references, see the *
   and, where the provider reports them, that account's five-hour and weekly usage. The
   hover never starts a provider request: it consumes readings already made by the
   Accounts page or an enabled quota watch, using a compact layout when that is what lets
-  all of them fit in Windows' tooltip limit. Normal reads are shared for five minutes, and a
+  all of them fit in Windows' tooltip limit. Each provider is a heading, with its accounts
+  indented beneath it in the same current-account-first order as the Accounts page. Normal
+  reads are shared for five minutes, and a
   rate-limited response backs automatic checks off for thirty minutes. A rejected
   credential backs off for an hour unless the credential file changes. A newer sign-in
   check on the Accounts page also clears any older tray warning.
