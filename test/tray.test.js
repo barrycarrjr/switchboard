@@ -371,3 +371,13 @@ test('the resident tray pass forwards cached active usage without polling provid
   assert.match(main, /if \(!force && !hit\) \{\s+const shared = readSharedQuota\(/, 'a reading another process already made prevents a duplicate request');
   assert.match(main, /quotas: trayFacts\.quotas,/, 'the pure tooltip receives those snapshots');
 });
+
+test('quota replies update only the tray instead of recursively redrawing the Accounts page', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
+  const start = main.indexOf("ipcMain.handle('sb:quota'");
+  const end = main.indexOf("ipcMain.handle('sb:setUsageSource'", start);
+  const handler = main.slice(start, end);
+  assert.match(handler, /trayFacts\.quotas = \{ \.\.\.trayFacts\.quotas, \[account\.id\]: result \};\s+refreshTray\(\);/);
+  assert.doesNotMatch(handler, /\brefresh\(\);/, 'a quota response must not trigger another render and another quota response');
+});

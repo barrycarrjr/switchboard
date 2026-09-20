@@ -224,7 +224,7 @@ async function stateSnapshot(forceAuthAccountId = null) {
   }
   if (notesChanged) {
     trayFacts.notes = notes;
-    refresh();
+    refreshTray();
   }
   return { accounts, providers, watchMode: settings.quotaWatch, version: app.getVersion() };
 }
@@ -480,12 +480,16 @@ function accountSignature() {
   return registry().accounts.map((a) => `${a.id}:${a.home}`).sort().join('|');
 }
 
-function refresh() {
+function refreshTray() {
   if (tray) {
     const inputs = trayInputs();
     tray.setContextMenu(buildTrayMenu(inputs));
     tray.setToolTip(trayTooltip(inputs));
   }
+}
+
+function refresh() {
+  refreshTray();
   if (win) win.webContents.send('sb:refresh');
   // The terminal list and the sign-in lines are built from the accounts, so an account
   // added or removed anywhere in the app leaves them wrong. Noticing here covers every
@@ -607,7 +611,7 @@ async function runQuotaWatch() {
     }
     trayFacts.notes = notes;
     trayFacts.quotas = snapshots;
-    refresh();
+    refreshTray();
 
     if (settings.quotaWatch === 'off') return;
 
@@ -1416,7 +1420,7 @@ ipcMain.handle('sb:quota', async (_e, accountId, force = false) => {
   // The Accounts page already paid for this reading. Hand it to the tooltip immediately
   // rather than waiting for the next cache-only tray pass or asking the provider again.
   trayFacts.quotas = { ...trayFacts.quotas, [account.id]: result };
-  refresh();
+  refreshTray();
   return result;
 });
 
