@@ -88,6 +88,13 @@ For deep-dives into architecture, guides, and full command references, see the *
   log, says why it is standing in, and always shows when the snapshot was taken rather
   than passing it off as live. Gemini and Qwen publish nothing, and the card says so
   instead of showing an empty bar.
+- Hovering over the tray icon shows the active account for every installed provider and,
+  where the provider reports them, that account's five-hour and weekly usage. The hover
+  never starts a provider request: it consumes a reading already made by the Accounts
+  page or an enabled quota watch. Normal reads are shared for five minutes, and a
+  rate-limited response backs automatic checks off for thirty minutes. A rejected
+  credential backs off for an hour unless the credential file changes. A newer sign-in
+  check on the Accounts page also clears any older tray warning.
 - A fallback never replaces something newer. When a live check fails and the snapshot
   standing in was taken before the last live reading, the card keeps that reading, says
   the newer check failed, and marks it stale once it is old enough to be. A snapshot is

@@ -1,5 +1,5 @@
 import { defaultFollowsLanes } from './lanes.js';
-import { readable, spentEvidence } from './lanes-util.js';
+import { pct, readable, spentEvidence } from './lanes-util.js';
 
 /**
  * What the tray menu says, as data.
@@ -46,6 +46,19 @@ export function accountNote(login, snapshot, now = Date.now(), format = {}) {
   }
   if (evidence.state === 'clear' && readable(snapshot)) return null;
   return 'usage unknown';
+}
+
+/** The two account-wide meters that fit in the Windows hover text. */
+export function accountUsage(snapshot) {
+  if (!readable(snapshot)) return null;
+  const values = [
+    ['5h', pct(snapshot, 'session')],
+    ['week', pct(snapshot, 'week')],
+  ];
+  const shown = values
+    .filter(([, value]) => value != null && Number.isFinite(Number(value)))
+    .map(([label, value]) => `${label} ${Number(value)}%`);
+  return shown.length ? shown.join(', ') : null;
 }
 
 /** The three things the watch can do when an account runs out, in plain words. */
@@ -188,14 +201,20 @@ export const TOOLTIP_LIMIT = 127;
  * out the ones that do.
  */
 export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
-  const { providers = [], accounts = [], activeIds = {}, notes = {} } = options;
+  const { providers = [], accounts = [], activeIds = {}, notes = {}, quotas = {} } = options;
   const chosen = [];
   const attention = [];
   for (const provider of providers) {
     for (const account of accounts.filter((a) => a.provider === provider.id)) {
       const note = notes[account.id];
+      const usage = accountUsage(quotas[account.id]);
+      // A previous reading belongs to the login that produced it. Once that login is
+      // known to be gone, saying so is more useful than repeating its old percentages.
+      const activeDetail = note === 'signed out' ? note : (usage ?? note);
       const named = note ? `${account.label}, ${note}` : account.label;
-      if (activeIds[provider.id] === account.id) chosen.push(`${provider.name}: ${named}`);
+      if (activeIds[provider.id] === account.id) {
+        chosen.push(`${provider.name}: ${account.label}${activeDetail ? `, ${activeDetail}` : ''}`);
+      }
       // An account you are not on can still be the thing you needed to know about.
       else if (note) attention.push(named);
     }

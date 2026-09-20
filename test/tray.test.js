@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { trayModel, trayTooltip, accountNote, whenBack, WATCH_MODES, TOOLTIP_LIMIT } from '../core/tray.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { trayModel, trayTooltip, accountNote, accountUsage, whenBack, WATCH_MODES, TOOLTIP_LIMIT } from '../core/tray.js';
 
 /**
  * The tray menu is the part of Switchboard most people see most days, and until the rows
@@ -132,6 +135,17 @@ test('an account that cannot be clicked usefully says why', () => {
 test('an account with no reset time still says it is out', () => {
   const noReset = { sampledAt: NOW - HOUR, stale: true, windows: [{ key: 'week', usedPercent: 100, resetsAt: null }] };
   assert.equal(accountNote({ signedIn: true }, noReset, NOW), 'out of quota');
+});
+
+test('the compact usage text names the five-hour and overall weekly meters', () => {
+  const snapshot = { windows: [
+    { key: 'session', usedPercent: 56 },
+    { key: 'week', usedPercent: 90 },
+    { key: 'week_sonnet', usedPercent: 5 },
+  ] };
+  assert.equal(accountUsage(snapshot), '5h 56%, week 90%');
+  assert.equal(accountUsage({ windows: [{ key: 'week', usedPercent: 19 }] }), 'week 19%');
+  assert.equal(accountUsage({ ...snapshot, stale: true }), null, 'an old reading is not presented as current usage');
 });
 
 test('the state word is appended to the label, because Windows has no second line', () => {
@@ -279,6 +293,31 @@ test('the hover names the account each tool is set to', () => {
   assert.equal(tip(), 'Switchboard\nClaude Code: Secondary\nCodex: Default');
 });
 
+test('the hover shows five-hour and weekly usage for every active account', () => {
+  assert.equal(tip({
+    quotas: {
+      'claude-account-2': { windows: [{ key: 'session', usedPercent: 56 }, { key: 'week', usedPercent: 90 }] },
+      'codex-default': { windows: [{ key: 'session', usedPercent: 19 }, { key: 'week', usedPercent: 68 }] },
+    },
+  }), 'Switchboard\nClaude Code: Secondary, 5h 56%, week 90%\nCodex: Default, 5h 19%, week 68%');
+});
+
+test('usage from an inactive account is not put in the hover', () => {
+  assert.equal(tip({
+    quotas: {
+      'claude-default': { windows: [{ key: 'session', usedPercent: 99 }, { key: 'week', usedPercent: 100 }] },
+    },
+  }), tip());
+});
+
+test('a signed-out state takes precedence over usage from the old login', () => {
+  const lines = tip({
+    notes: { 'claude-account-2': 'signed out' },
+    quotas: { 'claude-account-2': { windows: [{ key: 'session', usedPercent: 56 }, { key: 'week', usedPercent: 90 }] } },
+  }).split('\n');
+  assert.ok(lines.includes('Claude Code: Secondary, signed out'));
+});
+
 test('the state of the account in use is said where the account is named', () => {
   const lines = tip({ notes: { 'claude-account-2': 'out until 7:00 PM' } }).split('\n');
   assert.ok(lines.includes('Claude Code: Secondary, out until 7:00 PM'));
@@ -314,4 +353,21 @@ test('the hover never exceeds what Windows will show, and counts what it left ou
 
 test('an empty machine says so in the hover too', () => {
   assert.equal(trayTooltip({ providers: PROVIDERS, accounts: [] }), 'Switchboard\nNo accounts set up yet, open Switchboard');
+});
+
+test('the resident tray pass forwards cached active usage without polling providers when switching is off', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
+  const collect = main.indexOf('const activeQuotaAccountIds = new Set(Object.values(activeIds).filter(Boolean));');
+  const store = main.indexOf('trayFacts.quotas = snapshots;', collect);
+  const gate = main.indexOf("if (settings.quotaWatch === 'off') return;", collect);
+  assert.ok(collect >= 0 && store > collect, 'the tray gathers and stores active-account usage');
+  assert.ok(gate > store, 'the switching-mode gate comes after the hover facts are current');
+  assert.match(main, /else if \(activeQuotaAccountIds\.has\(a\.id\)\) reads\.push\(Promise\.resolve\(cachedQuotaIfPresent\(a\)\)\);/);
+  assert.match(main, /const QUOTA_TTL_MS = 5 \* 60 \* 1000;/, 'normal automatic reads are shared for five minutes');
+  assert.match(main, /const RATE_LIMIT_BACKOFF_MS = 30 \* 60 \* 1000;/, 'a 429 slows automatic checks down further');
+  assert.match(main, /const AUTH_FAILURE_BACKOFF_MS = 60 \* 60 \* 1000;/, 'a refused credential is not retried in a tight loop');
+  assert.match(main, /function quotaAccountCacheKey\(account\)[\s\S]*credentialStamp\(account\)/, 'changing the credential ends its old cooldown');
+  assert.match(main, /if \(!force && !hit\) \{\s+const shared = readSharedQuota\(/, 'a reading another process already made prevents a duplicate request');
+  assert.match(main, /quotas: trayFacts\.quotas,/, 'the pure tooltip receives those snapshots');
 });

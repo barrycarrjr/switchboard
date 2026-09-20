@@ -7,7 +7,7 @@ import { loadRegistry, saveRegistry, addAccount, createAccount, removeAccount, r
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
 import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
 import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
-import { lastSharedQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
+import { lastSharedQuota, readSharedQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
 import { fetchAllProviderStatus } from '../core/provider-status.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
@@ -79,6 +79,10 @@ let claudeExecutablePromise = null;
 
 function accountCacheKey(account) {
   return `${account?.provider ?? ''}:${path.resolve(account?.home ?? '').toLowerCase()}`;
+}
+
+function quotaAccountCacheKey(account) {
+  return `${accountCacheKey(account)}:${credentialStamp(account)}`;
 }
 
 function credentialStamp(account) {
@@ -204,6 +208,24 @@ async function stateSnapshot(forceAuthAccountId = null) {
     ...a,
     login: await cachedLoginState(a, a.id === forceAuthAccountId),
   })));
+  // A forced or newly refreshed Accounts-page check is newer than the tray's last
+  // five-minute pass. Reconcile the one categorical state here so the hover cannot
+  // keep saying "signed out" beside a card that Claude has just verified as signed in.
+  const notes = { ...trayFacts.notes };
+  let notesChanged = false;
+  for (const account of accounts) {
+    if (account.login?.signedIn === true && notes[account.id] === 'signed out') {
+      delete notes[account.id];
+      notesChanged = true;
+    } else if (account.login?.signedIn === false && notes[account.id] !== 'signed out') {
+      notes[account.id] = 'signed out';
+      notesChanged = true;
+    }
+  }
+  if (notesChanged) {
+    trayFacts.notes = notes;
+    refresh();
+  }
   return { accounts, providers, watchMode: settings.quotaWatch, version: app.getVersion() };
 }
 
@@ -277,7 +299,7 @@ function createWindow() {
  */
 // installedProviders starts null, meaning "not yet detected": the menu shows every
 // provider until the first detect lands, rather than briefly hiding tools that are there.
-let trayFacts = { terminals: [], alsoSignedIn: [], notes: {}, update: null, installedProviders: null };
+let trayFacts = { terminals: [], alsoSignedIn: [], notes: {}, quotas: {}, update: null, installedProviders: null };
 
 async function refreshTrayFacts() {
   if (factsInFlight) return;
@@ -338,6 +360,7 @@ function trayInputs() {
     accounts: reg.accounts,
     activeIds,
     notes: trayFacts.notes,
+    quotas: trayFacts.quotas,
     alsoSignedIn: trayFacts.alsoSignedIn,
     terminals: trayFacts.terminals,
     watchMode: settings.quotaWatch,
@@ -434,6 +457,7 @@ function switchDefaultTo(accountId) {
     if (refusal) throw new Error(refusal);
     setActive(reg, accountId);
     refresh();
+    runQuotaWatch();
   } catch (e) {
     refresh();
     dialog.showErrorBox('Switch failed', String(e.message || e));
@@ -537,32 +561,55 @@ async function runQuotaWatch() {
       }
     }
 
-    if (settings.quotaWatch === 'off') return;
     const reg = registry();
 
-    // The watch shares the render cache, so it never burns the rate-limit allowance.
+    // The hover is useful even when automatic switching is off, but it must not create
+    // background vendor traffic of its own. Read every sign-in so a stale warning cannot
+    // survive a newer Accounts-page check. For active accounts, reuse only an in-memory
+    // or shared reading unless the enabled watch already needs a live quota check.
     const snapshots = {};
     const loginStates = {};
+    const activeIds = Object.fromEntries(Object.keys(PROVIDERS).map((id) => [id, activeAccount(reg, id)?.id ?? null]));
+    const activeQuotaAccountIds = new Set(Object.values(activeIds).filter(Boolean));
+    const liveQuotaAccountIds = new Set();
+    if (settings.quotaWatch !== 'off') {
+      const watchProviders = new Set(['claude']);
+      settings.lanes.forEach((lane) => watchProviders.add(lane.harness));
+      for (const account of reg.accounts) {
+        if (watchProviders.has(account.provider)) liveQuotaAccountIds.add(account.id);
+      }
+    }
 
-    // Only fetch for Claude or accounts that are actually in lanes to avoid spamming
-    const providersToFetch = new Set(['claude']);
-    settings.lanes.forEach(l => providersToFetch.add(l.harness));
-
-    await Promise.all(reg.accounts.filter((x) => providersToFetch.has(x.provider)).map(async (a) => {
-      [snapshots[a.id], loginStates[a.id]] = await Promise.all([
-        cachedQuota(a),
-        cachedLoginState(a),
-      ]);
+    await Promise.all(reg.accounts.map(async (a) => {
+      const reads = [cachedLoginState(a)];
+      if (PROVIDERS[a.provider]?.quota) {
+        if (liveQuotaAccountIds.has(a.id)) reads.push(cachedQuota(a));
+        else if (activeQuotaAccountIds.has(a.id)) reads.push(Promise.resolve(cachedQuotaIfPresent(a)));
+      }
+      const [, snapshot] = await Promise.all(reads);
+      // The Accounts page may have forced a newer verification while quota was in
+      // flight. Re-read the cheap cache so an older result cannot win that race and
+      // put "signed out" back into the tray after the page just cleared it.
+      loginStates[a.id] = await cachedLoginState(a);
+      if (snapshot) snapshots[a.id] = snapshot;
     }));
 
-    // The watch has just read sign-in and usage for these accounts; the menu says what
-    // they mean, without a reading of its own.
+    // The tray has just read sign-in and usage for these accounts; the menu and hover
+    // say what they mean without doing asynchronous work of their own.
     const notes = {};
     for (const a of reg.accounts) {
-      if (!(a.id in loginStates) && !(a.id in snapshots)) continue;
-      notes[a.id] = accountNote(loginStates[a.id], snapshots[a.id]);
+      const login = loginStates[a.id];
+      const snapshot = snapshots[a.id];
+      if (login?.signedIn === false || snapshot) {
+        const note = accountNote(login, snapshot);
+        if (note) notes[a.id] = note;
+      }
     }
     trayFacts.notes = notes;
+    trayFacts.quotas = snapshots;
+    refresh();
+
+    if (settings.quotaWatch === 'off') return;
 
     const pinPresent = configuredClaudeOverrides().length > 0;
 
@@ -577,7 +624,6 @@ async function runQuotaWatch() {
       now: Date.now(),
     });
 
-    const activeIds = Object.fromEntries(Object.keys(PROVIDERS).map((id) => [id, activeAccount(reg, id)?.id ?? null]));
     const { notices, memory } = freshNotices(switchDecisions, watchNotices, activeIds);
     watchNotices = memory;
 
@@ -789,6 +835,7 @@ ipcMain.handle('sb:setActive', async (_e, id) => {
   }
   const account = setActive(reg, id);
   refresh();
+  runQuotaWatch();
   return { ok: true, account };
 });
 
@@ -1236,17 +1283,40 @@ ipcMain.handle('sb:openTerminal', (_e, bin, accountId = null) => openTerminalOn(
  * asks at most once per account per interval and otherwise serves the last good
  * answer (marked stale) rather than burning the allowance on every render.
  */
-const QUOTA_TTL_MS = 90 * 1000;
+const QUOTA_TTL_MS = 5 * 60 * 1000;
+const RATE_LIMIT_BACKOFF_MS = 30 * 60 * 1000;
+const AUTH_FAILURE_BACKOFF_MS = 60 * 60 * 1000;
 const quotaCache = new Map(); // accountId -> { key, at, lastAttemptAt, result }
 const quotaInflight = new Map(); // accountId -> { key, pending }
 
+/** A current quota reading already paid for by another surface, without any I/O to a vendor. */
+function cachedQuotaIfPresent(account, now = Date.now()) {
+  const key = quotaAccountCacheKey(account);
+  const hit = quotaCache.get(account.id);
+  if (hit?.key === key && hit.result) {
+    const liveReadingAged = hit.result.source === 'token'
+      && (hit.at == null || now - hit.at > DESKTOP_STALE_MS);
+    return {
+      ...hit.result,
+      observedAt: hit.at,
+      cached: true,
+      ...(hit.lastError ? { refreshError: hit.lastError } : {}),
+      ...(liveReadingAged ? { stale: true } : {}),
+    };
+  }
+  return readSharedQuota(account.id, sharedQuotaKey(account.provider, account.home), now);
+}
+
 async function cachedQuota(account, force = false) {
-  const key = accountCacheKey(account);
+  const key = quotaAccountCacheKey(account);
   const cached = quotaCache.get(account.id);
   const hit = cached?.key === key ? cached : null;
   const now = Date.now();
   const lastAttemptAt = hit?.lastAttemptAt ?? hit?.at ?? 0;
-  if (!force && hit && now - lastAttemptAt < QUOTA_TTL_MS) {
+  const retryDelay = hit?.lastError === 'rate-limited'
+    ? RATE_LIMIT_BACKOFF_MS
+    : hit?.lastError === 'auth' ? AUTH_FAILURE_BACKOFF_MS : QUOTA_TTL_MS;
+  if (!force && hit && now - lastAttemptAt < retryDelay) {
     if (!hit.result) return { error: hit.lastError, cached: true, checkedAt: lastAttemptAt };
     return {
       ...hit.result,
@@ -1254,6 +1324,20 @@ async function cachedQuota(account, force = false) {
       cached: true,
       ...(hit.lastError ? { refreshError: hit.lastError } : {}),
     };
+  }
+  if (!force && !hit) {
+    const shared = readSharedQuota(account.id, sharedQuotaKey(account.provider, account.home), now);
+    if (shared) {
+      const { observedAt, cached: _cached, ...result } = shared;
+      quotaCache.set(account.id, {
+        key,
+        at: observedAt,
+        lastAttemptAt: observedAt,
+        lastError: null,
+        result,
+      });
+      return shared;
+    }
   }
   const inFlight = quotaInflight.get(account.id);
   if (inFlight?.key === key) return inFlight.pending;
@@ -1283,7 +1367,13 @@ async function cachedQuota(account, force = false) {
     // one, however readable it is. See heldReadingIsNewer.
     const olderSnapshot = heldReadingIsNewer(result, held?.result, held?.at);
     if (!result.error && !olderSnapshot) {
-      if (isCurrent) quotaCache.set(account.id, { key, at: completedAt, lastAttemptAt: completedAt, lastError: null, result });
+      if (isCurrent) quotaCache.set(account.id, {
+        key,
+        at: completedAt,
+        lastAttemptAt: completedAt,
+        lastError: result.fallbackReason ?? null,
+        result,
+      });
       // Shared with the CLI (and through it Paperclip and the Slack bridge), so the
       // app's five-minute watch is the one caller that actually spends requests.
       writeSharedQuota(account.id, sharedQuotaKey(account.provider, account.home), result, completedAt);
@@ -1318,11 +1408,16 @@ async function cachedQuota(account, force = false) {
   }
 }
 
-ipcMain.handle('sb:quota', (_e, accountId, force = false) => {
+ipcMain.handle('sb:quota', async (_e, accountId, force = false) => {
   const account = registry().accounts.find((a) => a.id === accountId);
   if (!account) throw new Error(`no such account: ${accountId}`);
   if (!PROVIDERS[account.provider]?.quota) return { error: 'unsupported' };
-  return cachedQuota(account, force === true);
+  const result = await cachedQuota(account, force === true);
+  // The Accounts page already paid for this reading. Hand it to the tooltip immediately
+  // rather than waiting for the next cache-only tray pass or asking the provider again.
+  trayFacts.quotas = { ...trayFacts.quotas, [account.id]: result };
+  refresh();
+  return result;
 });
 
 ipcMain.handle('sb:setUsageSource', async (_e, accountId) => {
