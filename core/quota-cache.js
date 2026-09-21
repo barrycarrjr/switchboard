@@ -70,7 +70,7 @@ export function readSharedQuota(accountId, key, now = Date.now(), file = quotaCa
 
 /** Record a live reading for other processes. Failures and fallbacks are never shared. */
 export function writeSharedQuota(accountId, key, result, at = Date.now(), file = quotaCacheFile()) {
-  if (!result || result.error || result.source !== 'token') return;
+  if (!result || result.error || (result.source !== 'token' && result.source !== 'cli')) return;
   let all = {};
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -120,11 +120,11 @@ export function lastSharedQuota(accountId, file = quotaCacheFile()) {
  * shared reading is served instead, saying the newer check failed, and stale past the
  * same bound the tray uses. See heldReadingIsNewer.
  */
-export async function sharedProviderQuota(account, { usageSource = null, now = Date.now(), fetchImpl = fetch, file = quotaCacheFile() } = {}) {
+export async function sharedProviderQuota(account, { usageSource = null, now = Date.now(), fetchImpl = fetch, file = quotaCacheFile(), antigravityQuotaFn = undefined } = {}) {
   const key = sharedQuotaKey(account.provider, account.home);
   const hit = readSharedQuota(account.id, key, now, file);
   if (hit) return hit;
-  const fetched = await providerQuota(account.provider, account.home, { fetchImpl, usageSource, now });
+  const fetched = await providerQuota(account.provider, account.home, { fetchImpl, usageSource, now, ...(antigravityQuotaFn ? { antigravityQuotaFn } : {}) });
   const held = lastSharedQuota(account.id, file);
   const result = inheritResetTimes(fetched, held, now);
   if (heldReadingIsNewer(result, held, held?.observedAt)) {

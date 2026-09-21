@@ -659,10 +659,11 @@ export async function providerQuota(provider, home, {
   desktopProfile = defaultClaudeDesktopProfile(),
   now = Date.now(),
   allowDesktopFallback = true,
+  antigravityQuotaFn = fetchAntigravityQuota,
 } = {}) {
   if (provider === 'claude') return accountQuota(home, fetchImpl, usageSource, now, desktopProfile, allowDesktopFallback);
   if (provider === 'codex') return codexAccountQuota(home, fetchImpl, now);
-  if (provider === 'antigravity') return fetchAntigravityQuota({ now });
+  if (provider === 'antigravity') return antigravityQuotaFn({ now });
   return { error: 'unsupported' };
 }
 

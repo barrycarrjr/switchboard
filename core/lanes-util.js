@@ -13,7 +13,12 @@ export function isSpent(snapshot) {
   if (!readable(snapshot)) return null;
   const session = pct(snapshot, 'session');
   const week = pct(snapshot, 'week');
-  if (session == null && week == null) return null;
+  if (session == null && week == null) {
+    if (snapshot?.windows?.length) {
+      return snapshot.windows.some((w) => (w.usedPercent ?? 0) >= SPENT_AT);
+    }
+    return null;
+  }
   return (session ?? 0) >= SPENT_AT || (week ?? 0) >= SPENT_AT;
 }
 
@@ -72,7 +77,11 @@ export function spentEvidence(snapshot, now) {
   let sawReadable = false;
   let spent = false;
 
-  for (const key of GATING) {
+  const gatingKeys = GATING.some((k) => windows.some((x) => x.key === k))
+    ? GATING
+    : windows.map((x) => x.key);
+
+  for (const key of gatingKeys) {
     const w = windows.find((x) => x.key === key);
     if (!w || w.usedPercent == null) continue;
     sawReadable = true;
@@ -82,7 +91,8 @@ export function spentEvidence(snapshot, now) {
       else sawExpired = true; // the window turned over; what has been used since is unknown
       continue;
     }
-    if (now - takenAt <= WINDOW_LIFETIME_MS[key]) spent = true;
+    const lifetime = WINDOW_LIFETIME_MS[key] ?? (String(key).includes('5h') ? 5 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000);
+    if (now - takenAt <= lifetime) spent = true;
     else sawExpired = true;
   }
 

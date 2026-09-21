@@ -27,6 +27,13 @@ function claudeAccount(label, id) {
   return { id, provider: 'claude', label, home };
 }
 
+
+const NO_SINGLE_SIGN_IN = {
+  presenceFn: async () => [],
+  antigravityFn: async () => null,
+  installedFn: async () => [],
+};
+
 function usageFetch(byToken) {
   return async (_url, init) => {
     const token = init.headers.authorization.replace('Bearer ', '');
@@ -48,6 +55,7 @@ test('collectStatus reports every provider, marks the active account, and attach
     }),
     now: NOW,
     quotaCacheFile: scratchCache(),
+    ...NO_SINGLE_SIGN_IN,
   });
 
   const claude = status.providers.find((p) => p.id === 'claude');
@@ -73,6 +81,7 @@ test('an account that is not signed in is never asked for usage', async () => {
     fetchImpl: async () => { called = true; return { ok: true, json: async () => ({}) }; },
     now: NOW,
     quotaCacheFile: scratchCache(),
+    ...NO_SINGLE_SIGN_IN,
   });
   const account = status.providers[0].accounts[0];
   assert.equal(called, false);
@@ -89,6 +98,7 @@ test('collectStatus shares its readings in the cache file it is given, never the
     fetchImpl: usageFetch({ 'tok-claude-cache-check': { five_hour: { utilization: 5 } } }),
     now: NOW,
     quotaCacheFile: file,
+    ...NO_SINGLE_SIGN_IN,
   });
   const shared = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.equal(shared['claude-cache-check'].result.windows[0].usedPercent, 5, 'the reading landed in the scratch file');
@@ -173,4 +183,81 @@ test('formatStatus names an unreadable window instead of printing a zero', () =>
   assert.match(formatStatus(provider('anything-new')), /usage unavailable right now/);
   // An active folder nobody registered is the thing most worth saying out loud.
   assert.match(formatStatus(provider('auth')), /the active folder is not registered: X:\\other/);
+});
+
+
+test('collectStatus includes single-sign-in providers and Antigravity live usage', async () => {
+  const status = await collectStatus({
+    registry: { accounts: [] },
+    envReader: () => null,
+    now: NOW,
+    quotaCacheFile: scratchCache(),
+    antigravityFn: async () => ({
+      cliInstalled: true,
+      appInstalled: true,
+      signedIn: true,
+      who: 'testuser',
+      plan: 'Pro',
+    }),
+    antigravityQuotaFn: async () => ({
+      windows: [
+        { key: 'gemini-weekly', label: 'Gemini (Week)', usedPercent: 15, resetsAt: NOW + 86400_000 },
+      ],
+      source: 'cli',
+      vendor: 'Google Antigravity',
+      plan: 'Pro',
+    }),
+    presenceFn: async () => [
+      { id: 'copilot', name: 'Copilot CLI', signedIn: true, who: 'testuser', note: 'Signs in with GitHub' },
+      { id: 'junie', name: 'Junie', signedIn: true, who: null, note: 'Runs on JetBrains AI credits' },
+    ],
+    installedFn: async () => [],
+  });
+
+  const ag = status.providers.find((p) => p.id === 'antigravity');
+  assert.ok(ag);
+  assert.equal(ag.accounts[0].login.signedIn, true);
+  assert.equal(ag.accounts[0].quota.windows[0].usedPercent, 15);
+  assert.equal(ag.accounts[0].quota.plan, 'Pro');
+
+  const copilot = status.providers.find((p) => p.id === 'copilot');
+  assert.ok(copilot);
+  assert.equal(copilot.accounts[0].label, 'Copilot CLI (testuser)');
+  assert.equal(copilot.accounts[0].login.signedIn, true);
+
+  const junie = status.providers.find((p) => p.id === 'junie');
+  assert.ok(junie);
+  assert.equal(junie.accounts[0].login.signedIn, true);
+
+  assert.equal(status.alsoSignedIn.length, 3);
+  assert.equal(status.alsoSignedIn[0].name, 'Antigravity');
+  assert.equal(status.alsoSignedIn[0].quota.windows[0].usedPercent, 15);
+});
+
+test('formatStatus formats single-sign-in providers cleanly', () => {
+  const text = formatStatus({
+    generatedAt: NOW,
+    providers: [
+      {
+        id: 'antigravity', name: 'Antigravity', envVar: null, envValue: null,
+        activeHome: 'X:\\\\home\\\\.gemini', activeHomeExists: true, activeAccountId: 'antigravity',
+        hasQuota: true, quotaNote: null, singleSignIn: true,
+        accounts: [{
+          id: 'antigravity', label: 'Antigravity (testuser, Pro)', home: 'X:\\\\home\\\\.gemini', active: true,
+          login: { signedIn: true, level: 'ok', detail: 'Signed in (Pro)' },
+          quota: {
+            source: 'cli', plan: 'Pro', windows: [
+              { key: 'gemini-weekly', label: 'Gemini (Week)', usedPercent: 15, resetsAt: NOW + 3600_000 },
+            ],
+          },
+        }],
+      },
+    ],
+  });
+
+  assert.match(text, /^Antigravity$/m);
+  assert.match(text, /\* Antigravity \(testuser, Pro\)/);
+  assert.match(text, /Signed in \(Pro\)/);
+  assert.match(text, /Gemini \(Week\)/);
+  assert.match(text, /15%/);
 });

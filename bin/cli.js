@@ -40,7 +40,7 @@ async function prepareLanesContext(settings, registry, overrides = {}) {
     if (!lanes.some(l => l.accountId === account.id)) continue;
     loginStates[account.id] = await accountLoginState(account);
     const def = PROVIDERS[account.provider];
-    if (def && def.quota) {
+    if ((def && def.quota) || account.provider === 'antigravity') {
       // Through the shared cache: `dry-run` is what Paperclip and the Slack bridge
       // invoke before every spawn, so uncached live calls here multiplied across
       // every automation on the machine.
@@ -687,9 +687,10 @@ async function main() {
     }
     case 'quota': {
       const settings = loadSettings();
-      for (const a of registry.accounts) {
+      const allAccounts = await resolveAllAccounts(registry);
+      for (const a of allAccounts) {
         const def = PROVIDERS[a.provider];
-        if (!def.quota) continue;
+        if (!def?.quota && a.provider !== 'antigravity') continue;
         out(`${a.label} (${a.home})`);
         const q = await sharedProviderQuota(a, { usageSource: settings.usageSources[a.id] ?? null });
         if (q.error === 'no-credentials') out('  usage unavailable: no access credential or matching Claude Desktop sample');
@@ -712,6 +713,7 @@ async function main() {
     case 'lanes': {
       const [sub, ...rest] = args;
       const settings = loadSettings();
+      const allAccounts = await resolveAllAccounts(registry);
 
       if (!sub || sub === 'list' || sub === '--json') {
         if (args.includes('--json')) {

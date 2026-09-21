@@ -1,13 +1,18 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { PROVIDERS, activeAccount, activeHome } from './accounts.js';
 import { accountLoginState } from './doctor.js';
 import { sharedProviderQuota } from './quota-cache.js';
 import { readUserEnv } from './env.js';
+import { detectPresence } from './presence.js';
+import { antigravityPresence } from './apps.js';
+import { detectInstalled } from './providers.js';
 
-/**
+  /**
  * One reading of everything Switchboard knows about accounts: which folder each tool
  * will use next, which registered account that is, whether it is signed in, and how
- * how much of each available limit it has used.
+ * much of each available limit it has used.
  *
  * It exists so the whole picture is available without the tray: away from the machine,
  * `switchboard status` is the only way to see it, and a person reading it remotely
@@ -23,12 +28,16 @@ export async function collectStatus({
   // app's own file; a test passes a scratch one, because a test that did not was found
   // to have written invented accounts into a machine's real usage cache.
   quotaCacheFile = undefined,
+  presenceFn = detectPresence,
+  antigravityFn = antigravityPresence,
+  installedFn = detectInstalled,
+  antigravityQuotaFn = undefined,
 } = {}) {
   const usageSources = settings.usageSources ?? {};
   const providers = await Promise.all(Object.values(PROVIDERS).map(async (def) => {
     const home = activeHome(def.id, envReader);
     const active = activeAccount(registry, def.id, envReader);
-    const mine = registry.accounts.filter((a) => a.provider === def.id);
+    const mine = (registry?.accounts || []).filter((a) => a.provider === def.id);
     const accounts = await Promise.all(mine.map(async (a) => {
       const login = accountLoginState(a, now);
       const quota = def.quota && login.signedIn
@@ -49,12 +58,156 @@ export async function collectStatus({
       accounts,
     };
   }));
-  return { generatedAt: now, providers };
+
+  // Single-sign-in tools hold one login for the whole machine rather than switchable folders.
+  // We resolve Antigravity, presence-detected tools (Copilot, Junie), and installed CLIs so
+  // remote callers and dashboards see every available signed-in provider.
+  let antigravity = null;
+  try {
+    if (antigravityFn) antigravity = await antigravityFn();
+  } catch (suppressed) { /* ignore */ }
+
+  let antigravityQuota = null;
+  if (antigravity && (antigravity.signedIn || antigravity.cliInstalled || antigravity.appInstalled)) {
+    const agHome = path.join(os.homedir(), '.gemini');
+    if (antigravity.signedIn) {
+      try {
+        antigravityQuota = await sharedProviderQuota(
+          { id: 'antigravity', provider: 'antigravity', home: agHome },
+          { fetchImpl, now, file: quotaCacheFile, antigravityQuotaFn }
+        );
+      } catch (suppressed) { /* ignore */ }
+    }
+    const who = antigravity.who && antigravity.plan
+      ? (antigravity.who + ', ' + antigravity.plan)
+      : (antigravity.who ?? antigravity.plan);
+    const label = who ? ('Antigravity (' + who + ')') : 'Antigravity';
+    providers.push({
+      id: 'antigravity',
+      name: 'Antigravity',
+      envVar: null,
+      envValue: null,
+      activeHome: agHome,
+      activeHomeExists: fs.existsSync(agHome),
+      activeAccountId: 'antigravity',
+      hasQuota: true,
+      quotaNote: null,
+      singleSignIn: true,
+      accounts: [{
+        id: 'antigravity',
+        label,
+        home: agHome,
+        active: true,
+        login: {
+          signedIn: Boolean(antigravity.signedIn),
+          level: antigravity.signedIn ? 'ok' : 'warn',
+          detail: antigravity.signedIn ? (antigravity.plan ? ('Signed in (' + antigravity.plan + ')') : 'Signed in') : 'Not signed in',
+        },
+        quota: antigravityQuota,
+      }],
+    });
+  }
+
+  let presences = [];
+  try {
+    if (presenceFn) presences = await presenceFn();
+  } catch (suppressed) { /* ignore */ }
+
+  for (const p of presences || []) {
+    if (p.id in PROVIDERS) continue;
+    if (providers.some((pr) => pr.id === p.id)) continue;
+    if (p.signedIn || p.cliInstalled) {
+      const pHome = typeof p.home === 'function' ? p.home() : (p.home || path.join(os.homedir(), '.' + p.id));
+      const label = p.who ? (p.name || p.id) + ' (' + p.who + ')' : (p.name || p.id);
+      providers.push({
+        id: p.id,
+        name: p.name || p.id,
+        envVar: null,
+        envValue: null,
+        activeHome: pHome,
+        activeHomeExists: fs.existsSync(pHome),
+        activeAccountId: p.id,
+        hasQuota: false,
+        quotaNote: p.note ?? null,
+        singleSignIn: true,
+        accounts: [{
+          id: p.id,
+          label,
+          home: pHome,
+          active: true,
+          login: {
+            signedIn: Boolean(p.signedIn),
+            level: p.signedIn ? 'ok' : 'warn',
+            detail: p.signedIn ? 'Signed in' : (p.cliInstalled ? 'CLI installed' : 'Not signed in'),
+          },
+          quota: null,
+        }],
+      });
+    }
+  }
+
+    let installed = [];
+  try {
+    if (installedFn) installed = await installedFn();
+  } catch (suppressed) { /* ignore */ }
+
+  for (const tool of installed || []) {
+    if (tool.id in PROVIDERS) continue;
+    if (providers.some((pr) => pr.id === tool.id)) continue;
+    if (tool.installed) {
+      const tHome = path.join(os.homedir(), '.' + tool.id);
+      providers.push({
+        id: tool.id,
+        name: tool.name || tool.id,
+        envVar: null,
+        envValue: null,
+        activeHome: tHome,
+        activeHomeExists: fs.existsSync(tHome),
+        activeAccountId: tool.id,
+        hasQuota: false,
+        quotaNote: tool.note ?? null,
+        singleSignIn: true,
+        accounts: [{
+          id: tool.id,
+          label: tool.name || tool.id,
+          home: tHome,
+          active: true,
+          login: {
+            signedIn: true,
+            level: 'ok',
+            detail: 'Installed',
+          },
+          quota: null,
+        }],
+      });
+    }
+  }
+
+  const alsoSignedIn = [];
+  if (antigravity && (antigravity.cliInstalled || antigravity.appInstalled || antigravity.signedIn)) {
+    alsoSignedIn.push({
+      name: 'Antigravity',
+      who: antigravity.who && antigravity.plan ? (antigravity.who + ', ' + antigravity.plan) : (antigravity.who ?? antigravity.plan),
+      signedIn: Boolean(antigravity.signedIn),
+      quota: antigravityQuota,
+    });
+  }
+  for (const p of presences || []) {
+    if (p.id in PROVIDERS) continue;
+    alsoSignedIn.push({
+      name: p.name,
+      who: p.who,
+      signedIn: Boolean(p.signedIn),
+      quota: null,
+    });
+  }
+
+  return { generatedAt: now, providers, alsoSignedIn };
 }
 
 function bar(percent, width = 20) {
   const filled = Math.round((Math.max(0, Math.min(100, percent)) / 100) * width);
-  return `[${'#'.repeat(filled)}${'.'.repeat(width - filled)}]`;
+  return '[' + '#'.repeat(filled) + '.'.repeat(width - filled) + ']';
 }
 
 function when(ms) {
@@ -64,10 +217,10 @@ function when(ms) {
 function ago(ms, now) {
   const minutes = Math.round((now - ms) / 60000);
   if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return minutes + ' min ago';
   const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
-  return `${Math.round(hours / 24)} days ago`;
+  if (hours < 48) return hours + ' hour' + (hours === 1 ? '' : 's') + ' ago';
+  return Math.round(hours / 24) + ' days ago';
 }
 
 const QUOTA_REASONS = {
@@ -90,48 +243,49 @@ function quotaLines(quota, now) {
   if (!quota) return [];
   if (quota.error) return [QUOTA_REASONS[quota.error] ?? QUOTA_REASONS.unavailable];
   const lines = [];
-  for (const w of quota.windows) {
+  for (const w of quota.windows || []) {
     const value = w.usedPercent == null
       ? (w.valueLabel ?? 'n/a')
-      : `${bar(w.usedPercent)} ${String(w.usedPercent).padStart(3)}%${w.valueLabel ? `  ${w.valueLabel}` : ''}`;
-    const resets = w.resetsAt ? `   resets ${when(w.resetsAt)}` : '';
-    lines.push(`${w.label.padEnd(18)}${value}${resets}`);
+      : (bar(w.usedPercent) + ' ' + String(w.usedPercent).padStart(3) + '%' + (w.valueLabel ? ('  ' + w.valueLabel) : ''));
+    const resets = w.resetsAt ? ('   resets ' + when(w.resetsAt)) : '';
+    lines.push(w.label.padEnd(18) + value + resets);
   }
   const notes = [];
-  if (quota.plan) notes.push(`plan: ${quota.plan}`);
-  if (quota.source === 'session-log') notes.push(`from this account's last session, ${ago(quota.sampledAt, now)}`);
-  if (quota.source === 'desktop') notes.push(`via Claude Desktop, sampled ${ago(quota.sampledAt, now)}`);
+  if (quota.plan) notes.push('plan: ' + quota.plan);
+  if (quota.source === 'session-log') notes.push("from this account's last session, " + ago(quota.sampledAt, now));
+  if (quota.source === 'desktop') notes.push('via Claude Desktop, sampled ' + ago(quota.sampledAt, now));
   // A last known reading kept because the newer check failed. Its age is the whole
-  // point, so it is said even though a fresh reading from the same source says nothing.
-  if (quota.refreshError && quota.observedAt) notes.push(`last checked ${ago(quota.observedAt, now)}, a newer check ${REFRESH_PROBLEMS[quota.refreshError] ?? REFRESH_PROBLEMS.unavailable}`);
+  // point, so it is said, even though a fresh reading from the same source says nothing.
+  if (quota.refreshError && quota.observedAt) notes.push('last checked ' + ago(quota.observedAt, now) + ', a newer check ' + (REFRESH_PROBLEMS[quota.refreshError] ?? REFRESH_PROBLEMS.unavailable));
   if (quota.stale) notes.push('stale');
-  if (notes.length) lines.push(`(${notes.join('; ')})`);
+  if (notes.length) lines.push('(' + notes.join('; ') + ')');
   return lines;
 }
+
 
 /** The plain-text breakdown. Pure, so what the terminal shows is covered by tests. */
 export function formatStatus(status) {
   const out = [];
   const now = status.generatedAt;
   for (const p of status.providers) {
-    out.push(`${p.name}   ${p.envVar}=${p.envValue ?? '(unset)'}`);
+    out.push(p.envVar ? (p.name + '   ' + p.envVar + '=' + (p.envValue ?? '(unset)')) : p.name);
     if (p.accounts.length === 0) {
       out.push(p.activeHomeExists
-        ? `  no accounts registered; the folder in use is ${p.activeHome}`
-        : `  not set up on this machine (no ${p.activeHome})`);
+        ? ('  no accounts registered; the folder in use is ' + p.activeHome)
+        : ('  not set up on this machine (no ' + p.activeHome + ')'));
       out.push('');
       continue;
     }
-    if (!p.activeAccountId) out.push(`  ! the active folder is not registered: ${p.activeHome}`);
+    if (!p.activeAccountId && p.activeHome) out.push('  ! the active folder is not registered: ' + p.activeHome);
     for (const a of p.accounts) {
-      out.push(`  ${a.active ? '*' : ' '} ${a.label}`);
-      out.push(`      ${a.home}`);
-      out.push(`      ${a.login.detail}`);
-      for (const line of quotaLines(a.quota, now)) out.push(`      ${line}`);
-      if (!p.hasQuota && p.quotaNote && a.active) out.push(`      ${p.quotaNote}`);
+      out.push('  ' + (a.active ? '*' : ' ') + ' ' + a.label);
+      if (a.home) out.push('      ' + a.home);
+      if (a.login?.detail) out.push('      ' + a.login.detail);
+      for (const line of quotaLines(a.quota, now)) out.push('      ' + line);
+      if (!p.hasQuota && p.quotaNote && a.active) out.push('      ' + p.quotaNote);
     }
     out.push('');
   }
-  out.push(`as of ${new Date(now).toLocaleString()}`);
+  out.push('as of ' + new Date(now).toLocaleString());
   return out.join('\n');
 }
