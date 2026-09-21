@@ -9,6 +9,7 @@ import {
   transcriptFile,
   newSessionId,
   callerManagesSession,
+  namedSession,
   withSessionId,
   resumeArgs,
   carryTranscript,
@@ -68,6 +69,19 @@ test('callerManagesSession spots every flag that steers a session', () => {
   }
   assert.equal(callerManagesSession(['-p', 'hello']), false);
   assert.equal(callerManagesSession([]), false);
+});
+
+test('namedSession reads the session a caller named on its own command line', () => {
+  const id = '11111111-2222-4333-8444-555555555555';
+  assert.equal(namedSession(['-p', '--session-id', id, '--model', 'x']), id);
+  assert.equal(namedSession(['--resume', id]), id);
+  assert.equal(namedSession(['-r', id]), id);
+  // These steer a session without naming one, so there is nothing to read a handoff from.
+  assert.equal(namedSession(['--continue']), null);
+  assert.equal(namedSession(['--resume']), null);
+  assert.equal(namedSession(['--resume', '--model', 'x']), null, 'a flag is not an id');
+  assert.equal(namedSession(['-p', 'hello']), null);
+  assert.equal(namedSession(), null);
 });
 
 test('withSessionId names an unmanaged session and leaves the rest alone', () => {

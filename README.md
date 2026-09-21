@@ -329,8 +329,53 @@ yours. `--provider` and
 `--account` narrow the pool, `--no-fallback` keeps it to one lane, and `--quiet` moves
 Switchboard's own lines to standard error so a caller can parse the tool's output.
 `--spec <file>` supplies a command line per tool instead, for a caller that cannot know
-in advance which tool it will get; a fallback to a tool the file says nothing about is
-refused rather than guessed at.
+in advance which tool it will get.
+
+Lanes can sit in any order, whatever each caller supports. A caller that can only drive
+some tools says which, and lanes for the rest are left out before anything is chosen, for
+the first pick and for every fallback after it. A spec says so by itself: the tools it
+holds a command line for are the tools the run may use. `--harnesses claude,codex` says
+the same thing without a spec, which is what `dry-run` needs, since a caller usually asks
+which lane it will get before it has written one. `dry-run` reads `--spec` too, only for
+the tools it covers, so its answer is always the lane `run` would take with the same
+arguments. A narrowed `dry-run --json` answer carries a `harnesses` field listing the
+tools it was narrowed to, because a version from before this existed ignores the flag
+and answers for every lane: a caller that named its tools and does not get them back
+knows the order still matters on that machine. A run says once which lanes it left out and why, so a lane that never gets
+work from that caller does not look broken. This used to be decided the other way round:
+the first healthy lane won whatever its tool, and a fallback onto a tool the spec said
+nothing about ended the run, with a usable lane one place lower. The order then had to be
+arranged around each caller, which defeats the point of having one.
+
+A prompt piped into `switchboard run` reaches every lane the run lands on, not only the
+first. An automated caller hands its prompt over on standard input, and the first tool
+reads that pipe to its end, so a tool that merely inherited it on the next lane started
+with no question at all: Claude refuses to run, and the rescue failed on exactly the run
+that needed it. The input is recorded as it arrives and replayed to a lane the run falls
+back to. It is passed on while it is still arriving and never waited for, and the process
+is not kept alive by it, so a caller that leaves its pipe open cannot hang a run. Only a
+complete prompt is replayed: a caller feeding turns down a pipe it keeps open would
+otherwise have every earlier turn run twice, so a lane it falls back to gets what arrives
+from then on, which is what it used to inherit. Input past 8 MB is still delivered to the
+lane that is running and is simply not kept for a second one.
+
+When a lane takes over part-way and this run derived a handoff, a sentence offering it
+follows the replayed prompt on standard input. It used to be appended to the command
+line, which no spec could survive: after Claude's list-valued flags it is swallowed as one
+more tool name, and Codex and Antigravity reject a stray argument outright. The sentence
+is worded for a tool that also has the request in front of it. The handoff opens with the
+first thing that session was ever asked, which in a conversation several requests long is
+not what is being asked now, so the request is said to be what counts and the handoff is
+offered as the first tool's notes. It is never added to input that is a stream of JSON
+messages, which a bare sentence would corrupt. A caller that piped nothing still gets the
+pointer on the command line, because there is nowhere else to put it. A person at a
+keyboard is unaffected: their tool keeps the real terminal, and none of this applies
+unless both the input and the output are something other than a terminal.
+
+A fallback that changes tool is always announced, as
+`[switchboard] Cross-provider failover: claude to codex (lane <id>).`, because the new
+tool does not hold the conversation the old one had and a caller that handed over one
+process has no other way to find out. Automated callers match on that line.
 
 A run that ends on a provider limit, or on a sign-in the vendor refused, drops that lane
 and starts again in the next healthy one. An ordinary non-zero exit is still reported and
@@ -386,16 +431,28 @@ can invent a decision that was never made, and it costs nothing.
 
 Claude and Codex are both readable this way, so either can hand over to the other or to a
 second account of its own. The two are found differently. Switchboard names a Claude
-session itself, so it knows the exact file. Codex has no such flag, so its session is
-recognised afterwards by the working directory it recorded and by having been written
-during this run; a session left over from earlier work in the same directory is ignored
-rather than handed over as though it were current.
+session itself, so it knows the exact file, and where a caller built its own command line
+and named the session there (`--session-id` or `--resume` with an id), the name is read
+from that command line. Codex has no such flag, so its session is recognised afterwards by
+the working directory it recorded and by having been written during this run; a session
+left over from earlier work in the same directory is ignored rather than handed over as
+though it were current.
 
 A handoff you wrote yourself is used exactly as it is and never overwritten, on the
 grounds that it may be better than anything derivable and is not Switchboard's to replace.
+One that Switchboard derived is a different thing, and it says so on its second line, with
+the run it belongs to. It describes that run and nothing else, so it is removed when the
+run ends, and one found from an earlier run (a run that was killed before it could tidy
+up) is replaced or removed rather than followed. Before this, nothing told the two kinds
+apart and nothing removed either, so the first handoff ever derived in a folder stayed for
+good: every later run that changed tool there was pointed at it, however unrelated, and no
+newer one was written because one already existed. A caller that piped its prompt is only
+ever offered a handoff its own run derived, never one left in the folder for other work.
 Where there is nothing to write from either, because the spent lane was not a Claude
 session or died before saying anything, it says a handoff is missing rather than inventing
-one. In every case it asks before going ahead, unless you passed `--yes`.
+one. In every case it asks before going ahead, unless you passed `--yes`. It can only ask
+a person: with the input piped there is nobody at a terminal, so without `--yes` the run
+is not moved to another tool, says that `--yes` is needed, and ends with a failing exit.
 
 Two limits are worth stating plainly. Gemini and Qwen lanes cannot be read at all yet, so
 a hop involving either still starts fresh; adding one is a table entry in

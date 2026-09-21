@@ -15,6 +15,48 @@ test('isLimitError recognizes strict 429 HTTP context', () => {
   assert.ok(isLimitError('status: 429'));
 });
 
+test('a spent plan is recognized in the words the tools use today', () => {
+  // Claude Code reworded this once already ("usage limit reached" became "You've hit
+  // your weekly limit"). A run that died on the new sentence was left on the spent lane.
+  assert.ok(isLimitError("You've hit your weekly limit · resets Sep 28 at 9am"));
+  assert.ok(isLimitError("You've hit your session limit · resets 3pm"));
+  assert.ok(isLimitError('Youve hit your Opus limit'));
+  assert.ok(isLimitError("You've reached your usage limit. Upgrade to Plus to continue."));
+  assert.equal(classifyRunFailure(1, "You've hit your weekly limit · resets Sep 28 at 9am"), 'limit');
+});
+
+// Copied out of the codex 0.155.1 binary rather than typed, apostrophe and all: it is a
+// typographic one, and the plain spelling does not appear in that binary even once. A test
+// written with the plain one passed while every real spent Codex lane went unrecognised.
+const REAL_CODEX_LIMIT = 'You’ve hit your usage limit for GPT-5. Switch to another model now, or try again later.';
+
+test("Codex's spent-plan sentence is recognized as Codex actually prints it", () => {
+  assert.ok(REAL_CODEX_LIMIT.includes('’'), 'the fixture keeps the typographic apostrophe');
+  assert.ok(isLimitError(REAL_CODEX_LIMIT));
+  assert.equal(classifyRunFailure(1, REAL_CODEX_LIMIT), 'limit');
+});
+
+test('the limit sentence has to be one sentence', () => {
+  assert.equal(isLimitError("You've hit your stride. There is no limit here"), false);
+  assert.equal(isLimitError('You’ve hit your stride. There is no limit here'), false);
+});
+
+test('the machine-readable limit verdict is recognized whatever the sentence says', () => {
+  const rejected = '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790000000,"rateLimitType":"seven_day","overageStatus":"rejected"}}';
+  assert.ok(isLimitError(rejected));
+
+  // The same event is printed as a warning long before the plan is spent. Only a
+  // rejection is a limit; an overage that was refused on a plan that still has room is not.
+  const warning = '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","overageStatus":"rejected"}}';
+  assert.equal(isLimitError(warning), false);
+});
+
+test('an agent talking about limits is not a spent plan', () => {
+  assert.equal(isLimitError('You have hit the limit of what this function can do'), false);
+  assert.equal(isLimitError("you've hit your\nhead on the character limit"), false);
+  assert.equal(isLimitError('The rate_limit_event handler was rejected in review'), false);
+});
+
 test('isLimitError returns false for ambiguous errors', () => {
   assert.equal(isLimitError('Error: 500 Internal Server Error'), false);
   assert.equal(isLimitError('SyntaxError: Unexpected token'), false);

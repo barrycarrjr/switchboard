@@ -26,6 +26,7 @@ import { pathToFileURL } from 'node:url';
  * scratch dir in a finally, so there is nothing of its to collect.
  */
 export const PREFIXES = [
+  'sb-anyorder-',
   'sb-appdata-',
   'sb-appdata2-',
   'sb-appdata3-',

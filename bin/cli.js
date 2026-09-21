@@ -12,10 +12,11 @@ import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTo
 import { readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
-import { selectLane, laneAnswersTo, selectionFailure, defaultFollowsLanes, switchedAgainstLanesNote } from '../core/lanes.js';
-import { readHandoff, writeHandoff, generateHandoffPrompt } from '../core/handoff.js';
-import { CARRYABLE_HARNESSES, callerManagesSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest, transcriptSupport } from '../core/transcripts.js';
-import { parseRunArgs, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
+import { selectLane, narrowPool, lanesCallerCannotDrive, selectionFailure, defaultFollowsLanes, switchedAgainstLanesNote } from '../core/lanes.js';
+import { readHandoff, writeHandoff, removeHandoff, handoffOrigin, generateHandoffPrompt, generateHandoffNote, DERIVED_NEXT_ACTIONS } from '../core/handoff.js';
+import { CARRYABLE_HARNESSES, callerManagesSession, namedSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest, transcriptSupport } from '../core/transcripts.js';
+import { parseRunArgs, loadRunSpec, resolveSpecArgv, drivableHarnesses, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
+import { recordPipedInput } from '../core/piped-input.js';
 import readline from 'node:readline/promises';
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -195,6 +196,21 @@ async function main() {
       // Opt-in, because the Slack bridge also calls `dry-run --json` and must not start
       // receiving secrets on stdout it never asked for.
       const withToken = args.includes('--with-token');
+
+      // A spec given here is read for one thing only: which tools it covers. That is what
+      // makes this answer the same one `run --spec` will act on, rather than naming a lane
+      // the run would then pass over.
+      let spec = null;
+      if (parsed.spec) {
+        try {
+          spec = loadRunSpec(parsed.spec);
+        } catch (e) {
+          out(asJson ? JSON.stringify({ available: false, reason: e.message }) : e.message);
+          process.exitCode = 1;
+          return;
+        }
+      }
+
       const { pool, context } = await prepareLanesContext(settings, registry, {
         provider: parsed.provider,
       });
@@ -203,20 +219,31 @@ async function main() {
         context.requirements.accountId = parsed.account; // Not natively in selectLane, but conceptually overrides
         // Actually selectLane doesn't filter by accountId yet, let's filter the pool manually
       }
-      
+
       // A lane is named by its harness ("claude") or by its vendor ("anthropic"), and
       // --provider takes either. Filtering here rather than leaving it to selectLane is
       // what separates "nothing matched what you asked for" from "everything that matched
-      // is busy", which are different problems with different fixes.
-      const filteredPool = pool
-        .filter((l) => !parsed.account || l.accountId === parsed.account)
-        .filter((l) => laneAnswersTo(l, parsed.provider));
-      
+      // is busy", which are different problems with different fixes. The same goes for
+      // the tools the caller can drive: see narrowPool.
+      const harnesses = drivableHarnesses(parsed, spec);
+      const filteredPool = narrowPool(pool, {
+        account: parsed.account,
+        provider: parsed.provider,
+        harnesses,
+      });
+
+      // The answer says which tools it was narrowed to, in both its forms. A version from
+      // before --harnesses existed ignores the flag and answers for every lane, and the two
+      // answers look identical unless this one says what question it answered. A caller
+      // that named its tools and does not get them back knows its order still matters on
+      // this machine.
+      const narrowedTo = harnesses ? { harnesses } : {};
+
       const selected = filteredPool.length ? selectLane(filteredPool, context) : null;
 
       if (!selected) {
         const reason = selectionFailure(pool, filteredPool);
-        out(asJson ? JSON.stringify({ available: false, reason }) : reason);
+        out(asJson ? JSON.stringify({ available: false, reason, ...narrowedTo }) : reason);
         process.exitCode = 1;
         return;
       }
@@ -243,7 +270,8 @@ async function main() {
           accountId: selected.lane.accountId,
           billing: selected.lane.billing,
           reason: selected.status.reason,
-          available: true
+          available: true,
+          ...narrowedTo
         };
         // emittableLaneToken answers a non-empty string or null, so the field is
         // either a usable token or absent, never null or "".
@@ -284,9 +312,15 @@ async function main() {
         }
       }
 
-      let currentPool = settings.lanes
-        .filter((l) => !parsed.account || l.accountId === parsed.account)
-        .filter((l) => laneAnswersTo(l, parsed.provider));
+      // Narrowed once, here, so the first pick and every later failover walk the same
+      // lanes. A lane whose tool the caller cannot drive is left out rather than reached
+      // and refused: see narrowPool for what that used to cost.
+      const narrowing = {
+        account: parsed.account,
+        provider: parsed.provider,
+        harnesses: drivableHarnesses(parsed, spec),
+      };
+      let currentPool = narrowPool(settings.lanes, narrowing);
 
       let { context } = await prepareLanesContext(settings, registry, {
         provider: parsed.provider,
@@ -300,13 +334,38 @@ async function main() {
         return;
       }
 
+      const leftOut = lanesCallerCannotDrive(settings.lanes, narrowing);
+      if (leftOut.length) {
+        say(`[switchboard] Leaving out ${leftOut.map((l) => `${l.id} (${l.harness})`).join(', ')}: this caller has no command line for ${leftOut.length === 1 ? 'that tool' : 'those tools'}.`);
+      }
+
       const { classifyRunFailure } = await import('../core/errors.js');
 
       // A long run must not balloon memory, and a limit notice always sits at the end of
       // the output, so only the tail is retained for classification.
       const STDOUT_TAIL_BYTES = 64 * 1024;
 
-      async function runInLane(lane, executionArgs) {
+      // Whatever the caller piped in is recorded from the first byte, so a run that moves
+      // to another lane can hand the same prompt to the tool there. A person at a keyboard
+      // is left alone: an interactive tool needs the real terminal, not a copy of it.
+      //
+      // Only when the output is not a terminal either. That is the same test that already
+      // decides whether this is an automated caller (see childStdio), and it keeps this
+      // well away from anybody typing: a session at a real console must never be handed a
+      // pipe where it expected the keyboard, whatever this process is told about its input.
+      let pipedInput = null;
+      try {
+        // Inside the try from the first touch: a process started with no standard input at
+        // all can throw on the property itself. The child then inherits whatever there is,
+        // which is what it always did.
+        if (!process.stdin.isTTY && !process.stdout.isTTY) {
+          pipedInput = recordPipedInput(process.stdin);
+        }
+      } catch {
+        pipedInput = null;
+      }
+
+      async function runInLane(lane, executionArgs, handoffNote = null) {
         const allAccounts = await resolveAllAccounts(registry);
         const account = allAccounts.find(a => a.id === lane.accountId);
         if (!account) {
@@ -330,7 +389,7 @@ async function main() {
           // report an exhausted subscription as an ordinary assistant message on stdout and
           // never on stderr. Every chunk is forwarded on immediately and unchanged, so a
           // streaming caller still sees the same bytes at the same time.
-          stdio: childStdio(Boolean(process.stdout.isTTY)),
+          stdio: childStdio(Boolean(process.stdout.isTTY), Boolean(pipedInput)),
           env: childEnv,
           windowsHide: childWindowsHide(Boolean(process.stdout.isTTY))
         };
@@ -353,6 +412,7 @@ async function main() {
           }
 
           const child = spawn(spawnFile, spawnArgs, spawnOptions);
+          pipedInput?.attach(child.stdin, handoffNote);
 
           let stderrOutput = '';
           child.stderr?.on('data', (data) => {
@@ -430,6 +490,89 @@ async function main() {
         }
       }
 
+      // The sentence pointing a lane at the handoff, when it travels on the lane's standard
+      // input rather than its command line. Set by one hop for the lane after it.
+      let handoffNote = null;
+
+      // What marks a handoff as derived by THIS run. See handoffOrigin for why it matters.
+      const runId = newSessionId();
+      let tidiesHandoff = false;
+
+      /**
+       * Put a handoff in place for the lane about to take over, from the session that just
+       * ran out, and say whose handoff the workspace now holds:
+       *
+       *   'ours'    this run derived it, so it describes the work being handed over
+       *   'theirs'  somebody wrote one on purpose; it is left exactly as it is
+       *   'none'    there is nothing to hand over
+       *
+       * One that an EARLIER run derived describes a different task. It is replaced when
+       * this run has something to say, and removed when it has not, so a run is never
+       * pointed at another run's work. This run's own is removed when the process ends.
+       */
+      function deriveHandoff(previousLane, laneStartedAt) {
+        const existing = readHandoff(runCwd);
+        if (existing && !handoffOrigin(existing).derived) return 'theirs';
+
+        let digest = null;
+        if (transcriptSupport(previousLane.harness)) {
+          const spentHome = registry.accounts.find((a) => a.id === previousLane.accountId)?.home;
+          // `sessionId` is set only where Switchboard named the session itself. A caller
+          // with its own command line names its own, and the name is on that command line,
+          // so it is read from there. Codex has no such flag at all, so its session is
+          // recognised afterwards by the directory it recorded and the fact this run
+          // touched it: hence `since`.
+          const ranWith = spec ? spec.harnessArgs[previousLane.harness] : parsed.commandArgs;
+          digest = sessionDigest({
+            harness: previousLane.harness,
+            home: spentHome,
+            cwd: runCwd,
+            sessionId: sessionId ?? namedSession(ranWith),
+            since: laneStartedAt,
+          });
+        }
+        if (digest) {
+          try {
+            writeHandoff(runCwd, {
+              derivedByRun: runId,
+              objective: digest.objective,
+              state: digest.state,
+              nextActions: DERIVED_NEXT_ACTIONS,
+            });
+            if (!tidiesHandoff) {
+              tidiesHandoff = true;
+              process.once('exit', () => {
+                if (handoffOrigin(readHandoff(runCwd)).runId === runId) removeHandoff(runCwd);
+              });
+            }
+            say(`[switchboard] Wrote a handoff from the spent ${previousLane.harness} session${digest.truncated ? ' (its most recent work; the run was too long to record in full)' : ''}.`);
+            return 'ours';
+          } catch (e) {
+            // Includes the writer's own size limit.
+            say(`[switchboard] Could not write a handoff from the spent session: ${String(e.message || e)}`);
+          }
+        }
+        if (existing && handoffOrigin(existing).runId !== runId) removeHandoff(runCwd);
+        return existing && handoffOrigin(existing).runId === runId ? 'ours' : 'none';
+      }
+
+      /**
+       * Ask before moving the work to a different vendor's tool. Only a person can be
+       * asked. With the input piped there is nobody at a terminal, and what is in the pipe
+       * is the caller's prompt, not an answer: the question used to be printed anyway and
+       * the process then ended at it with a clean exit and nothing done. An automated
+       * caller says `--yes` up front, and one that did not is told so.
+       */
+      async function confirmHop(question) {
+        if (parsed.yes) return true;
+        if (!process.stdin.isTTY) {
+          say('[switchboard] Not moving this run to another tool: nobody is at a terminal to confirm it. Pass --yes to allow it.');
+          return false;
+        }
+        const answer = await promptUser(question);
+        return answer === 'y' || answer === 'yes';
+      }
+
       while (selected) {
         // When this lane started, so a vendor whose session cannot be named up front can
         // still be recognised afterwards: its transcript has to have been touched during
@@ -437,7 +580,8 @@ async function main() {
         // because a file written in the same tick as the spawn would otherwise look older
         // than the run that wrote it.
         const laneStartedAt = Date.now() - 1000;
-        const result = await runInLane(selected.lane, currentArgs);
+        const result = await runInLane(selected.lane, currentArgs, handoffNote);
+        handoffNote = null;
 
         if ((result.limitHit || result.authFailed) && !parsed.noFallback) {
           const previousLane = selected.lane;
@@ -455,7 +599,15 @@ async function main() {
             return;
           }
 
+          const changesTool = previousLane.harness !== selected.lane.harness || previousLane.provider !== selected.lane.provider;
+
           let handoffPrompt = null;
+          // Whether that pointer names a handoff this run derived. Only such a one is ever
+          // added to a caller's piped prompt: see where handoffNote is set below.
+          let handoffIsOurs = false;
+          // The same pointer for a hop between two lanes of one tool, where it was never
+          // put on the command line. It travels on standard input or not at all.
+          let sameToolHandoff = null;
 
           // A lane that could not sign in never ran, and that changes what the hop has to
           // do rather than only where it goes. There is no session to carry and no work to
@@ -469,7 +621,7 @@ async function main() {
           if (result.authFailed) {
             currentArgs = sessionId ? withSessionId(parsed.commandArgs, sessionId) : parsed.commandArgs;
             say(`[switchboard] Falling back to next available lane: ${selected.lane.id}. Nothing was carried, because the lane that failed never started.`);
-          } else if (previousLane.harness !== selected.lane.harness || previousLane.provider !== selected.lane.provider) {
+          } else if (changesTool) {
             // Cross-provider/cross-harness transition handling
             // A Claude session file means nothing to another vendor, so this hop cannot
             // carry the session itself. What it can carry is a written account of it, and
@@ -478,63 +630,31 @@ async function main() {
             // the decisions taken. Extracted, never summarised by a model, so nothing here
             // can invent a decision that was never made.
             //
-            // A handoff already written for this workspace is left exactly as it is. It
-            // may be better than anything derivable, and it is not Switchboard's to
-            // overwrite.
-            let handoffExists = !!readHandoff(process.cwd());
-            if (!handoffExists && transcriptSupport(previousLane.harness)) {
-              const spentHome = registry.accounts.find((a) => a.id === previousLane.accountId)?.home;
-              // `sessionId` is set only where Switchboard could name the session, which is
-              // Claude. Codex has no such flag, so its session is recognised afterwards by
-              // the directory it recorded and the fact this run touched it: hence `since`.
-              const digest = sessionDigest({
-                harness: previousLane.harness,
-                home: spentHome,
-                cwd: runCwd,
-                sessionId,
-                since: laneStartedAt,
-              });
-              if (digest) {
-                try {
-                  writeHandoff(runCwd, {
-                    objective: digest.objective,
-                    state: digest.state,
-                    nextActions: 'Pick up from the state above and finish the objective. Do not redo work that is already done.',
-                  });
-                  handoffExists = true;
-                  say(`[switchboard] Wrote a handoff from the spent ${previousLane.harness} session${digest.truncated ? ' (its most recent work; the run was too long to record in full)' : ''}.`);
-                } catch (e) {
-                  // Includes the writer's own size limit. Falls through to the ask below,
-                  // which is what used to happen every time.
-                  say(`[switchboard] Could not write a handoff from the spent session: ${String(e.message || e)}`);
-                }
-              }
-            }
+            // A handoff somebody wrote for this workspace on purpose is left exactly as it
+            // is. It may be better than anything derivable, and it is not Switchboard's to
+            // overwrite. One an earlier run derived is another matter: see deriveHandoff.
+            const handoff = deriveHandoff(previousLane, laneStartedAt);
 
-            if (!handoffExists) {
+            if (handoff === 'none') {
               say(`[switchboard] Warning: Cross-provider failover to ${selected.lane.harness} (${selected.lane.provider}) requires a handoff document, but none was found for this workspace.`);
               if (!parsed.yes) {
                 say(`[switchboard] Please provide the missing objective manually or start a fresh session.`);
-                const proceed = await promptUser(`Start a fresh session in ${selected.lane.id}? (y/N): `);
-                if (proceed !== 'y' && proceed !== 'yes') {
-                  process.exitCode = result.code;
-                  return;
-                }
-              } else {
-                say(`[switchboard] Proceeding without handoff due to --yes flag.`);
               }
+              if (!(await confirmHop(`Start a fresh session in ${selected.lane.id}? (y/N): `))) {
+                process.exitCode = result.code || 1;
+                return;
+              }
+              if (parsed.yes) say(`[switchboard] Proceeding without handoff due to --yes flag.`);
               // If proceeding without a handoff, we just pass the original args (or none if it was interactive)
             } else {
               say(`[switchboard] Valid task handoff found for workspace.`);
-              if (!parsed.yes) {
-                const proceed = await promptUser(`Cross-provider failover to ${selected.lane.id}. Start new session? (y/N): `);
-                if (proceed !== 'y' && proceed !== 'yes') {
-                  process.exitCode = result.code;
-                  return;
-                }
+              if (!(await confirmHop(`Cross-provider failover to ${selected.lane.id}. Start new session? (y/N): `))) {
+                process.exitCode = result.code || 1;
+                return;
               }
               // Inject the single-sentence handoff prompt into the args
               handoffPrompt = generateHandoffPrompt(process.cwd());
+              handoffIsOurs = handoff === 'ours';
               if (!spec) currentArgs = [handoffPrompt];
             }
           } else {
@@ -570,41 +690,59 @@ async function main() {
             // a handoff, and start from nothing. No confirmation here, unlike the
             // cross-tool path: the same tool is taking over, so there is no vendor
             // surprise to warn anybody about.
-            if (!carriedSession && !readHandoff(runCwd) && transcriptSupport(previousLane.harness)) {
-              const spentHome = registry.accounts.find((a) => a.id === previousLane.accountId)?.home;
-              const digest = sessionDigest({
-                harness: previousLane.harness,
-                home: spentHome,
-                cwd: runCwd,
-                sessionId,
-                since: laneStartedAt,
-              });
-              if (digest) {
-                try {
-                  writeHandoff(runCwd, {
-                    objective: digest.objective,
-                    state: digest.state,
-                    nextActions: 'Pick up from the state above and finish the objective. Do not redo work that is already done.',
-                  });
-                  if (!spec) currentArgs = [generateHandoffPrompt(runCwd)];
-                  say('[switchboard] Wrote a handoff from the spent session; this lane picks up from it.');
-                } catch (e) {
-                  say(`[switchboard] Could not write a handoff from the spent session: ${String(e.message || e)}`);
-                }
-              }
+            //
+            // Only a handoff this run derived is used here. One somebody wrote on purpose is
+            // left alone and not pointed at, exactly as before, when "a handoff exists" was
+            // what stopped this branch.
+            if (!carriedSession && deriveHandoff(previousLane, laneStartedAt) === 'ours') {
+              if (!spec) currentArgs = [generateHandoffPrompt(runCwd)];
+              else sameToolHandoff = generateHandoffPrompt(runCwd);
+              say('[switchboard] This lane picks up from that handoff.');
             }
           }
 
-          // The new lane can be a different harness, so a spec is re-read for it and the
-          // handoff prompt appended rather than replacing a command line that needs its
-          // own subcommand and flags.
+          // The new lane can be a different harness, so a spec is re-read for it.
+          //
+          // Where the pointer to the handoff goes depends on how the caller gave its
+          // prompt. A caller that piped it in has it replayed to this lane, and the pointer
+          // follows it on standard input. That is the only place it is safe: on a command
+          // line built by somebody else it lands after Claude's list-valued flags, which
+          // swallow it as one more tool name ("Input must be provided either through stdin
+          // or as a prompt argument"), and Codex and Antigravity reject a stray argument
+          // outright ("unexpected argument"). A caller that piped nothing gets it appended
+          // to the command line, as it always has, because there is nowhere else to put it.
+          //
+          // A caller that piped its prompt is only ever pointed at a handoff THIS run
+          // derived. Its prompt is the whole request, replayed in full, and a handoff
+          // somebody left in the folder on purpose was written for something else: a bot
+          // that answers every request from one repository folder would otherwise have
+          // that document's "next actions" added to every request that changed tool.
           if (spec) {
-            const nextArgs = argsForLane(selected.lane, handoffPrompt);
+            const replayed = Boolean(pipedInput?.replayable());
+            // Worded for a tool that has the request in front of it as well: see
+            // generateHandoffNote for why it cannot be the command-line sentence.
+            const pointer = sameToolHandoff || (handoffIsOurs && handoffPrompt) ? generateHandoffNote(runCwd) : null;
+            const onStdin = replayed && Boolean(pointer) && pipedInput.acceptsNote();
+            const nextArgs = argsForLane(selected.lane, replayed ? null : handoffPrompt);
             if (!nextArgs) {
               process.exitCode = result.code || 1;
               return;
             }
             currentArgs = nextArgs;
+            handoffNote = onStdin ? pointer : null;
+          }
+
+          // Said on every hop that changes tool, in these words, whichever branch above
+          // handled it. A caller that handed over one process has nowhere else to learn
+          // that the answer came from a different tool, and it matters to them: the new
+          // tool does not have the conversation the old one was holding. The wording is a
+          // contract, because the Slack bridge reads it to tell people a reply lost its
+          // thread. It used to be printed only where no handoff was found, so the usual hop
+          // (a handoff written from the spent session, then --yes) and a hop after a
+          // refused sign-in both changed tool without ever saying so. It is said here, last,
+          // so that it is only ever said about a hop that is really going to happen.
+          if (changesTool) {
+            say(`[switchboard] Cross-provider failover: ${previousLane.harness} to ${selected.lane.harness} (lane ${selected.lane.id}).`);
           }
         } else {
           process.exitCode = result.code;
@@ -1063,8 +1201,8 @@ async function main() {
       out('  lanes [...]                 the failover pool: list, add, remove, order, budget');
       out('  lane-token <laneId> [--remove|--check]   mint, delete or validate the token a lane hands to automation');
       out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
-      out('  dry-run [--provider <p>] [--account <id>] [--json] [--with-token]   explain which lane would be selected');
-      out('  run [--provider <p>] [--account <id>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');
+      out('  dry-run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--spec <file>] [--json] [--with-token]   explain which lane would be selected');
+      out('  run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');
       out(`  <p> is a harness (${providerList}) or the vendor behind it (anthropic|openai|google)`);
   }
 }

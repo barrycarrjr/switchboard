@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 
 export function parseRunArgs(rawArgs) {
-  const parsed = { provider: null, account: null, noFallback: false, yes: false, quiet: false, spec: null, commandArgs: [] };
+  const parsed = { provider: null, account: null, harnesses: null, noFallback: false, yes: false, quiet: false, spec: null, commandArgs: [] };
   let i = 0;
   while (i < rawArgs.length) {
     const arg = rawArgs[i];
@@ -16,6 +16,8 @@ export function parseRunArgs(rawArgs) {
       parsed.provider = rawArgs[++i];
     } else if (arg === '--account' && i + 1 < rawArgs.length) {
       parsed.account = rawArgs[++i];
+    } else if (arg === '--harnesses' && i + 1 < rawArgs.length) {
+      parsed.harnesses = parseHarnessList(rawArgs[++i]);
     } else if (arg === '--no-fallback') {
       parsed.noFallback = true;
     } else if (arg === '--yes' || arg === '-y') {
@@ -30,6 +32,42 @@ export function parseRunArgs(rawArgs) {
     i++;
   }
   return parsed;
+}
+
+/**
+ * The tools a caller says it can drive, from `--harnesses claude,codex`.
+ *
+ * Lane order belongs to the person who owns the machine, and the tool table is much wider
+ * than any one caller: a bot that can build a command line for Claude and Codex has no use
+ * for a Copilot lane, however healthy it is. Without a way to say so, the caller was handed
+ * whichever lane came first, and a lane it could not drive was worse than no lane at all,
+ * because the usable one right below it was never offered.
+ *
+ * An empty list is returned as null, which means "no restriction". A caller that names
+ * nothing has not asked for an empty pool, and reading it that way would turn a typo into
+ * "no lanes match" on every run.
+ */
+export function parseHarnessList(value) {
+  const names = String(value ?? '')
+    .split(',')
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean);
+  return names.length ? [...new Set(names)] : null;
+}
+
+/**
+ * Every tool this invocation may run on, or null when it may run on any.
+ *
+ * A spec already says which tools the caller can drive: the ones it wrote a command line
+ * for. So a spec narrows the pool on its own, with no second flag to keep in step with it,
+ * and `--harnesses` exists for the caller that has to ask (`dry-run`) before it has
+ * written a spec at all. Given both, a lane has to satisfy both.
+ */
+export function drivableHarnesses(parsed, spec) {
+  const fromSpec = spec?.harnessArgs ? Object.keys(spec.harnessArgs).map((h) => h.toLowerCase()) : null;
+  const named = parsed?.harnesses?.length ? parsed.harnesses : null;
+  if (fromSpec && named) return named.filter((h) => fromSpec.includes(h));
+  return fromSpec ?? named;
 }
 
 // A run spec is a caller-built command line per harness. switchboard derives the executable
@@ -51,12 +89,17 @@ export function parseRunSpec(raw) {
   if (!harnessArgs || typeof harnessArgs !== 'object' || Array.isArray(harnessArgs)) {
     throw new Error('Run spec must contain a harnessArgs object');
   }
+  // Tool names are lower case everywhere else, so they are made so here, once. The pool is
+  // narrowed by these names and the command line is looked up by them, and if only one of
+  // the two forgave a capital letter, `dry-run` would name a lane that `run` then refused.
+  const byTool = {};
   for (const [harness, argv] of Object.entries(harnessArgs)) {
     if (!Array.isArray(argv) || argv.some((a) => typeof a !== 'string')) {
       throw new Error(`Run spec harnessArgs.${harness} must be an array of strings`);
     }
+    byTool[harness.toLowerCase()] = argv;
   }
-  return { harnessArgs };
+  return { harnessArgs: byTool };
 }
 
 export function loadRunSpec(filePath) {
@@ -73,10 +116,14 @@ export function loadRunSpec(filePath) {
 // terminal, which is exactly the automated case: capturing it costs the child its terminal,
 // and a harness that renders a live interface (an interactive Claude or Codex session) then
 // falls back to plain text. A person at a keyboard reads a limit notice themselves, so
-// losing stdout classification there costs nothing. stdin is always inherited: the prompt
-// arrives on switchboard's stdin and the child must keep reading it.
-export function childStdio(stdoutIsTty) {
-  return ['inherit', stdoutIsTty ? 'inherit' : 'pipe', 'pipe'];
+// losing stdout classification there costs nothing.
+//
+// stdin is inherited when a person is typing into it, because an interactive tool needs the
+// real terminal. When a caller piped its prompt in, the child gets a pipe of its own that
+// the prompt is replayed into: see core/piped-input.js for why inheriting it was only ever
+// good for the first lane.
+export function childStdio(stdoutIsTty, replayStdin = false) {
+  return [replayStdin ? 'pipe' : 'inherit', stdoutIsTty ? 'inherit' : 'pipe', 'pipe'];
 }
 
 // Whether the harness gets a console window of its own on Windows. A caller with no
@@ -95,7 +142,7 @@ export function childWindowsHide(stdoutIsTty) {
 // handoff prompt is APPENDED, because a headless form can need a subcommand and flags
 // (`codex exec - <prompt>`) and replacing the argv with the bare prompt would not run.
 export function resolveSpecArgv(spec, harness, handoffPrompt = null) {
-  const argv = spec?.harnessArgs?.[harness];
+  const argv = spec?.harnessArgs?.[String(harness ?? '').toLowerCase()];
   if (!Array.isArray(argv)) return null;
   return handoffPrompt ? [...argv, handoffPrompt] : [...argv];
 }

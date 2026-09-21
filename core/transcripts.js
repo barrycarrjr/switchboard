@@ -69,6 +69,26 @@ export function callerManagesSession(args = []) {
 }
 
 /**
+ * The session a command line names outright, with `--session-id <id>` or `--resume <id>`,
+ * or null when it names none.
+ *
+ * Only for READING that session afterwards, to write a handoff from it. A caller that
+ * builds its own command line names its own sessions, so Switchboard does not name one and
+ * used to conclude it had no way of finding the transcript. It has: the id is right there
+ * on the command line it was given. That is not licence to CARRY such a session to another
+ * account, which stays the caller's business (see callerManagesSession). `--continue` and
+ * a bare `--resume` name nothing, so they give null and no handoff is derived.
+ */
+export function namedSession(args = []) {
+  for (let i = 0; i < args.length - 1; i += 1) {
+    if (args[i] !== '--session-id' && args[i] !== '--resume' && args[i] !== '-r') continue;
+    const id = String(args[i + 1] ?? '');
+    if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id)) return id;
+  }
+  return null;
+}
+
+/**
  * The command line to launch with, with the session named so it can be found again.
  * Returns the arguments unchanged when the caller is steering the session themselves,
  * which is also the signal to skip the carry later: a session Switchboard did not name

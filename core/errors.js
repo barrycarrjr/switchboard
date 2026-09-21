@@ -20,6 +20,29 @@ export function isLimitError(output) {
     return true;
   }
 
+  // How Claude Code and Codex word a spent plan today: "You've hit your weekly limit",
+  // "You've hit your session limit", "You've reached your usage limit". The older Claude
+  // wording ("usage limit reached") is in the list above, and the change from one to the
+  // other is why this is here: a run that died on the new sentence was filed as an
+  // ambiguous failure and left on the spent lane, with a healthy one right below it. The
+  // words between "your" and "limit" may not hold a full stop or a line break, so the
+  // match stays inside one sentence, which keeps it a vendor phrase rather than two words
+  // an agent happened to print ("You've hit your stride. There is no limit here").
+  //
+  // Both apostrophes, because the vendors do not agree: Claude Code types a plain one and
+  // Codex a typographic one. Read out of the codex 0.155.1 binary, which holds "You’ve hit
+  // your usage limit" seven times and the plain spelling not once, so matching only the
+  // plain one recognised Claude's sentence and left every spent Codex lane where it was.
+  if (/you['’]?ve (?:hit|reached) your [^\n.]{0,40}limit/.test(text)) {
+    return true;
+  }
+
+  // Claude Code's own machine-readable verdict, printed on a stream-json run before the
+  // failure it causes. It survives any rewording of the sentence above.
+  if (/"type"\s*:\s*"rate_limit_event"[^\n]*"status"\s*:\s*"rejected"/.test(text)) {
+    return true;
+  }
+
   // Conservatively match 429 in a status code or HTTP context,
   // avoiding plain numbers like a port "localhost:4290" or "429 tokens"
   if (/\b(?:status(?: code)?|http|error)[\s:]*429\b/.test(text)) {

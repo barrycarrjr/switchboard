@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
-import { parseRunArgs, parseRunSpec, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
+import { parseRunArgs, parseHarnessList, drivableHarnesses, parseRunSpec, loadRunSpec, resolveSpecArgv, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
 
 test('parseRunArgs steals its own flags and leaves the rest to the child', () => {
   const parsed = parseRunArgs(['--provider', 'anthropic', '--account', 'acct1', '--no-fallback', '--yes', '--quiet', '--spec', 'spec.json', '-p', 'hello']);
@@ -54,6 +54,41 @@ test('parseRunArgs keeps a trailing --spec with no value as a command argument',
 
   assert.equal(parsed.spec, null);
   assert.deepEqual(parsed.commandArgs, ['--spec']);
+});
+
+test('parseRunArgs reads the tools a caller can drive and keeps them off the command line', () => {
+  const parsed = parseRunArgs(['--harnesses', 'claude, Codex,claude', '--json']);
+
+  assert.deepEqual(parsed.harnesses, ['claude', 'codex']);
+  assert.deepEqual(parsed.commandArgs, ['--json']);
+});
+
+test('a caller that names no tools has not asked for an empty pool', () => {
+  assert.equal(parseRunArgs([]).harnesses, null);
+  assert.equal(parseHarnessList(''), null);
+  assert.equal(parseHarnessList(' , '), null);
+  assert.equal(parseHarnessList(undefined), null);
+
+  // A trailing flag with no value is left to the child, the same as --spec.
+  const parsed = parseRunArgs(['--harnesses']);
+  assert.equal(parsed.harnesses, null);
+  assert.deepEqual(parsed.commandArgs, ['--harnesses']);
+});
+
+test('a spec says which tools a run may use without a second flag', () => {
+  const spec = { harnessArgs: { claude: ['-p'], codex: ['exec', '-'] } };
+
+  assert.deepEqual(drivableHarnesses(parseRunArgs([]), spec), ['claude', 'codex']);
+  assert.deepEqual(drivableHarnesses(parseRunArgs(['--harnesses', 'copilot,claude']), null), ['copilot', 'claude']);
+  assert.equal(drivableHarnesses(parseRunArgs([]), null), null);
+});
+
+test('a lane has to satisfy both the spec and the named tools when both are given', () => {
+  const spec = { harnessArgs: { claude: ['-p'], codex: ['exec', '-'] } };
+
+  assert.deepEqual(drivableHarnesses(parseRunArgs(['--harnesses', 'codex,copilot']), spec), ['codex']);
+  // Nothing in common is an empty pool, not an unrestricted one.
+  assert.deepEqual(drivableHarnesses(parseRunArgs(['--harnesses', 'copilot']), spec), []);
 });
 
 test('parseRunSpec accepts a harnessArgs map', () => {
@@ -117,6 +152,14 @@ test('childStdio leaves a terminal alone and only captures stdout for an automat
   // own interface; capturing it would silently downgrade every hand-typed run.
   assert.deepEqual(childStdio(true), ['inherit', 'inherit', 'pipe']);
   assert.deepEqual(childStdio(false), ['inherit', 'pipe', 'pipe']);
+});
+
+test('childStdio gives the child a pipe of its own when the caller piped its prompt in', () => {
+  // The prompt is replayed into it, so a lane the run falls back to gets the question
+  // too. Inheriting the caller's pipe only ever worked for the first lane to read it.
+  assert.deepEqual(childStdio(false, true), ['pipe', 'pipe', 'pipe']);
+  // A person typing keeps the real terminal whatever else is true.
+  assert.deepEqual(childStdio(true, false), ['inherit', 'inherit', 'pipe']);
 });
 
 test('childWindowsHide keeps a console window off an automated run and leaves a typed one alone', () => {

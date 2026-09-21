@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { laneStatus, selectLane, laneAnswersTo, selectionFailure, worthSwitchingTo, defaultFollowsLanes, followsLanesNote, switchedAgainstLanesNote, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
+import { laneStatus, selectLane, narrowPool, lanesCallerCannotDrive, laneAnswersTo, selectionFailure, worthSwitchingTo, defaultFollowsLanes, followsLanesNote, switchedAgainstLanesNote, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
 import { expiringWeek, hasHeadroom, isRunningOut, spentEvidence, tightestWindow, SPEND_DOWN_HORIZON_MS, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
 
 function makeLane(id, accountId, billing = 'subscription') {
@@ -249,6 +249,84 @@ test('a name that belongs to nothing still selects nothing', () => {
 test('the harness requirement is unchanged by any of this', () => {
   assert.equal(selectLane(mixedPool(), healthyContext({ harness: 'codex' })).lane.id, 'l2');
   assert.equal(selectLane(mixedPool(), healthyContext({ harness: 'claude', provider: 'openai' })), null, 'both must agree');
+});
+
+// ---- Lanes in any order, whatever each caller can drive ----
+
+// The order belongs to whoever owns the machine. This was found the day a Copilot lane was
+// added beneath Codex: a Slack bot that drives Claude and Codex only had been told to insist
+// on a particular order, because a lane it could not drive sitting above one it could meant
+// the usable lane was never offered.
+function ownersPool() {
+  const copilot = makeLane('l-copilot', 'a3');
+  copilot.harness = 'copilot';
+  copilot.provider = 'github';
+  const [claudeLane, codexLane] = mixedPool();
+  return [copilot, claudeLane, codexLane];
+}
+
+function ownersContext(overrides = {}) {
+  const context = healthyContext({});
+  context.loginStates.a3 = { signedIn: true };
+  context.quotas.a3 = { windows: [{ key: 'session', usedPercent: 10 }] };
+  return { ...context, ...overrides };
+}
+
+test('a lane the caller cannot drive is passed over wherever the owner put it', () => {
+  const pool = narrowPool(ownersPool(), { harnesses: ['claude', 'codex'] });
+
+  assert.deepEqual(pool.map((l) => l.id), ['l1', 'l2'], 'the owner order of what is left is kept');
+  assert.equal(selectLane(pool, ownersContext()).lane.id, 'l1');
+});
+
+test('the lane below an undrivable one is reached when the first choice is spent', () => {
+  const spentClaude = ownersContext();
+  spentClaude.quotas.a1 = { windows: [{ key: 'session', usedPercent: 100, resetsAt: 5000 }] };
+
+  // Copilot sits between nothing and Codex here only by being first in the owner's list;
+  // moving it between the two must make no difference either.
+  const pool = ownersPool();
+  const reordered = [pool[1], pool[0], pool[2]];
+  for (const lanes of [pool, reordered]) {
+    const selected = selectLane(narrowPool(lanes, { harnesses: ['claude', 'codex'] }), spentClaude);
+    assert.equal(selected.lane.id, 'l2', 'Codex takes the work, not the Copilot lane above it');
+  }
+});
+
+test('a caller that can drive anything keeps every lane', () => {
+  assert.equal(narrowPool(ownersPool(), {}).length, 3);
+  assert.equal(narrowPool(ownersPool(), { harnesses: null }).length, 3);
+  assert.equal(narrowPool(ownersPool()).length, 3);
+});
+
+test('tools are matched whatever case the caller wrote them in', () => {
+  assert.deepEqual(narrowPool(ownersPool(), { harnesses: ['CoPilot'] }).map((l) => l.id), ['l-copilot']);
+});
+
+test('a caller that can drive none of the lanes gets the "nothing matched" answer', () => {
+  const lanes = ownersPool();
+  const pool = narrowPool(lanes, { harnesses: ['gemini'] });
+
+  assert.deepEqual(pool, []);
+  assert.equal(selectionFailure(lanes, pool), NO_LANES_MATCH, 'not "busy": waiting will never fix it');
+  assert.deepEqual(narrowPool(lanes, { harnesses: [] }), [], 'and an empty list is not "anything"');
+});
+
+test('the account and provider filters still apply alongside the tools', () => {
+  const lanes = ownersPool();
+
+  assert.deepEqual(narrowPool(lanes, { provider: 'openai', harnesses: ['claude', 'codex'] }).map((l) => l.id), ['l2']);
+  assert.deepEqual(narrowPool(lanes, { account: 'a1', harnesses: ['claude', 'codex'] }).map((l) => l.id), ['l1']);
+  assert.deepEqual(narrowPool(lanes, { account: 'a3', harnesses: ['claude', 'codex'] }), []);
+});
+
+test('only lanes left out for their tool are reported as left out', () => {
+  const lanes = ownersPool();
+
+  assert.deepEqual(lanesCallerCannotDrive(lanes, { harnesses: ['claude', 'codex'] }).map((l) => l.id), ['l-copilot']);
+  assert.deepEqual(lanesCallerCannotDrive(lanes, {}), [], 'no restriction, nothing left out');
+  // A lane the caller ruled out by name was never in the running, so it is not news.
+  assert.deepEqual(lanesCallerCannotDrive(lanes, { provider: 'anthropic', harnesses: ['claude'] }), []);
 });
 
 // ---- Telling the three empty answers apart ----

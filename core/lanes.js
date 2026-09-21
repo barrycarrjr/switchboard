@@ -160,6 +160,40 @@ export function laneAnswersTo(lane, wanted) {
 }
 
 /**
+ * The lanes a caller is willing and able to use, in the order the owner put them.
+ *
+ * `dry-run` and `run` both start here, and that is the point of it living in one place:
+ * `dry-run` exists to tell a caller what `run` is about to do, so the two may never narrow
+ * the pool differently.
+ *
+ * `harnesses` is the list of tools the caller can build a command line for, or null when
+ * it can drive anything. Dropping the rest here, before selection, is what lets lanes sit
+ * in any order. It used to be decided after selection instead: the first healthy lane won
+ * whatever its tool, and a caller that could not drive it either gave up on the pool or,
+ * on a failover, had the run ended under it ("refusing to guess") while a lane it could
+ * have used sat one place lower. The owner's order then had to be arranged around what
+ * each caller happened to support, which is backwards.
+ */
+export function narrowPool(lanes = [], { account = null, provider = null, harnesses = null } = {}) {
+  const drivable = Array.isArray(harnesses) ? harnesses.map((h) => String(h).toLowerCase()) : null;
+  return lanes
+    .filter((l) => !account || l.accountId === account)
+    .filter((l) => laneAnswersTo(l, provider))
+    .filter((l) => !drivable || drivable.includes(String(l?.harness ?? '').toLowerCase()));
+}
+
+/**
+ * The lanes `narrowPool` left out only because the caller cannot drive their tool. Said
+ * once at the start of a run, so a lane that never gets work has a reason on record
+ * instead of looking broken.
+ */
+export function lanesCallerCannotDrive(lanes = [], { account = null, provider = null, harnesses = null } = {}) {
+  if (!Array.isArray(harnesses)) return [];
+  const kept = new Set(narrowPool(lanes, { account, provider, harnesses }).map((l) => l.id));
+  return narrowPool(lanes, { account, provider }).filter((l) => !kept.has(l.id));
+}
+
+/**
  * Select the next healthy account or provider deterministically.
  */
 export function selectLane(pool = [], context = {}) {
