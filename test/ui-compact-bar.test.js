@@ -98,7 +98,7 @@ test('updateAccountBar renders stacked dual bars for session (5h) and weekly usa
   assert.equal(barEl.style.display, 'block');
   assert.equal(barEl.children.length, 2, 'renders 2 rows: session and week, ignoring extra usage');
 
-  // Row 0: Session (5h)
+  // Row 0: Session (5h) - 29% used
   const row0 = barEl.children[0];
   assert.equal(row0.className, 'account-meter-row');
   const head0 = row0.children[0];
@@ -106,13 +106,14 @@ test('updateAccountBar renders stacked dual bars for session (5h) and weekly usa
   assert.equal(head0.className, 'account-meter-head');
   assert.equal(head0.children[0].className, 'account-meter-left good');
   assert.equal(head0.children[0].children[0].textContent, 'Session (5h):');
-  assert.equal(head0.children[0].children[1].textContent, ' 71%');
-  assert.match(head0.children[1].textContent, /29% used/);
+  assert.equal(head0.children[0].children[1].textContent, ' 29%');
+  assert.equal(head0.children[0].children[2].textContent, ' used');
+  assert.match(head0.children[1].textContent, /71% left/);
   assert.equal(bar0.attrs['role'], 'progressbar');
-  assert.equal(bar0.attrs['aria-valuenow'], '71');
-  assert.equal(bar0.children[0].style.width, '71%');
+  assert.equal(bar0.attrs['aria-valuenow'], '29');
+  assert.equal(bar0.children[0].style.width, '29%');
 
-  // Row 1: Week (all models)
+  // Row 1: Week (all models) - 10% used
   const row1 = barEl.children[1];
   assert.equal(row1.className, 'account-meter-row');
   const head1 = row1.children[0];
@@ -120,34 +121,41 @@ test('updateAccountBar renders stacked dual bars for session (5h) and weekly usa
   assert.equal(head1.className, 'account-meter-head');
   assert.equal(head1.children[0].className, 'account-meter-left good');
   assert.equal(head1.children[0].children[0].textContent, 'Week (all models):');
-  assert.equal(head1.children[0].children[1].textContent, ' 90%');
-  assert.match(head1.children[1].textContent, /10% used/);
+  assert.equal(head1.children[0].children[1].textContent, ' 10%');
+  assert.equal(head1.children[0].children[2].textContent, ' used');
+  assert.match(head1.children[1].textContent, /90% left/);
   assert.equal(bar1.attrs['role'], 'progressbar');
-  assert.equal(bar1.attrs['aria-valuenow'], '90');
-  assert.equal(bar1.children[0].style.width, '90%');
+  assert.equal(bar1.attrs['aria-valuenow'], '10');
+  assert.equal(bar1.children[0].style.width, '10%');
 });
 
-test('updateAccountBar shows warn tone when <= 30% left and hot tone when <= 10% left', () => {
+test('updateAccountBar shows warn tone when >= 70% used and hot tone when >= 90% used', () => {
   const { updateAccountBar, createElement } = load(['updateAccountBar'], ['updateAccountBar']);
   const barEl = createElement('div');
 
-  // 80% used -> 20% left -> warn
+  // 80% used -> warn
   updateAccountBar(barEl, {
     windows: [{ key: 'session', label: 'Session (5h)', usedPercent: 80 }],
   });
   const rowWarn = barEl.children[0];
   assert.equal(rowWarn.children[0].children[0].className, 'account-meter-left warn');
   assert.equal(rowWarn.children[1].className, 'bar quota-bar warn');
-  assert.equal(rowWarn.children[1].children[0].style.width, '20%');
+  assert.equal(rowWarn.children[1].children[0].style.width, '80%');
+  assert.equal(rowWarn.children[0].children[0].children[1].textContent, ' 80%');
+  assert.equal(rowWarn.children[0].children[0].children[2].textContent, ' used');
+  assert.match(rowWarn.children[0].children[1].textContent, /20% left/);
 
-  // 96% used -> 4% left -> hot
+  // 96% used -> hot
   updateAccountBar(barEl, {
     windows: [{ key: 'session', label: 'Session (5h)', usedPercent: 96 }],
   });
   const rowHot = barEl.children[0];
   assert.equal(rowHot.children[0].children[0].className, 'account-meter-left hot');
   assert.equal(rowHot.children[1].className, 'bar quota-bar hot');
-  assert.equal(rowHot.children[1].children[0].style.width, '4%');
+  assert.equal(rowHot.children[1].children[0].style.width, '96%');
+  assert.equal(rowHot.children[0].children[0].children[1].textContent, ' 96%');
+  assert.equal(rowHot.children[0].children[0].children[2].textContent, ' used');
+  assert.match(rowHot.children[0].children[1].textContent, /4% left/);
 });
 
 test('updateAccountBar hides bar when no windows report percentage', () => {
