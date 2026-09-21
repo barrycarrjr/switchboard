@@ -258,12 +258,14 @@
   .account-head-toggle{background:none;border:none;color:var(--muted);font-size:.78rem;cursor:pointer;padding:2px 4px;margin-left:4px;display:inline-flex;align-items:center;vertical-align:middle;line-height:1}
   .account-head-toggle:hover{color:var(--accent)}
   .account-meter{display:none;width:100%;box-sizing:border-box;margin:0;padding:8px 12px;background:#f8fafc;border-top:1px solid var(--line)}
+  .account-meter-row + .account-meter-row{margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0}
   .account-meter-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:.76rem;margin-bottom:4px}
-  .account-meter-left{font-weight:600;color:var(--accent)}
+  .account-meter-left{font-weight:600;color:var(--accent);display:inline-flex;align-items:baseline;gap:4px}
   .account-meter-left.good{color:#107c41}
   .account-meter-left.warn{color:var(--warn)}
   .account-meter-left.hot{color:var(--bad)}
-  .account-meter-used{color:var(--muted);font-size:.72rem}
+  .account-meter-name{font-weight:600;color:var(--text)}
+  .account-meter-used{color:var(--muted);font-size:.72rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .account-meter .quota-bar{width:100%;height:6px;margin-top:0;background:#e2e5e9;border-radius:3px}
   .account-meter .quota-bar i{border-radius:3px}
   .bar.good i{background:#107c41}
@@ -439,54 +441,87 @@ function updateAccountBar(barEl, q, now = Date.now()) {
   if (!barEl) return;
   const windows = Array.isArray(q?.windows) ? q.windows : [];
   const measured = windows
-    .filter((w) => w.usedPercent != null && Number.isFinite(Number(w.usedPercent)))
+    .filter((w) => w.key !== 'extra' && !/extra\s*usage/i.test(w.label || '') && w.usedPercent != null && Number.isFinite(Number(w.usedPercent)))
     .map((w) => ({ window: w, pct: Number(w.usedPercent) }));
-  const running = measured.filter((m) => !(m.window.resetsAt && Number(m.window.resetsAt) < now));
-  const highest = running.sort((a, b) => b.pct - a.pct)[0];
 
-  if (highest) {
-    const pct = highest.pct;
+  if (!measured.length) {
+    barEl.style.display = 'none';
+    return;
+  }
+
+  // Prioritize primary 5h session and primary weekly windows, excluding extra usage.
+  let selected = [];
+  const session = measured.find((m) => m.window.key === 'session' || /session|5h/i.test(m.window.label || ''));
+  const week = measured.find((m) => m.window.key === 'week' || /week.*all/i.test(m.window.label || ''))
+    || measured.find((m) => m !== session && /week/i.test(m.window.label || ''));
+
+  if (session && week) {
+    selected = [session, week];
+  } else if (session) {
+    const next = measured.find((m) => m !== session);
+    selected = next ? [session, next] : [session];
+  } else if (week) {
+    const next = measured.find((m) => m !== week);
+    selected = next ? [week, next] : [week];
+  } else {
+    selected = measured.slice(0, 2);
+  }
+
+  barEl.replaceChildren();
+  const titles = [];
+
+  for (const m of selected) {
+    const pct = m.pct;
     const leftPct = Math.max(0, 100 - pct);
     const tone = leftPct <= 10 ? 'hot' : leftPct <= 30 ? 'warn' : 'good';
-    barEl.replaceChildren();
+    const row = el('div', 'account-meter-row');
 
     const head = el('div', 'account-meter-head');
-    const leftSpan = el('span', `account-meter-left ${tone}`.trim());
-    leftSpan.appendChild(el('strong', null, `${leftPct}%`));
+    const leftSpan = el('span', 'account-meter-left ' + tone);
+    const nameSpan = el('span', 'account-meter-name', esc(m.window.label) + ':');
+    leftSpan.appendChild(nameSpan);
+    leftSpan.appendChild(el('strong', null, ' ' + leftPct + '%'));
     leftSpan.appendChild(document.createTextNode(' left'));
 
     const reached = pct >= 100 ? ' · limit reached' : '';
-    const usedSpan = el('span', 'account-meter-used', `${pct}% used${reached} · ${highest.window.label}`);
+    let resetInfo = '';
+    if (m.window.resetsAt) {
+      const resetMs = Number(m.window.resetsAt);
+      if (resetMs < now) {
+        resetInfo = ' · Reset passed';
+      } else {
+        const d = new Date(resetMs);
+        const isToday = d.toDateString() === new Date(now).toDateString();
+        const timeStr = isToday
+          ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        resetInfo = ' · Resets ' + timeStr;
+      }
+    }
+
+    const usedSpan = el('span', 'account-meter-used', pct + '% used' + reached + resetInfo);
     head.appendChild(leftSpan);
     head.appendChild(usedSpan);
 
-    const bar = el('div', `bar quota-bar ${tone}`.trim());
+    const bar = el('div', ('bar quota-bar ' + tone).trim());
     bar.setAttribute('role', 'progressbar');
     bar.setAttribute('aria-valuenow', String(leftPct));
     bar.setAttribute('aria-valuemin', '0');
     bar.setAttribute('aria-valuemax', '100');
-    bar.setAttribute('aria-label', `${leftPct}% left`);
+    bar.setAttribute('aria-label', m.window.label + ': ' + leftPct + '% left');
     const fill = el('i');
-    fill.style.width = `${leftPct}%`;
+    fill.style.width = leftPct + '%';
     bar.appendChild(fill);
 
-    barEl.appendChild(head);
-    barEl.appendChild(bar);
-    barEl.title = `${leftPct}% left (${pct}% used on ${highest.window.label})`;
-    barEl.style.display = 'block';
-  } else if (measured.length) {
-    barEl.replaceChildren();
-    const head = el('div', 'account-meter-head');
-    const leftSpan = el('span', 'account-meter-left warn');
-    leftSpan.appendChild(el('strong', null, 'Reset'));
-    const usedSpan = el('span', 'account-meter-used', 'Reset since this reading');
-    head.appendChild(leftSpan);
-    head.appendChild(usedSpan);
-    barEl.appendChild(head);
-    barEl.style.display = 'block';
-  } else {
-    barEl.style.display = 'none';
+    row.appendChild(head);
+    row.appendChild(bar);
+    barEl.appendChild(row);
+
+    titles.push(m.window.label + ': ' + leftPct + '% left (' + pct + '% used' + resetInfo + ')');
   }
+
+  barEl.title = titles.join(' · ');
+  barEl.style.display = 'block';
 }
 
 function quotaProblemLabel(code) {
