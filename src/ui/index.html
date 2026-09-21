@@ -251,10 +251,22 @@
   .empty{color:var(--muted);font-size:.85rem;padding:14px 4px}
   .accounts-toolbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:-2px 0 10px;padding:0 2px}
   .account-card.compact .account-area{display:none}
+  .account-card.compact .account-path{display:none}
+  .account-person + .account-path{display:none}
   .account-card.compact .account-head{min-height:unset;padding-top:7px;padding-bottom:7px}
   .account-head{cursor:pointer}
   .account-head-toggle{background:none;border:none;color:var(--muted);font-size:.78rem;cursor:pointer;padding:2px 4px;margin-left:4px;display:inline-flex;align-items:center;vertical-align:middle;line-height:1}
   .account-head-toggle:hover{color:var(--accent)}
+  .account-meter{margin-top:8px;padding:6px 9px;background:#f6f8fa;border-radius:6px;border:1px solid var(--line)}
+  .account-meter-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:.76rem;margin-bottom:4px}
+  .account-meter-left{font-weight:600;color:var(--accent)}
+  .account-meter-left.good{color:#107c41}
+  .account-meter-left.warn{color:var(--warn)}
+  .account-meter-left.hot{color:var(--bad)}
+  .account-meter-used{color:var(--muted);font-size:.72rem}
+  .account-meter .quota-bar{height:6px;margin-top:0;background:#e2e5e9;border-radius:3px}
+  .account-meter .quota-bar i{border-radius:3px}
+  .bar.good i{background:#107c41}
   @media (min-width:760px){
     .account-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
     .account-grid>.account-card:only-child{grid-column:1 / -1}
@@ -426,6 +438,60 @@ function showUsageState(host, summary, { title, detail, tone = '', loading = fal
   if (!loading) host.setAttribute('aria-busy', 'false');
 }
 
+function updateAccountBar(barEl, q, now = Date.now()) {
+  if (!barEl) return;
+  const windows = Array.isArray(q?.windows) ? q.windows : [];
+  const measured = windows
+    .filter((w) => w.usedPercent != null && Number.isFinite(Number(w.usedPercent)))
+    .map((w) => ({ window: w, pct: Number(w.usedPercent) }));
+  const running = measured.filter((m) => !(m.window.resetsAt && Number(m.window.resetsAt) < now));
+  const highest = running.sort((a, b) => b.pct - a.pct)[0];
+
+  if (highest) {
+    const pct = highest.pct;
+    const leftPct = Math.max(0, 100 - pct);
+    const tone = leftPct <= 10 ? 'hot' : leftPct <= 30 ? 'warn' : 'good';
+    barEl.replaceChildren();
+
+    const head = el('div', 'account-meter-head');
+    const leftSpan = el('span', `account-meter-left ${tone}`.trim());
+    leftSpan.appendChild(el('strong', null, `${leftPct}%`));
+    leftSpan.appendChild(document.createTextNode(' left'));
+
+    const reached = pct >= 100 ? ' · limit reached' : '';
+    const usedSpan = el('span', 'account-meter-used', `${pct}% used${reached} · ${highest.window.label}`);
+    head.appendChild(leftSpan);
+    head.appendChild(usedSpan);
+
+    const bar = el('div', `bar quota-bar ${tone}`.trim());
+    bar.setAttribute('role', 'progressbar');
+    bar.setAttribute('aria-valuenow', String(leftPct));
+    bar.setAttribute('aria-valuemin', '0');
+    bar.setAttribute('aria-valuemax', '100');
+    bar.setAttribute('aria-label', `${leftPct}% left`);
+    const fill = el('i');
+    fill.style.width = `${leftPct}%`;
+    bar.appendChild(fill);
+
+    barEl.appendChild(head);
+    barEl.appendChild(bar);
+    barEl.title = `${leftPct}% left (${pct}% used on ${highest.window.label})`;
+    barEl.style.display = 'block';
+  } else if (measured.length) {
+    barEl.replaceChildren();
+    const head = el('div', 'account-meter-head');
+    const leftSpan = el('span', 'account-meter-left warn');
+    leftSpan.appendChild(el('strong', null, 'Reset'));
+    const usedSpan = el('span', 'account-meter-used', 'Reset since this reading');
+    head.appendChild(leftSpan);
+    head.appendChild(usedSpan);
+    barEl.appendChild(head);
+    barEl.style.display = 'block';
+  } else {
+    barEl.style.display = 'none';
+  }
+}
+
 function quotaProblemLabel(code) {
   return ({
     auth: 'was skipped: the sign-in needs a refresh (run this account once, or Re-authenticate)',
@@ -556,16 +622,6 @@ function renderUsageWindows(host, summary, q, onRefresh = null, now = Date.now()
     if (hasPercent) {
       head.appendChild(el('strong', null, `${pct}% used`));
       metric.appendChild(head);
-      const meter = el('div', barClass(pct));
-      meter.setAttribute('role', 'progressbar');
-      meter.setAttribute('aria-label', `${w.label}: ${pct}% used`);
-      meter.setAttribute('aria-valuemin', '0');
-      meter.setAttribute('aria-valuemax', '100');
-      meter.setAttribute('aria-valuenow', String(pct));
-      const fill = el('i');
-      fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-      meter.appendChild(fill);
-      metric.appendChild(meter);
       if (w.valueLabel) metric.appendChild(el('div', 'quota-detail', esc(w.valueLabel)));
     } else {
       metric.appendChild(head);
@@ -605,6 +661,17 @@ function cardShell({ titleId, title, badge = null, person = null, folder = null,
   name.id = titleId;
   titleRow.appendChild(name);
   if (badge) titleRow.appendChild(el('span', 'badge default-badge', esc(badge)));
+  const tog = el('button', 'account-head-toggle', '&#9662;');
+  tog.type = 'button';
+  tog.setAttribute('aria-label', `Toggle ${title} card`);
+  tog.setAttribute('aria-expanded', 'true');
+  tog.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isNowCompact = card.classList.toggle('compact');
+    tog.innerHTML = isNowCompact ? '&#9656;' : '&#9662;';
+    tog.setAttribute('aria-expanded', isNowCompact ? 'false' : 'true');
+  });
+  titleRow.appendChild(tog);
   identity.appendChild(titleRow);
   if (person) {
     const personLine = el('div', 'account-person', esc(person));
@@ -624,6 +691,12 @@ function cardShell({ titleId, title, badge = null, person = null, folder = null,
   const actionRow = el('div', 'account-actions');
   for (const action of actions) actionRow.appendChild(action);
   header.appendChild(actionRow);
+  header.addEventListener('click', (ev) => {
+    if (ev.target.closest('button, a, input, select, .drag-handle')) return;
+    const isNowCompact = card.classList.toggle('compact');
+    tog.innerHTML = isNowCompact ? '&#9656;' : '&#9662;';
+    tog.setAttribute('aria-expanded', isNowCompact ? 'false' : 'true');
+  });
   card.appendChild(header);
   return { card, name };
 }
@@ -1010,6 +1083,10 @@ function accountCard(p, account) {
     input.addEventListener('blur', commit);
   }
 
+  const accountBar = el('div', 'account-meter');
+  accountBar.style.display = 'none';
+  card.querySelector('.account-identity')?.appendChild(accountBar);
+
   const usage = cardUsage(card);
   if (p.hasQuota) {
     const showLoading = () => showUsageState(usage.content, usage.summary, {
@@ -1107,7 +1184,10 @@ function accountCard(p, account) {
         });
         return;
       }
-      if (!renderUsageWindows(usage.content, usage.summary, q, retry.onClick)) {
+      if (renderUsageWindows(usage.content, usage.summary, q, retry.onClick)) {
+        updateAccountBar(accountBar, q);
+      } else {
+        updateAccountBar(accountBar, null);
         const box = usage.content.querySelector('.usage-state');
         const actionRow = el('div', 'usage-state-actions');
         const retryButton = el('button', 'btn', 'Retry');
@@ -1191,6 +1271,10 @@ async function antigravitySection() {
     title: 'Antigravity',
     person: ag.signedIn ? (who || 'Signed in with Google') : null,
   });
+  const agBar = el('div', 'account-meter');
+  agBar.style.display = 'none';
+  card.querySelector('.account-identity')?.appendChild(agBar);
+
   const usage = cardUsage(card);
   if (ag.signedIn && ag.cliInstalled) {
     const retry = { label: 'Check now', onClick: () => fillQuota(1, true) };
@@ -1223,7 +1307,10 @@ async function antigravitySection() {
         });
         return;
       }
-      if (!renderUsageWindows(usage.content, usage.summary, q, retry.onClick)) {
+      if (renderUsageWindows(usage.content, usage.summary, q, retry.onClick)) {
+        updateAccountBar(agBar, q);
+      } else {
+        updateAccountBar(agBar, null);
         const box = usage.content.querySelector('.usage-state');
         if (box) {
           const actionRow = el('div', 'usage-state-actions');
@@ -1395,7 +1482,7 @@ async function renderAccounts() {
     isCompact = !isCompact;
     localStorage.setItem('sb-compact-cards', isCompact ? 'true' : 'false');
     toggleBtn.textContent = isCompact ? 'Expand all cards' : 'Compact all cards';
-    for (const c of panel.querySelectorAll('.account-card')) {
+    for (const c of realPanel.querySelectorAll('.account-card')) {
       c.classList.toggle('compact', isCompact);
       const tog = c.querySelector('.account-head-toggle');
       if (tog) {
