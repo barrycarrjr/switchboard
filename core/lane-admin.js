@@ -1,4 +1,10 @@
 import { PROVIDERS } from './accounts.js';
+import { TOOLS } from './providers.js';
+import os from 'node:os';
+import path from 'node:path';
+import { detectPresence } from './presence.js';
+import { antigravityPresence } from './apps.js';
+import { detectInstalled } from './providers.js';
 
 /**
  * Editing the lane pool: the rules that decide what a lane may be, kept apart from
@@ -16,7 +22,16 @@ import { PROVIDERS } from './accounts.js';
  * ("--provider claude" or "--provider anthropic"), and laneAnswersTo matches on both.
  * A harness with no separate vendor name answers to its own name only.
  */
-const VENDORS = { claude: 'anthropic', codex: 'openai', gemini: 'google' };
+const VENDORS = {
+  claude: 'anthropic',
+  codex: 'openai',
+  gemini: 'google',
+  antigravity: 'google',
+  copilot: 'github',
+  junie: 'jetbrains',
+  grok: 'xai',
+  ollama: 'ollama',
+};
 
 export function vendorForHarness(harness) {
   const id = String(harness ?? '');
@@ -42,154 +57,173 @@ const DEFAULT_CAPABILITIES = ['chat'];
  */
 export function laneProblem({ accountId, billing } = {}, accounts = [], lanes = []) {
   if (typeof accountId !== 'string' || !accountId.trim()) return 'a lane needs an account id';
-  const account = accounts.find((a) => a.id === accountId);
-  if (!account) return `no registered account with id "${accountId}"`;
-  if (!PROVIDERS[account.provider]) return `account "${accountId}" names an unknown tool: ${account.provider}`;
-  if (!BILLING_KINDS.includes(billing)) return `billing must be one of: ${BILLING_KINDS.join(', ')}`;
-  if (lanes.some((l) => l.accountId === accountId && l.billing === billing)) {
-    return `a ${billing} lane for "${accountId}" already exists, and a second one could never be selected`;
+  const cleanId = accountId.trim();
+  const account = accounts.find((a) => a.id === cleanId);
+  if (!account) return `no registered account with id "${cleanId}"`;
+
+  const provider = account.provider ?? account.harness;
+  if (!PROVIDERS[provider] && !TOOLS.some((t) => t.id === provider)) return `provider "${provider}" is not supported`;
+
+  const cleanBilling = String(billing ?? 'subscription').trim();
+  if (!BILLING_KINDS.includes(cleanBilling)) {
+    return `billing must be one of: ${BILLING_KINDS.join(', ')}`;
+  }
+
+  const duplicate = lanes.find((l) => l.accountId === cleanId && (l.billing ?? 'subscription') === cleanBilling);
+  if (duplicate) {
+    return `a ${cleanBilling} lane for "${account.label || cleanId}" already exists (${duplicate.id})`;
   }
   return null;
 }
 
-/** The lane an account maps to. Pure, so the id is the caller's to decide. */
 export function buildLane(account, billing, id) {
+  const harness = account.provider ?? account.harness;
   return {
     id,
-    harness: account.provider,
-    provider: vendorForHarness(account.provider),
+    harness,
+    provider: vendorForHarness(harness),
     accountId: account.id,
-    billing,
+    billing: String(billing ?? 'subscription').trim(),
     capabilities: [...DEFAULT_CAPABILITIES],
   };
 }
 
-/** The id a new lane gets. Kept in the app's existing shape so old lanes still read. */
 export function nextLaneId(now = Date.now()) {
   return `lane-${now}`;
 }
 
 /**
- * Add a lane to the end of the pool, which is the lowest priority. Throws on anything
- * laneProblem refuses, so no caller has to remember to check first.
+ * Pure lane addition. Validates against the accounts and lanes it was handed, appends
+ * the new lane at the lowest priority, and returns the next settings alongside the
+ * created lane. Throws on validation failure so callers with no UI can let it surface.
  */
 export function addLane(settings, { accountId, billing = 'subscription' } = {}, accounts = [], now = Date.now()) {
-  const lanes = settings.lanes ?? [];
-  const problem = laneProblem({ accountId, billing }, accounts, lanes);
+  const current = settings?.lanes ?? [];
+  const problem = laneProblem({ accountId, billing }, accounts, current);
   if (problem) throw new Error(problem);
-  const account = accounts.find((a) => a.id === accountId);
+
+  const cleanId = accountId.trim();
+  const account = accounts.find((a) => a.id === cleanId);
   const lane = buildLane(account, billing, nextLaneId(now));
-  return { settings: { ...settings, lanes: [...lanes, lane] }, lane };
+  return {
+    settings: { ...settings, lanes: [...current, lane] },
+    lane,
+  };
 }
 
 /**
- * Take a lane out of the pool, along with the three things filed under its id. Leaving
- * any of them behind would silently apply to the next lane to reuse the id, and for the
- * token that means a reused id inheriting an old account's credential.
+ * Pure lane removal. Drops the lane and any spend policy, cooldown, or lane token
+ * filed under that id, and throws if the id names nothing in the pool.
  */
 export function removeLane(settings, laneId) {
-  const lanes = settings.lanes ?? [];
-  if (!lanes.some((l) => l.id === laneId)) throw new Error(`no lane with id "${laneId}"`);
-  const spendPolicies = { ...(settings.spendPolicies ?? {}) };
-  const cooldowns = { ...(settings.cooldowns ?? {}) };
-  const laneTokens = { ...(settings.laneTokens ?? {}) };
+  const current = settings?.lanes ?? [];
+  if (!current.some((l) => l.id === laneId)) {
+    throw new Error(`no lane with id "${laneId}"`);
+  }
+  const lanes = current.filter((l) => l.id !== laneId);
+  const spendPolicies = { ...(settings?.spendPolicies ?? {}) };
   delete spendPolicies[laneId];
+  const cooldowns = { ...(settings?.cooldowns ?? {}) };
   delete cooldowns[laneId];
+  const laneTokens = { ...(settings?.laneTokens ?? {}) };
   delete laneTokens[laneId];
-  return { ...settings, lanes: lanes.filter((l) => l.id !== laneId), spendPolicies, cooldowns, laneTokens };
-}
-
-/** Lane ids in a list that name no lane. Empty when they all do. */
-export function unknownLaneIds(settings, laneIds = []) {
-  const known = new Set((settings.lanes ?? []).map((l) => l.id));
-  return laneIds.filter((id) => !known.has(id));
+  return { ...settings, lanes, spendPolicies, cooldowns, laneTokens };
 }
 
 /**
- * Reorder the pool. Ids not mentioned keep their relative order at the end rather than
- * being dropped: a partial list is a partial instruction, never a deletion.
+ * Pure lane reordering. Accepts an array of lane ids representing the new order.
+ * Any lanes omitted from the new order are kept at the end in their original relative
+ * order, so a partial list never deletes a lane by accident.
  */
-export function reorderLanes(settings, laneIds = []) {
-  const lanes = settings.lanes ?? [];
-  const ordered = [];
-  for (const id of laneIds) {
-    const found = lanes.find((l) => l.id === id);
-    if (found && !ordered.includes(found)) ordered.push(found);
+export function reorderLanes(settings, orderedIds) {
+  const current = settings?.lanes ?? [];
+  const seen = new Set();
+  const next = [];
+  for (const id of orderedIds ?? []) {
+    if (seen.has(id)) continue;
+    const lane = current.find((l) => l.id === id);
+    if (lane) {
+      next.push(lane);
+      seen.add(id);
+    }
   }
-  for (const lane of lanes) {
-    if (!ordered.includes(lane)) ordered.push(lane);
+  for (const lane of current) {
+    if (!seen.has(lane.id)) next.push(lane);
   }
-  return { ...settings, lanes: ordered };
+  return { ...settings, lanes: next };
+}
+
+/** Which ids in a caller's list do not match any lane in the pool. */
+export function unknownLaneIds(settings, ids) {
+  const known = new Set((settings?.lanes ?? []).map((l) => l.id));
+  return (ids ?? []).filter((id) => !known.has(id));
 }
 
 /**
- * Set or clear what a metered lane may spend. Null clears it, which blocks the lane:
- * a metered lane with no budget is deliberately unselectable rather than unlimited.
+ * Pure budget edit. A positive number sets the monthly spend cap in whole dollars;
+ * null or empty string removes it so the lane reverts to unbudgeted.
  */
 export function setLaneBudget(settings, laneId, budget) {
-  const lanes = settings.lanes ?? [];
-  if (!lanes.some((l) => l.id === laneId)) throw new Error(`no lane with id "${laneId}"`);
-  const spendPolicies = { ...(settings.spendPolicies ?? {}) };
-  if (budget === null || budget === undefined) {
+  const current = settings?.lanes ?? [];
+  if (!current.some((l) => l.id === laneId)) {
+    throw new Error(`no lane with id "${laneId}"`);
+  }
+  const spendPolicies = { ...(settings?.spendPolicies ?? {}) };
+  if (budget == null || budget === '') {
     delete spendPolicies[laneId];
     return { ...settings, spendPolicies };
   }
-  const amount = Number(budget);
-  if (!Number.isFinite(amount) || amount <= 0) throw new Error('a budget must be a number greater than zero');
-  spendPolicies[laneId] = { budget: amount };
+  const n = Number(budget);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error('budget must be a dollar amount greater than zero');
+  }
+  spendPolicies[laneId] = { budget: Math.floor(n) };
   return { ...settings, spendPolicies };
 }
 
 /**
- * Store the token a lane hands to automation. The token rides ALONGSIDE the folder
- * sign-in, never instead of it: lane selection still needs the folder signed in, and
- * this entry only tells automation to authenticate without touching that login. The
- * account id is stored with it so a later check can name which account the token was
- * minted for, the minting login's identity uuids are stamped on so the token stops
- * being handed out once the folder is signed in as someone else, and storing a fresh
- * entry drops any dead mark from a previous one.
+ * Pure lane-token storage. Associates a minted CLI session token with a lane so that
+ * switchboard run can inject it into a child terminal without modifying the user's
+ * primary credentials. Clears any dead mark from an earlier run.
  */
-export function setLaneToken(settings, laneId, entry = {}) {
-  const lanes = settings.lanes ?? [];
-  if (!lanes.some((l) => l.id === laneId)) throw new Error(`no lane with id "${laneId}"`);
-  if (typeof entry.token !== 'string' || !entry.token.trim()) throw new Error('a lane token must be a non-empty string');
-  if (typeof entry.accountId !== 'string' || !entry.accountId.trim()) throw new Error('a lane token needs the account id it was minted for');
-  const mintedAt = Number(entry.mintedAt);
-  if (!Number.isFinite(mintedAt) || mintedAt <= 0) throw new Error('a lane token needs the time it was minted');
-  const stored = { token: entry.token, accountId: entry.accountId, mintedAt };
-  // The identity stamp is not required here, but an unstamped entry is refused by the
-  // identity gate (no legitimately minted entry lacks one), and a stamp that is
-  // present must be usable: a malformed one stored silently would read back as "no
-  // stamp" and be refused the same way, hiding the real problem.
-  if (entry.organizationUuid != null) {
-    if (typeof entry.organizationUuid !== 'string' || !entry.organizationUuid.trim()) throw new Error('an identity stamp needs a non-empty organization uuid');
-    stored.organizationUuid = entry.organizationUuid;
+export function setLaneToken(settings, laneId, { token, accountId, mintedAt, organizationUuid, accountUuid } = {}) {
+  const current = settings?.lanes ?? [];
+  if (!current.some((l) => l.id === laneId)) {
+    throw new Error(`no lane with id "${laneId}"`);
   }
-  if (entry.accountUuid != null) {
-    if (typeof entry.accountUuid !== 'string' || !entry.accountUuid.trim()) throw new Error('an identity stamp needs a non-empty account uuid');
-    stored.accountUuid = entry.accountUuid;
+  if (typeof token !== 'string' || !token.trim()) throw new Error('lane token must be a non-empty string');
+  if (typeof accountId !== 'string' || !accountId.trim()) throw new Error('lane token needs the account id it belongs to');
+  const minted = Number(mintedAt);
+  if (!Number.isFinite(minted) || minted <= 0) throw new Error('lane token needs the time it was minted');
+
+  const entry = { token: token.trim(), accountId: accountId.trim(), mintedAt: minted };
+  if (organizationUuid !== undefined) {
+    if (typeof organizationUuid !== 'string' || !organizationUuid.trim()) {
+      throw new Error('lane token organization uuid must be a non-empty string');
+    }
+    entry.organizationUuid = organizationUuid.trim();
   }
-  const laneTokens = { ...(settings.laneTokens ?? {}) };
-  laneTokens[laneId] = stored;
+  if (accountUuid !== undefined && accountUuid !== null) {
+    if (typeof accountUuid !== 'string' || !accountUuid.trim()) {
+      throw new Error('lane token account uuid must be a non-empty string');
+    }
+    entry.accountUuid = accountUuid.trim();
+  }
+
+  const laneTokens = { ...(settings?.laneTokens ?? {}) };
+  laneTokens[laneId] = entry;
   return { ...settings, laneTokens };
 }
 
-/**
- * Delete a stored lane token. Keyed on the entry rather than the lane, so a token left
- * behind by settings edited outside the app can still be removed by hand.
- */
+/** Drops a lane token, leaving the lane unprovisioned. */
 export function removeLaneToken(settings, laneId) {
-  const laneTokens = { ...(settings.laneTokens ?? {}) };
+  const laneTokens = { ...(settings?.laneTokens ?? {}) };
   if (!laneTokens[laneId]) throw new Error(`no lane token for "${laneId}"`);
   delete laneTokens[laneId];
   return { ...settings, laneTokens };
 }
 
-/**
- * Mark a stored token as no longer honoured. The entry is kept rather than deleted so
- * the Health tab can say WHY automation reverted to folder mode and what to run; only
- * minting a fresh token (or removing the entry) clears the mark.
- */
+/** Marks a lane token unusable without deleting it, so a human can see why it stopped working. */
 export function markLaneTokenDead(settings, laneId, reason, now = Date.now()) {
   const laneTokens = { ...(settings.laneTokens ?? {}) };
   const entry = laneTokens[laneId];
@@ -198,4 +232,96 @@ export function markLaneTokenDead(settings, laneId, reason, now = Date.now()) {
   if (!clean) throw new Error('a dead token needs the reason it died');
   laneTokens[laneId] = { ...entry, dead: true, deadReason: clean, checkedAt: now };
   return { ...settings, laneTokens };
+}
+
+/**
+ * Resolves all available accounts for lanes, including multi-account registered ones
+ * and single-sign-in / installed CLI tools (Antigravity, Copilot, Junie, etc.).
+ */
+export async function resolveAllAccounts(registry, {
+  presenceImpl,
+  presenceFn,
+  antigravityImpl,
+  antigravityFn,
+  installedImpl,
+  installedFn,
+} = {}) {
+  const getPresence = presenceImpl || presenceFn || detectPresence;
+  const getAntigravity = antigravityImpl || antigravityFn || antigravityPresence;
+  const getInstalled = installedImpl || installedFn || detectInstalled;
+
+  const accounts = [...(registry?.accounts || [])];
+  const seenIds = new Set(accounts.map((a) => a.id));
+
+  // 1. Antigravity
+  try {
+    const ag = await getAntigravity();
+    if (ag && (ag.signedIn || ag.cliInstalled || ag.appInstalled)) {
+      if (!seenIds.has('antigravity')) {
+        const label = ag.who
+          ? `Antigravity (${ag.who}${ag.plan ? `, ${ag.plan}` : ''})`
+          : 'Antigravity';
+        accounts.push({
+          id: 'antigravity',
+          label,
+          provider: 'antigravity',
+          home: path.join(os.homedir(), '.gemini'),
+          singleSignIn: true,
+          login: {
+            signedIn: Boolean(ag.signedIn),
+            level: ag.signedIn ? 'ok' : 'warn',
+            detail: ag.signedIn ? (ag.plan ? `Signed in (${ag.plan})` : 'Signed in') : 'Not signed in',
+          },
+        });
+        seenIds.add('antigravity');
+      }
+    }
+  } catch { /* ignore */ }
+
+  // 2. Presence tools (Junie, Copilot CLI, Gemini CLI)
+  try {
+    const presences = await getPresence();
+    for (const p of presences || []) {
+      if (!seenIds.has(p.id) && (p.signedIn || p.cliInstalled)) {
+        const label = p.who ? `${p.name || p.id} (${p.who})` : (p.name || p.id);
+        accounts.push({
+          id: p.id,
+          label,
+          provider: p.id,
+          home: typeof p.home === 'function' ? p.home() : path.join(os.homedir(), `.${p.id}`),
+          singleSignIn: true,
+          login: {
+            signedIn: Boolean(p.signedIn),
+            level: p.signedIn ? 'ok' : 'warn',
+            detail: p.signedIn ? 'Signed in' : (p.cliInstalled ? 'CLI installed' : 'Not signed in'),
+          },
+        });
+        seenIds.add(p.id);
+      }
+    }
+  } catch { /* ignore */ }
+
+  // 3. Installed CLI tools (Grok, Ollama, etc.)
+  try {
+    const installed = await getInstalled();
+    for (const tool of installed || []) {
+      if (!seenIds.has(tool.id) && tool.installed) {
+        accounts.push({
+          id: tool.id,
+          label: tool.name || tool.id,
+          provider: tool.id,
+          home: path.join(os.homedir(), `.${tool.id}`),
+          singleSignIn: true,
+          login: {
+            signedIn: true,
+            level: 'ok',
+            detail: 'Installed',
+          },
+        });
+        seenIds.add(tool.id);
+      }
+    }
+  } catch { /* ignore */ }
+
+  return accounts;
 }

@@ -1,5 +1,8 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { toolExecutable } from './providers.js';
+import { cliLaunch } from './cli-launch.js';
 import { WINDOW_LIFETIME_MS } from './lanes-util.js';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -659,5 +662,171 @@ export async function providerQuota(provider, home, {
 } = {}) {
   if (provider === 'claude') return accountQuota(home, fetchImpl, usageSource, now, desktopProfile, allowDesktopFallback);
   if (provider === 'codex') return codexAccountQuota(home, fetchImpl, now);
+  if (provider === 'antigravity') return fetchAntigravityQuota({ now });
   return { error: 'unsupported' };
 }
+
+/**
+ * Parse the structured JSON output of `agy --output-format json -p /usage`.
+ * Maps groups and buckets to Switchboard window shapes.
+ */
+export function parseAntigravityUsage(raw) {
+  if (!raw) return null;
+  let parsed;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw.trim()) : raw;
+  } catch {
+    return parseAntigravityTsvUsage(String(raw));
+  }
+
+  const groups = parsed?.command?.data?.groups || parsed?.data?.groups || parsed?.groups;
+  if (!Array.isArray(groups)) return null;
+
+  const windows = [];
+  for (const group of groups) {
+    const rawGroupName = String(group?.name ?? '').trim();
+    const groupPrefix = rawGroupName.toLowerCase().startsWith('gemini')
+      ? 'Gemini'
+      : rawGroupName.toLowerCase().includes('claude') || rawGroupName.toLowerCase().includes('gpt')
+        ? 'Claude & GPT'
+        : rawGroupName.replace(/\s+models$/i, '').trim();
+
+    for (const bucket of group?.buckets || []) {
+      const windowType = String(bucket.window ?? '').toLowerCase();
+      const bucketName = String(bucket.name ?? '').toLowerCase();
+      const label = (windowType === '5h' || bucketName.includes('five hour') || bucketName.includes('5-hour'))
+        ? `${groupPrefix} (5h)`
+        : (windowType === 'weekly' || bucketName.includes('weekly'))
+          ? `${groupPrefix} (Week)`
+          : `${groupPrefix} (${bucket.name || 'Usage'})`;
+
+      let usedPercent = null;
+      if (bucket.remaining_fraction != null) {
+        usedPercent = toExactPercent((1 - Number(bucket.remaining_fraction)) * 100);
+      } else if (bucket.used_fraction != null) {
+        usedPercent = toExactPercent(Number(bucket.used_fraction) * 100);
+      } else if (bucket.used_percent != null) {
+        usedPercent = toExactPercent(bucket.used_percent);
+      }
+
+      windows.push({
+        key: bucket.id || label.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+        label,
+        usedPercent,
+        resetsAt: toEpochMs(bucket.reset_time),
+      });
+    }
+  }
+
+  return windows.length > 0 ? windows : null;
+}
+
+export function parseAntigravityTsvUsage(raw) {
+  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const windows = [];
+  for (const line of lines) {
+    const parts = line.split('\t');
+    if (parts.length < 2) continue;
+    const name = parts[0].trim();
+    if (name.toLowerCase() === 'bucket' || name.toLowerCase() === 'model') continue;
+    const used = Number(parts[1].replace('%', '').trim());
+    const reset = parts[2]?.trim() || null;
+    windows.push({
+      key: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      label: name,
+      usedPercent: Number.isFinite(used) ? toExactPercent(used) : null,
+      resetsAt: toEpochMs(reset),
+    });
+  }
+  return windows.length > 0 ? windows : null;
+}
+
+/**
+ * Parse the structured JSON output of `agy --output-format json -p /credits`.
+ */
+export function parseAntigravityCredits(raw) {
+  if (!raw) return null;
+  let parsed;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw.trim()) : raw;
+  } catch {
+    return null;
+  }
+  const credits = parsed?.command?.data?.remaining_credits
+    ?? parsed?.data?.remaining_credits
+    ?? parsed?.remaining_credits;
+  return typeof credits === 'number' ? credits : null;
+}
+
+/**
+ * Quota for Antigravity via the `agy` CLI. Queries usage rate limit windows and remaining credits.
+ */
+export async function fetchAntigravityQuota({
+  agyBin = null,
+  runImpl = null,
+  now = Date.now(),
+} = {}) {
+  try {
+    let bin = agyBin;
+    if (!bin) {
+      bin = await toolExecutable('antigravity');
+    }
+    if (!bin) {
+      const candidates = [
+        path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe'),
+        path.join(os.homedir(), '.local', 'bin', 'agy'),
+        path.join(os.homedir(), '.agy', 'bin', 'agy'),
+      ];
+      bin = candidates.find((c) => fs.existsSync(c)) ?? null;
+    }
+    if (!bin) return { error: 'unavailable' };
+
+    const execFn = runImpl || (async (file, args, options) => {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      return promisify(execFile)(file, args, options);
+    });
+
+    const usageLaunch = cliLaunch(bin, ['--output-format', 'json', '-p', '/usage']);
+    const creditsLaunch = cliLaunch(bin, ['--output-format', 'json', '-p', '/credits']);
+
+    const [usageRes, creditsRes] = await Promise.allSettled([
+      execFn(usageLaunch.file, usageLaunch.args, { ...usageLaunch.options, windowsHide: true, timeout: 15000 }),
+      execFn(creditsLaunch.file, creditsLaunch.args, { ...creditsLaunch.options, windowsHide: true, timeout: 15000 }),
+    ]);
+
+    if (usageRes.status !== 'fulfilled') {
+      return { error: 'unavailable' };
+    }
+
+    const usageStdout = usageRes.value?.stdout ?? '';
+    const windows = parseAntigravityUsage(usageStdout);
+    if (!windows || windows.length === 0) {
+      return { error: 'no-usage-data' };
+    }
+
+    if (creditsRes.status === 'fulfilled') {
+      const credits = parseAntigravityCredits(creditsRes.value?.stdout ?? '');
+      if (credits != null && credits > 0) {
+        windows.push({
+          key: 'credits',
+          label: 'Credits',
+          usedPercent: null,
+          resetsAt: null,
+          valueLabel: String(credits),
+        });
+      }
+    }
+
+    return {
+      windows,
+      source: 'cli',
+      vendor: 'Google Antigravity',
+      plan: 'Pro',
+      observedAt: now,
+    };
+  } catch {
+    return { error: 'unavailable' };
+  }
+}
+

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
-import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, inheritResetTimes, heldReadingIsNewer, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexSessionQuota, codexAccountQuota, codexLiveRateLimits, fetchCodexQuota, readCodexAuth, providerQuota } from '../core/quota.js';
+import { toEpochMs, mapUsage, readAccessToken, fetchClaudeQuota, accountQuota, inheritResetTimes, heldReadingIsNewer, toExactPercent, fractionToPercent, codexWindowLabel, mapCodexRateLimits, codexSessionQuota, codexAccountQuota, codexLiveRateLimits, fetchCodexQuota, readCodexAuth, providerQuota, parseAntigravityUsage, parseAntigravityTsvUsage, parseAntigravityCredits, fetchAntigravityQuota } from '../core/quota.js';
 
 // A window's turnover time is schedule knowledge, not a meter level: once read, it
 // stays true until that instant passes, however many later readings fail to restate
@@ -551,4 +551,79 @@ test('providerQuota reads Codex live when the account can be asked', async () =>
   const q = await providerQuota('codex', home, { fetchImpl: async () => ({ ok: true, json: async () => LIVE }) });
   assert.equal(q.source, 'token');
   assert.equal(q.vendor, 'OpenAI');
+});
+
+/* Antigravity: rate limits and credit balance read via agy CLI */
+
+test('parseAntigravityUsage parses JSON rate limits with reset times', () => {
+  const rawJson = JSON.stringify({
+    groups: [
+      {
+        name: 'Gemini',
+        buckets: [
+          { name: '5-hour', window: '5h', used_percent: 15, reset_time: '2026-09-21T05:00:00Z' },
+          { name: 'Weekly', window: 'weekly', used_percent: 30, reset_time: '2026-09-27T00:00:00Z' },
+        ],
+      },
+      {
+        name: 'Claude & GPT',
+        buckets: [
+          { name: '5-hour', window: '5h', used_percent: 50, reset_time: '2026-09-21T04:30:00Z' },
+          { name: 'Weekly', window: 'weekly', used_percent: 75, reset_time: '2026-09-26T12:00:00Z' },
+        ],
+      },
+    ],
+  });
+
+  const parsed = parseAntigravityUsage(rawJson);
+  assert.equal(parsed.length, 4);
+  assert.equal(parsed[0].label, 'Gemini (5h)');
+  assert.equal(parsed[0].usedPercent, 15);
+  assert.equal(parsed[0].resetsAt, Date.parse('2026-09-21T05:00:00Z'));
+  assert.equal(parsed[3].label, 'Claude & GPT (Week)');
+  assert.equal(parsed[3].usedPercent, 75);
+});
+
+test('parseAntigravityTsvUsage parses fallback TSV format', () => {
+  const rawTsv = 'Bucket\tUsed\tReset\nGemini 5h\t20%\t2026-09-21T05:00:00Z\nClaude Week\t45%\t';
+  const parsed = parseAntigravityTsvUsage(rawTsv);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].usedPercent, 20);
+  assert.equal(parsed[0].label, 'Gemini 5h');
+  assert.equal(parsed[1].usedPercent, 45);
+  assert.equal(parsed[1].resetsAt, null);
+});
+
+test('parseAntigravityCredits extracts remaining credits', () => {
+  assert.equal(parseAntigravityCredits(JSON.stringify({ remaining_credits: 42.50 })), 42.50);
+  assert.equal(parseAntigravityCredits(''), null);
+});
+
+test('fetchAntigravityQuota runs agy usage and credits commands and returns unified quota', async () => {
+  const fakeRun = async (file, args) => {
+    if (args && args.includes('/usage')) {
+      return {
+        stdout: JSON.stringify({
+          groups: [
+            {
+              name: 'Gemini',
+              buckets: [{ name: '5-hour', window: '5h', used_percent: 10, reset_time: '2026-09-21T05:00:00Z' }],
+            },
+          ],
+        }),
+      };
+    }
+    if (args && args.includes('/credits')) {
+      return { stdout: JSON.stringify({ remaining_credits: 100 }) };
+    }
+    return { stdout: '' };
+  };
+
+  const quota = await fetchAntigravityQuota({ agyBin: 'agy', runImpl: fakeRun, now: 1000 });
+  assert.equal(quota.source, 'cli');
+  assert.equal(quota.vendor, 'Google Antigravity');
+  assert.equal(quota.windows.length, 2);
+  assert.equal(quota.windows[0].usedPercent, 10);
+  assert.equal(quota.windows[1].key, 'credits');
+  assert.equal(quota.windows[1].valueLabel, '100');
 });

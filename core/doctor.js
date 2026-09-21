@@ -133,8 +133,16 @@ function credentialWrittenAt(credPath, statFile) {
  * from the token it does have would repeat the mistake this check was just fixed for.
  */
 export function accountLoginState(account, now = Date.now(), readFile = fs.readFileSync, statFile = fs.statSync) {
+  if (account?.login) {
+    return account.login;
+  }
   const def = PROVIDERS[account?.provider];
-  if (!def) return { signedIn: false, level: 'warn', detail: 'Unknown provider' };
+  if (!def) {
+    if (account?.provider === 'antigravity') {
+      return { signedIn: true, level: 'ok', detail: 'Signed in' };
+    }
+    return { signedIn: false, level: 'warn', detail: 'Unknown provider' };
+  }
   const credPath = path.join(account.home, def.credFile);
   if (!fs.existsSync(credPath)) {
     return { signedIn: false, level: 'warn', detail: 'Not signed in' };

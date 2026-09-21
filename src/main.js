@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { loadRegistry, saveRegistry, addAccount, createAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, accountScopedEnv, configuredClaudeCredentialOverrides, PROVIDERS } from '../core/accounts.js';
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
 import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
-import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage } from '../core/quota.js';
+import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage, fetchAntigravityQuota } from '../core/quota.js';
 import { lastSharedQuota, readSharedQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
 import { fetchAllProviderStatus } from '../core/provider-status.js';
 import { applyFix } from '../core/fixes.js';
@@ -17,7 +17,7 @@ import { validateLaneTokens, mergeLaneTokenResults } from '../core/lane-tokens.j
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, resolvePackagedExe, APPS } from '../core/apps.js';
 import { appProfileDef, chooseOpenProfile, describeProfiles, discoverProfileDirs, profileFolderProblem, profileLaunchArgs } from '../core/appprofiles.js';
 import { detectPresence } from '../core/presence.js';
-import { appRunning, bridgeProblem, bridgeRunning, listProcesses } from '../core/running.js';
+import { appRunning, bridgeProblem, bridgeRunning, listProcesses, renameBridgeProblem } from '../core/running.js';
 import { terminalRows, terminalChips } from '../core/terminals.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
 import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix } from '../core/mcp.js';
@@ -31,7 +31,7 @@ function effectiveUpdateRepo() {
 }
 import { freshNotices, planDefaultSwitches } from '../core/watch.js';
 import { defaultFollowsLanes, followsLanesNote } from '../core/lanes.js';
-import { addLane, removeLane, reorderLanes, setLaneBudget } from '../core/lane-admin.js';
+import { addLane, removeLane, reorderLanes, setLaneBudget, resolveAllAccounts } from '../core/lane-admin.js';
 import { accountNote, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
@@ -202,11 +202,12 @@ async function stateSnapshot(forceAuthAccountId = null) {
       usageUrl: p.usageUrl ?? null,
     };
   }
+  const allAccounts = await resolveAllAccounts(reg);
   // Login state travels with each account so the Accounts page can say why its
   // sign-in link is there, rather than offering it identically in every state.
-  const accounts = await Promise.all(reg.accounts.map(async (a) => ({
+  const accounts = await Promise.all(allAccounts.map(async (a) => ({
     ...a,
-    login: await cachedLoginState(a, a.id === forceAuthAccountId),
+    login: a.login || await cachedLoginState(a, a.id === forceAuthAccountId),
   })));
   // A forced or newly refreshed Accounts-page check is newer than the tray's last
   // five-minute pass. Reconcile the one categorical state here so the hover cannot
@@ -1125,6 +1126,17 @@ ipcMain.handle('sb:removeBridge', (_e, id) => {
   return { ok: true };
 });
 
+ipcMain.handle('sb:renameBridge', (_e, { id, label } = {}) => {
+  const problem = renameBridgeProblem({ label });
+  if (problem) return { ok: false, error: problem };
+  const settings = loadSettings();
+  const bridge = settings.bridges.find((b) => b.id === id);
+  if (!bridge) return { ok: false, error: 'bridge not found' };
+  bridge.label = label.trim();
+  saveSettings(settings);
+  return { ok: true };
+});
+
 ipcMain.handle('sb:setAppOrder', (_e, ids) => {
   if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) throw new Error('order must be a list of app ids');
   const settings = loadSettings();
@@ -1251,6 +1263,30 @@ ipcMain.handle('sb:removeCustomApp', (_e, appId) => {
   settings.customApps = settings.customApps.filter((c) => c.appId !== appId);
   saveSettings(settings);
   return { ok: true };
+});
+
+let antigravityQuotaCache = { at: 0, result: null };
+let antigravityQuotaInflight = null;
+
+ipcMain.handle('sb:antigravityQuota', async (_e, force = false) => {
+  const now = Date.now();
+  if (!force && antigravityQuotaCache.result && (now - antigravityQuotaCache.at < 90 * 1000)) {
+    return antigravityQuotaCache.result;
+  }
+  if (antigravityQuotaInflight) return antigravityQuotaInflight;
+
+  antigravityQuotaInflight = (async () => {
+    try {
+      const res = await fetchAntigravityQuota({ now });
+      if (!res.error) {
+        antigravityQuotaCache = { at: Date.now(), result: res };
+      }
+      return res;
+    } finally {
+      antigravityQuotaInflight = null;
+    }
+  })();
+  return antigravityQuotaInflight;
 });
 
 ipcMain.handle('sb:antigravity', () => antigravityPresence());
@@ -1516,9 +1552,10 @@ ipcMain.handle('sb:getLanes', () => {
 // Each lane change ends with refresh(): whether a tool has lanes decides whether the tray
 // and the Accounts page offer to switch its account by hand (see defaultFollowsLanes), so
 // both are redrawn at once rather than at the next watch pass.
-ipcMain.handle('sb:addLane', (_e, wanted) => {
+ipcMain.handle('sb:addLane', async (_e, wanted) => {
   try {
-    const { settings, lane } = addLane(loadSettings(), wanted, registry().accounts);
+    const accounts = await resolveAllAccounts(registry());
+    const { settings, lane } = addLane(loadSettings(), wanted, accounts);
     saveSettings(settings);
     refresh();
     return { ok: true, lane };

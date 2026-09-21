@@ -40,7 +40,7 @@ export const TOOLS = [
   { id: 'cursor', name: 'Cursor CLI (cursor-agent)', url: 'https://cursor.com', note: 'No automated Windows install from the vendor yet', bin: 'cursor-agent', versionArgs: ['--version'], install: { via: 'manual', url: 'https://cursor.com' } },
   { id: 'muse', name: 'Muse Code (Meta)', url: 'https://dev.meta.ai', bin: 'muse', versionArgs: ['--version'], install: { via: 'vendor', cmd: 'irm https://dev.meta.ai/install.ps1 | iex' } },
   { id: 'aider', name: 'Aider', url: 'https://aider.chat', note: 'Installs with pip (needs Python)', bin: 'aider', versionArgs: ['--version'], install: { via: 'pip', cmd: 'python -m pip install aider-install; aider-install' } },
-  { id: 'antigravity', name: 'Antigravity CLI (agy)', url: 'https://antigravity.google', note: 'The desktop app is separate (see Apps)', bin: 'agy', versionArgs: ['--version'], install: { via: 'vendor', cmd: 'irm https://antigravity.google/cli/install.ps1 | iex' } },
+  { id: 'antigravity', name: 'Antigravity CLI (agy)', url: 'https://antigravity.google', note: 'The desktop app is separate (see Apps)', bin: 'agy', versionArgs: ['--version'], appPaths: () => [path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe'), path.join(os.homedir(), '.local', 'bin', 'agy'), path.join(os.homedir(), '.agy', 'bin', 'agy')], install: { via: 'vendor', cmd: 'irm https://antigravity.google/cli/install.ps1 | iex' } },
   { id: 'ollama', name: 'Ollama', url: 'https://ollama.com', bin: 'ollama', versionArgs: ['--version'], appPaths: () => [path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama.exe')], install: { via: 'winget', cmd: 'winget install --id Ollama.Ollama -e' } },
 ];
 

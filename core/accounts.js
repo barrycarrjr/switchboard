@@ -149,7 +149,15 @@ export function configuredClaudeCredentialOverrides({
 
 /** Build a child environment that resolves to exactly one registered account. */
 export function accountScopedEnv(account, baseEnv = process.env) {
-  const def = providerDef(account?.provider);
+  let def = null;
+  try {
+    def = providerDef(account?.provider);
+  } catch {
+    def = null;
+  }
+  if (!def?.envVar) {
+    return { ...(baseEnv ?? {}) };
+  }
   const rejected = new Set([def.envVar.toUpperCase()]);
   if (account.provider === 'claude') {
     for (const name of CLAUDE_CREDENTIAL_ENV_VARS) rejected.add(name.toUpperCase());

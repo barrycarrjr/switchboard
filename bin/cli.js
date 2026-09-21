@@ -7,7 +7,7 @@ import { runChecks, accountLoginState } from '../core/doctor.js';
 import { sharedProviderQuota } from '../core/quota-cache.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
-import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, setLaneToken, removeLaneToken, BILLING_KINDS } from '../core/lane-admin.js';
+import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, setLaneToken, removeLaneToken, BILLING_KINDS, resolveAllAccounts } from '../core/lane-admin.js';
 import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, probeSetupToken } from '../core/lane-tokens.js';
 import { readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches } from '../core/watch.js';
@@ -30,7 +30,7 @@ function fmtWindow(w) {
 
 async function prepareLanesContext(settings, registry, overrides = {}) {
   const { lanes = [], spendPolicies = {}, cooldowns = {}, usageSources = {} } = settings;
-  const accounts = registry.accounts;
+  const accounts = await resolveAllAccounts(registry);
   
   const loginStates = {};
   const quotas = {};
@@ -307,7 +307,8 @@ async function main() {
       const STDOUT_TAIL_BYTES = 64 * 1024;
 
       async function runInLane(lane, executionArgs) {
-        const account = registry.accounts.find(a => a.id === lane.accountId);
+        const allAccounts = await resolveAllAccounts(registry);
+        const account = allAccounts.find(a => a.id === lane.accountId);
         if (!account) {
           say(`Account ${lane.accountId} not found in registry.`);
           return { code: 1, limitHit: false, authFailed: false };
@@ -724,7 +725,7 @@ async function main() {
         }
         out('Lanes in priority order; the first healthy one gets the work.');
         settings.lanes.forEach((lane, i) => {
-          const account = registry.accounts.find((a) => a.id === lane.accountId);
+          const account = allAccounts.find((a) => a.id === lane.accountId);
           const budget = settings.spendPolicies?.[lane.id]?.budget ?? null;
           // A lane that can never be selected is called out here rather than left to be
           // discovered by a run that quietly skips it.
@@ -748,7 +749,7 @@ async function main() {
           return;
         }
         try {
-          const added = addLane(settings, wanted, registry.accounts);
+          const added = addLane(settings, wanted, allAccounts);
           const withBudget = wanted.budget === null
             ? added.settings
             : setLaneBudget(added.settings, added.lane.id, wanted.budget);

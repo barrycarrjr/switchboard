@@ -1,10 +1,10 @@
-﻿import { test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from '../test-support/tempdir.js';
-import { appRunning, bridgeProblem, bridgeRunning, parseProcessList } from '../core/running.js';
+import { appRunning, bridgeProblem, bridgeRunning, parseProcessList, renameBridgeProblem } from '../core/running.js';
 import { loadSettings } from '../core/settings.js';
 
 const procs = [
@@ -59,6 +59,15 @@ test('bridge entries are validated before they are saved', () => {
   assert.ok(bridgeProblem({ label: 'Slack bridge', match: 'ab' }), 'two characters would match half the machine');
   assert.ok(bridgeProblem({ label: 'Slack bridge', match: 'a\nb' }));
   assert.ok(bridgeProblem({}));
+});
+
+test('renameBridgeProblem validates the new label', () => {
+  assert.equal(renameBridgeProblem({ label: 'New Bridge Name' }), null);
+  assert.ok(renameBridgeProblem({ label: '' }));
+  assert.ok(renameBridgeProblem({ label: '   ' }));
+  assert.ok(renameBridgeProblem({ label: 'a'.repeat(201) }));
+  assert.ok(renameBridgeProblem({ label: 'Line 1\nLine 2' }));
+  assert.ok(renameBridgeProblem({}));
 });
 
 test('settings default bridges to an empty list and drop malformed entries', () => {

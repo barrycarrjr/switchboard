@@ -14,6 +14,7 @@ import {
   unknownLaneIds,
   vendorForHarness,
   BILLING_KINDS,
+  resolveAllAccounts,
 } from '../core/lane-admin.js';
 
 const accounts = [
@@ -223,4 +224,50 @@ test('setLaneBudget refuses an id that names no lane', () => {
 
 test('nextLaneId keeps the shape the app has always written', () => {
   assert.equal(nextLaneId(1787257314471), 'lane-1787257314471');
+});
+
+test('vendorForHarness names vendors for single-sign-in and installed CLI tools', () => {
+  assert.equal(vendorForHarness('antigravity'), 'google');
+  assert.equal(vendorForHarness('copilot'), 'github');
+  assert.equal(vendorForHarness('junie'), 'jetbrains');
+  assert.equal(vendorForHarness('grok'), 'xai');
+  assert.equal(vendorForHarness('ollama'), 'ollama');
+});
+
+test('resolveAllAccounts includes single-sign-in accounts when signed in or installed', async () => {
+  const reg = { accounts: [{ id: 'claude-1', provider: 'claude', label: 'Claude 1', home: 'X:\\p\\.claude' }] };
+  const all = await resolveAllAccounts(reg, {
+    antigravityFn: async () => ({ signedIn: true, cliInstalled: true, who: 'test-user', plan: 'Pro' }),
+    presenceFn: async () => [
+      { id: 'copilot', name: 'GitHub Copilot CLI', signedIn: true, who: 'ghuser', cliInstalled: true },
+      { id: 'junie', name: 'Junie CLI', signedIn: true, who: 'jetbrains-user', cliInstalled: true },
+    ],
+    installedFn: async () => [{ id: 'grok', installed: true, name: 'Grok' }],
+  });
+
+  const ids = all.map((a) => a.id);
+  assert.ok(ids.includes('claude-1'));
+  assert.ok(ids.includes('antigravity'));
+  assert.ok(ids.includes('copilot'));
+  assert.ok(ids.includes('junie'));
+  assert.ok(ids.includes('grok'));
+
+  const ag = all.find((a) => a.id === 'antigravity');
+  assert.equal(ag.provider, 'antigravity');
+  assert.equal(ag.label, 'Antigravity (test-user, Pro)');
+  assert.equal(ag.login.signedIn, true);
+});
+
+test('addLane supports Antigravity and Copilot single-sign-in accounts', () => {
+  const all = [
+    { id: 'antigravity', provider: 'antigravity', label: 'Antigravity', home: 'X:\\p\\.agy' },
+    { id: 'copilot', provider: 'copilot', label: 'Copilot', home: 'X:\\p\\.copilot' },
+  ];
+  const first = addLane(settingsWith(), { accountId: 'antigravity' }, all, 1000);
+  assert.equal(first.lane.harness, 'antigravity');
+  assert.equal(first.lane.provider, 'google');
+
+  const second = addLane(first.settings, { accountId: 'copilot' }, all, 2000);
+  assert.equal(second.lane.harness, 'copilot');
+  assert.equal(second.lane.provider, 'github');
 });

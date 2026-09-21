@@ -107,3 +107,11 @@ export function bridgeProblem({ label, match } = {}) {
   if (/[\0\r\n]/.test(label) || /[\0\r\n]/.test(match)) return 'names and match text must be a single line';
   return null;
 }
+
+/** What is wrong with renaming a bridge, or null when valid. */
+export function renameBridgeProblem({ label } = {}) {
+  if (typeof label !== 'string' || !label.trim()) return 'the bridge needs a name';
+  if (label.length > 200) return 'the name is too long';
+  if (/[\0\r\n]/.test(label)) return 'names must be a single line';
+  return null;
+}

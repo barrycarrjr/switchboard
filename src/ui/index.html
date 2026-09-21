@@ -330,6 +330,17 @@
       </div>
     </div>
   </div>
+  <div id="bridgeRenameModal" style="display:none;position:fixed;inset:0;background:rgba(20,25,35,.45);z-index:6">
+    <div style="background:var(--card);border-radius:10px;max-width:380px;margin:90px auto;padding:16px;display:flex;flex-direction:column;gap:9px">
+      <b style="font-size:.95rem">Rename watched process</b>
+      <span style="font-size:.8rem;color:var(--muted)">Change the display name of this watched process.</span>
+      <input id="bridgeRenameName" placeholder="Name, e.g. Slack bridge" style="font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px">
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" id="bridgeRenameCancel">Cancel</button>
+        <button class="btn primary" id="bridgeRenameSave">Save</button>
+      </div>
+    </div>
+  </div>
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
@@ -1171,11 +1182,59 @@ async function antigravitySection() {
     person: ag.signedIn ? (who || 'Signed in with Google') : null,
   });
   const usage = cardUsage(card);
-  showUsageState(usage.content, usage.summary, {
-    title: 'Usage not reported',
-    summaryText: '',
-    detail: 'One Google login per machine, by the vendor\'s design: no account switching, and no usage API for Switchboard to read. Check usage inside agy with /usage and credits with /credits. Gemini CLI is a different tool with its own login.',
-  });
+  if (ag.signedIn && ag.cliInstalled) {
+    const retry = { label: 'Check now', onClick: () => fillQuota(1, true) };
+    const showLoading = () => {
+      showUsageState(usage.content, usage.summary, {
+        title: 'Checking usage…',
+        detail: 'Reading rate limits from Antigravity CLI.',
+      });
+    };
+    const fillQuota = async (attempt = 1, force = false) => {
+      let q;
+      try {
+        q = await sb.antigravityQuota(force);
+      } catch (e) {
+        q = { error: 'unavailable', message: e.message || String(e) };
+      }
+      if (q.error === 'no-usage-data') {
+        showUsageState(usage.content, usage.summary, {
+          title: 'No usage sample yet',
+          detail: 'Run Antigravity CLI once and the figures will appear.',
+          actions: [retry],
+        });
+        return;
+      }
+      if (q.error) {
+        showUsageState(usage.content, usage.summary, {
+          title: 'Usage temporarily unavailable',
+          detail: 'Switchboard could not retrieve rate limits from agy.',
+          actions: [retry],
+        });
+        return;
+      }
+      if (!renderUsageWindows(usage.content, usage.summary, q, retry.onClick)) {
+        const box = usage.content.querySelector('.usage-state');
+        if (box) {
+          const actionRow = el('div', 'usage-state-actions');
+          const retryButton = el('button', 'btn', 'Retry');
+          retryButton.type = 'button';
+          retryButton.addEventListener('click', retry.onClick);
+          actionRow.appendChild(retryButton);
+          box.appendChild(actionRow);
+        }
+      }
+    };
+    usage.content.refreshUsage = () => fillQuota(1, false);
+    showLoading();
+    fillQuota();
+  } else {
+    showUsageState(usage.content, usage.summary, {
+      title: 'Usage not reported',
+      summaryText: '',
+      detail: 'Sign in to Google Antigravity to view usage rate limits.',
+    });
+  }
 
   let button = null;
   if (ag.cliInstalled) {
@@ -1878,7 +1937,10 @@ async function renderApps() {
     row.lastChild.style.background = '#33404f';
     row.title = `Marked running while a process command line contains: ${b.match}`;
     row.appendChild(el('div', 'pm', `<b>${esc(b.label)}</b><span class="runstate">Checking&hellip;</span>`));
-    attachMenu(row, [{ label: 'Stop watching', danger: true, onClick: async () => { await sb.removeBridge(b.id); renderApps(); } }]);
+    attachMenu(row, [
+      { label: 'Rename…', onClick: () => openRenameBridgeModal(b) },
+      { label: 'Stop watching', danger: true, onClick: async () => { await sb.removeBridge(b.id); renderApps(); } },
+    ]);
     panel.appendChild(row);
   }
   const addBridge = el('button', 'addbtn', '+ Watch a background process');
@@ -1942,6 +2004,22 @@ function openBridgeModal() {
   $('#bridgeCancel').onclick = () => { overlay.style.display = 'none'; };
   $('#bridgeSave').onclick = async () => {
     const r = await sb.addBridge({ label: name.value, match: match.value });
+    if (!r.ok) { toast(r.error); return; }
+    overlay.style.display = 'none';
+    renderApps();
+  };
+}
+
+function openRenameBridgeModal(bridge) {
+  const overlay = $('#bridgeRenameModal');
+  const name = $('#bridgeRenameName');
+  overlay.style.display = 'block';
+  name.value = bridge.label || '';
+  name.focus();
+  name.select();
+  $('#bridgeRenameCancel').onclick = () => { overlay.style.display = 'none'; };
+  $('#bridgeRenameSave').onclick = async () => {
+    const r = await sb.renameBridge(bridge.id, name.value);
     if (!r.ok) { toast(r.error); return; }
     overlay.style.display = 'none';
     renderApps();
