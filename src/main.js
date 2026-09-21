@@ -1549,6 +1549,14 @@ ipcMain.handle('sb:updateRun', async (_e, tag, assetUrl) => {
   win?.webContents.send('sb:updateProgress', { received: 1, total: 1 });
   await new Promise((resolve) => setTimeout(resolve, 1000));
   spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+  setTimeout(() => {
+    quitting = true;
+    if (tray) {
+      try { tray.destroy(); } catch {}
+      tray = null;
+    }
+    app.quit();
+  }, 400);
   return { ok: true, backupPath };
 });
 
