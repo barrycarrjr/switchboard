@@ -194,3 +194,43 @@ test('account-meter spans full width of card and account-grid uses responsive mu
   assert.match(HTML, /\.account-grid\{display:grid;grid-template-columns:repeat\(auto-fit,/);
   assert.match(HTML, /\.account-grid\.one-column\{grid-template-columns:minmax\(0,1fr\)\}/);
 });
+
+test('cardShell persists compact toggle state to localStorage and restores on render', () => {
+  const memoryStore = {};
+  const mockStorage = {
+    getItem: (k) => memoryStore[k] ?? null,
+    setItem: (k, v) => { memoryStore[k] = String(v); },
+  };
+  globalThis.localStorage = mockStorage;
+
+  const { cardShell } = load(['cardShell'], ['cardShell']);
+
+  // Initially not in localStorage -> expanded
+  const { card: card1 } = cardShell({ titleId: 'lane-1', title: 'Lane 1' });
+  assert.equal(card1.classList.contains('compact'), false);
+
+  // Toggle to compact
+  const tog1 = card1.children[0].children[0].children[0].children.find((c) => c.className === 'account-head-toggle');
+  tog1.click();
+  assert.ok(card1.classList.contains('compact'));
+  assert.equal(mockStorage.getItem('sb-card-compact:lane-1'), 'true');
+
+  // Next render restores compact state from storage
+  const { card: card2 } = cardShell({ titleId: 'lane-1', title: 'Lane 1' });
+  assert.ok(card2.classList.contains('compact'));
+  const tog2 = card2.children[0].children[0].children[0].children.find((c) => c.className === 'account-head-toggle');
+  assert.equal(tog2.innerHTML, '&#9656;');
+
+  // Toggle back to expanded
+  tog2.click();
+  assert.equal(card2.classList.contains('compact'), false);
+  assert.equal(mockStorage.getItem('sb-card-compact:lane-1'), 'false');
+});
+
+test('responsive rules prevent narrow overflow and clipping across MCP and panels', () => {
+  assert.match(HTML, /\.panel\{[^}]*overflow-x:hidden/);
+  assert.match(HTML, /\.hc\{[^}]*flex-wrap:wrap/);
+  assert.match(HTML, /\.hc \.hm\{[^}]*overflow-wrap:anywhere/);
+  assert.match(HTML, /\.prov\{[^}]*flex-wrap:wrap/);
+  assert.match(HTML, /\.prov \.pm\{[^}]*overflow-wrap:anywhere/);
+});

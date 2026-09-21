@@ -286,6 +286,7 @@ function createWindow() {
       preload: path.join(here, 'preload.cjs'),
       contextIsolation: true,
       sandbox: true,
+      backgroundThrottling: true,
     },
   });
   win.loadFile(path.join(here, 'ui', 'index.html'));
@@ -525,11 +526,17 @@ function accountSignature() {
   return registry().accounts.map((a) => `${a.id}:${a.home}`).sort().join('|');
 }
 
+let refreshTrayTimer = null;
 function refreshTray() {
   if (tray) {
-    const inputs = trayInputs();
-    tray.setContextMenu(buildTrayMenu(inputs));
-    tray.setToolTip(trayTooltip(inputs));
+    if (refreshTrayTimer) clearTimeout(refreshTrayTimer);
+    refreshTrayTimer = setTimeout(() => {
+      refreshTrayTimer = null;
+      if (!tray) return;
+      const inputs = trayInputs();
+      tray.setContextMenu(buildTrayMenu(inputs));
+      tray.setToolTip(trayTooltip(inputs));
+    }, 40);
   }
 }
 

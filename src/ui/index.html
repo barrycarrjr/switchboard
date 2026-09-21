@@ -15,7 +15,7 @@
     --info:#175cd3; --info-bg:#e6effc;
   }
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%}
+  html,body{margin:0;height:100%;max-width:100vw;overflow-x:hidden}
   body{background:var(--winbg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column}
   .titlebar{display:flex;align-items:center;gap:9px;padding:12px 14px 6px}
   .appicon{width:24px;height:24px;border-radius:6px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
@@ -24,7 +24,7 @@
   .tabs{display:flex;gap:4px;padding:0 12px;border-bottom:1px solid var(--line);overflow-x:auto;flex:0 0 auto}
   .tab{border:none;background:none;font:inherit;font-size:.9rem;padding:8px 12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;flex:0 0 auto}
   .tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
-  .panel{display:none;padding:12px;overflow-y:auto;flex:1}
+  .panel{display:none;padding:12px;overflow-y:auto;overflow-x:hidden;flex:1;min-width:0;max-width:100%;box-sizing:border-box}
   .panel.on{display:block}
   .grouphead{font-size:.78rem;font-weight:600;letter-spacing:.04em;color:var(--muted);text-transform:uppercase;margin:10px 2px 6px}
   .grouphead:first-child{margin-top:2px}
@@ -164,7 +164,7 @@
   .tool-row-text span{display:block;color:var(--muted);font-size:.76rem;line-height:1.45;margin-top:1px}
   .tool-row .btn{flex:0 0 auto;min-height:32px;padding:4px 9px}
   .panelnote{color:var(--muted);font-size:.76rem;margin:10px 2px 2px;line-height:1.45}
-  .prov{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:6px 0;display:flex;align-items:center;gap:10px;position:relative}
+  .prov{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:6px 0;display:flex;align-items:center;gap:10px;position:relative;flex-wrap:wrap;min-width:0;max-width:100%}
   .kebab{border:none;background:none;font:inherit;font-size:1rem;color:var(--muted);cursor:pointer;padding:2px 8px;border-radius:6px;line-height:1}
   .kebab:hover{background:#eef1f5;color:var(--ink)}
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 4px}
@@ -198,20 +198,20 @@
   .prov.running .pi::after{content:"";position:absolute;right:-4px;bottom:-4px;width:9px;height:9px;border-radius:50%;background:var(--ok);border:2px solid var(--card)}
   .prov .runstate{color:var(--ok);font-weight:600}
   .prov .runstate.off{color:var(--muted);font-weight:400}
-  .prov .pm{flex:1;min-width:0}
+  .prov .pm{flex:1 1 180px;min-width:0;overflow-wrap:anywhere;word-break:break-word}
   .prov .pm b{font-size:.9rem;display:block}
   .prov .pm .ext{color:var(--muted);cursor:pointer;font-size:.85em;margin-left:4px}
   .prov .pm .ext:hover{color:var(--accent)}
-  .prov .pm span{color:var(--muted);font-size:.77rem;word-break:break-all}
-  .chip{font-size:.7rem;font-weight:600;border-radius:99px;padding:1px 8px;margin-left:6px;background:var(--warn-bg);color:var(--warn)}
-  .hc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0;display:flex;align-items:flex-start;gap:9px;font-size:.85rem}
+  .prov .pm span{color:var(--muted);font-size:.77rem;overflow-wrap:anywhere;word-break:break-word}
+  .chip{font-size:.7rem;font-weight:600;border-radius:99px;padding:1px 8px;margin:2px 0 2px 4px;background:var(--warn-bg);color:var(--warn);flex-shrink:0}
+  .hc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0;display:flex;align-items:center;gap:9px;font-size:.85rem;flex-wrap:wrap;min-width:0;max-width:100%}
   .hi{flex:0 0 auto;width:20px;height:20px;border-radius:99px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px}
   .hc.ok .hi{background:var(--ok-bg);color:var(--ok)}
   .hc.warn .hi{background:var(--warn-bg);color:var(--warn)}
   .hc.bad .hi{background:var(--bad-bg);color:var(--bad)}
   .hc.info .hi{background:var(--info-bg);color:var(--info)}
-  .hc .hm{flex:1}
-  .hc .hm span{display:block;color:var(--muted);font-size:.76rem}
+  .hc .hm{flex:1 1 180px;min-width:0;overflow-wrap:anywhere;word-break:break-word}
+  .hc .hm span{display:block;color:var(--muted);font-size:.76rem;overflow-wrap:anywhere;word-break:break-word}
   .healthfoot{display:flex;align-items:center;gap:10px;margin-top:10px}
   .healthfoot .last{color:var(--muted);font-size:.78rem}
   .phc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;margin:6px 0 14px}
@@ -684,9 +684,22 @@ function renderUsageWindows(host, summary, q, onRefresh = null, now = Date.now()
  * its sign-in is. A tool that cannot report usage says so inside the usage area
  * rather than getting a card shape of its own, so the page reads as one system.
  */
-function cardShell({ titleId, title, badge = null, person = null, folder = null, actions = [], accent = false, handle = false }) {
+function cardShell({ titleId, title, badge = null, person = null, folder = null, actions = [], accent = false, handle = false, compact = null }) {
   const card = el('article', 'acct account-card' + (accent ? ' is-default' : ''));
   card.setAttribute('aria-labelledby', titleId);
+  let isCompact = false;
+  const storage = typeof localStorage !== 'undefined' ? localStorage : null;
+  if (titleId && storage) {
+    try {
+      const saved = storage.getItem(`sb-card-compact:${titleId}`);
+      if (saved === 'true') isCompact = true;
+      else if (saved === 'false') isCompact = false;
+      else if (compact !== null) isCompact = Boolean(compact);
+    } catch {}
+  } else if (compact !== null) {
+    isCompact = Boolean(compact);
+  }
+  if (isCompact) card.classList.add('compact');
   const header = el('header', 'account-head');
   const identity = el('div', 'account-identity');
   const titleRow = el('div', 'account-title');
@@ -694,15 +707,21 @@ function cardShell({ titleId, title, badge = null, person = null, folder = null,
   name.id = titleId;
   titleRow.appendChild(name);
   if (badge) titleRow.appendChild(el('span', 'badge default-badge', esc(badge)));
-  const tog = el('button', 'account-head-toggle', '&#9662;');
+  const tog = el('button', 'account-head-toggle', isCompact ? '&#9656;' : '&#9662;');
   tog.type = 'button';
   tog.setAttribute('aria-label', `Toggle ${title} card`);
-  tog.setAttribute('aria-expanded', 'true');
-  tog.addEventListener('click', (e) => {
-    e.stopPropagation();
+  tog.setAttribute('aria-expanded', isCompact ? 'false' : 'true');
+  const toggleCompact = () => {
     const isNowCompact = card.classList.toggle('compact');
     tog.innerHTML = isNowCompact ? '&#9656;' : '&#9662;';
     tog.setAttribute('aria-expanded', isNowCompact ? 'false' : 'true');
+    if (titleId && storage) {
+      try { storage.setItem(`sb-card-compact:${titleId}`, isNowCompact ? 'true' : 'false'); } catch {}
+    }
+  };
+  tog.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleCompact();
   });
   titleRow.appendChild(tog);
   identity.appendChild(titleRow);
@@ -725,10 +744,8 @@ function cardShell({ titleId, title, badge = null, person = null, folder = null,
   for (const action of actions) actionRow.appendChild(action);
   header.appendChild(actionRow);
   header.addEventListener('click', (ev) => {
-    if (ev.target.closest('button, a, input, select, .drag-handle')) return;
-    const isNowCompact = card.classList.toggle('compact');
-    tog.innerHTML = isNowCompact ? '&#9656;' : '&#9662;';
-    tog.setAttribute('aria-expanded', isNowCompact ? 'false' : 'true');
+    if (ev.target.closest && ev.target.closest('button, a, input, select, .drag-handle')) return;
+    toggleCompact();
   });
   card.appendChild(header);
   return { card, name };
@@ -1783,7 +1800,7 @@ function dragHandle() {
  * there. The same card as an account, because a lane IS an account, seen from the
  * failover order rather than from the machine default.
  */
-function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove = null, reorderable = false } = {}) {
+function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove = null, reorderable = false, compact = null } = {}) {
   const billing = lane.billing === 'metered' ? 'Metered (API)' : 'Subscription';
   const actions = [];
   if (lane.billing === 'metered' && onSetBudget) {
@@ -1796,6 +1813,7 @@ function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove =
     person: `${lane.provider} via ${lane.harness}`,
     actions,
     handle: reorderable,
+    compact,
   });
   // A lane that cannot be chosen is tinted like a signed-out account, so a problem
   // looks the same wherever it appears.
@@ -1848,8 +1866,32 @@ async function renderLanes() {
   const section = toolSection('lanes', 'Execution Lanes', data.lanes.length
     ? `${data.lanes.length} lane${data.lanes.length === 1 ? '' : 's'}${reorderable ? ' · drag to reorder' : ''}`
     : 'No lanes yet');
+  let isLanesCompact = localStorage.getItem('sb-compact-lanes') === 'true';
+  const lanesToolbar = el('div', 'accounts-toolbar');
+  const lanesToggleBtn = el('button', 'btn', isLanesCompact ? 'Expand all cards' : 'Compact all cards');
+  lanesToggleBtn.type = 'button';
+  lanesToggleBtn.style.fontSize = '.74rem';
+  lanesToggleBtn.addEventListener('click', () => {
+    isLanesCompact = !isLanesCompact;
+    try { localStorage.setItem('sb-compact-lanes', isLanesCompact ? 'true' : 'false'); } catch {}
+    lanesToggleBtn.textContent = isLanesCompact ? 'Expand all cards' : 'Compact all cards';
+    for (const c of realPanel.querySelectorAll('.account-card')) {
+      c.classList.toggle('compact', isLanesCompact);
+      const tog = c.querySelector('.account-head-toggle');
+      if (tog) {
+        tog.innerHTML = isLanesCompact ? '&#9656;' : '&#9662;';
+        tog.setAttribute('aria-expanded', isLanesCompact ? 'false' : 'true');
+      }
+      const titleId = c.querySelector('.account-name')?.id;
+      if (titleId) {
+        try { localStorage.setItem(`sb-card-compact:${titleId}`, isLanesCompact ? 'true' : 'false'); } catch {}
+      }
+    }
+  });
+  lanesToolbar.appendChild(lanesToggleBtn);
+  section.appendChild(lanesToolbar);
   const lanesInfo = el('p', 'panelnote', 'Lanes define the fallback order and settings for "switchboard run". The first lane that is healthy gets the work, and a run stopped by a provider limit starts again in the next one. Between two Claude accounts the conversation goes with it, so the next account carries on mid-task rather than starting over. For any other hop between Claude and Codex, it writes a handoff from what the spent session said it did.');
-  lanesInfo.style.marginTop = '0';
+  lanesInfo.style.marginTop = '4px';
   section.appendChild(lanesInfo);
   const watchNote = data.lanes.length ? lanesWatchNote(state.watchMode) : null;
   if (watchNote) section.appendChild(el('p', 'panelnote', esc(watchNote)));
@@ -1863,6 +1905,7 @@ async function renderLanes() {
     const account = laneAccounts.find((a) => a.id === lane.accountId);
     const card = laneCard(lane, account, {
       reorderable,
+      compact: isLanesCompact,
       budget: data.spendPolicies[lane.id]?.budget ?? null,
       onSetBudget: async () => {
         const current = data.spendPolicies[lane.id]?.budget || '';
@@ -2412,25 +2455,54 @@ async function renderAbout() {
   if (!isCurrentRender('about', seq)) return;
   const panel = el('div');
 
-  const what = toolSection('about-what', 'What is Switchboard?', 'A Windows tray app');
-  const whatCard = el('article', 'acct account-card');
-  const { area: whatArea } = cardArea(whatCard, 'In one line', 'note-area');
-  whatArea.appendChild(el('p', 'about-lead', 'It answers one question: <b>which AI account is this machine using right now?</b> And lets you change it.'));
-  whatArea.appendChild(el('div', 'qnote', 'Register multiple subscription accounts per AI tool, switch the current account in two clicks, see each account\'s usage against its available limits, install and update the tools through their vendors\' own mechanisms, and catch the setups that silently bill the wrong thing.'));
-  cardNote(whatCard, 'What it never does', 'It never runs tasks, never holds sessions, never touches a running application or any GUI app\'s login, never stores your tokens, and sends no telemetry. Installs only ever run vendor mechanisms in a visible terminal.');
-  what.appendChild(oneColumn(whatCard));
-  panel.appendChild(what);
+  const install = toolSection('about-install', 'This Install', repo ? `Updates come from ${repo}` : 'No update source configured');
+  const verNote = el('div', 'qnote', 'Not checked yet in this session.');
+  const checkBtn = cardButton('Check for updates', async () => {
+    checkBtn.disabled = true;
+    checkBtn.textContent = 'Checking…';
+    const r = await sb.updateCheck();
+    checkBtn.disabled = false;
+    checkBtn.textContent = 'Check for updates';
+    if (r.available) {
+      verNote.innerHTML = `A newer version is available: <b>${esc(r.tag)}</b>. `;
+      const go = el('button', 'btn primary', `Update to ${esc(r.tag)}`);
+      go.addEventListener('click', () => runUpdate(r, go));
+      verNote.appendChild(go);
+      showUpdateButton(r);
+    } else if (r.error === 'no-repo') {
+      verNote.textContent = 'No update source configured yet.';
+      openRepoModal();
+    } else if (r.error) {
+      verNote.textContent = UPDATE_ERRORS[r.error] || r.error;
+    } else {
+      verNote.textContent = 'You are on the latest version.';
+    }
+  });
+  const { card: verCard } = cardShell({
+    titleId: 'about-version',
+    title: `Version ${state.version}`,
+    person: 'MIT licensed · Multi-account manager for AI developer tools',
+    actions: [checkBtn],
+  });
+  const { area: verArea } = cardArea(verCard, 'Updates', 'note-area');
+  verArea.appendChild(verNote);
 
-  const tour = toolSection('about-panels', 'The panels', 'What each tab is for');
-  const tourCard = el('article', 'acct account-card');
-  cardNote(tourCard, 'Accounts', 'Your accounts per tool, which one is active, live quota, and one-click switching.');
-  cardNote(tourCard, 'Providers', 'The AI command-line tools: detected versions, honest update checks, install, reinstall, uninstall.');
-  cardNote(tourCard, 'Lanes', 'The fallback order for "switchboard run", and what each lane is allowed to spend.');
-  cardNote(tourCard, 'Apps', 'Desktop AI apps and terminals: detect, install, launch on a chosen account, plus your own Start-menu launchers. A green dot shows what is running, and background bridges can be watched too.');
-  cardNote(tourCard, 'MCP', 'The MCP servers your clients can reach, and which client each one is registered with.');
-  cardNote(tourCard, 'Health', 'Checks for billing traps, expired logins, PATH problems, and dead proxy configs, with safe one-click fixes.');
-  tour.appendChild(oneColumn(tourCard));
-  panel.appendChild(tour);
+  if (repo) {
+    const { area: linkArea } = cardArea(verCard, 'Project', 'note-area');
+    const links = el('div', 'card-links');
+    const mkLink = (label, url) => {
+      const link = el('button', 'linkbtn', esc(label));
+      link.type = 'button';
+      link.addEventListener('click', () => sb.openExternal(url));
+      return link;
+    };
+    links.appendChild(mkLink('Open the project on GitHub', `https://github.com/${repo}`));
+    links.appendChild(mkLink('Report an issue or request a feature', `https://github.com/${repo}/issues/new`));
+    links.appendChild(mkLink('All releases', `https://github.com/${repo}/releases`));
+    linkArea.appendChild(links);
+  }
+  install.appendChild(oneColumn(verCard));
+  panel.appendChild(install);
 
   const backup = toolSection('about-backup', 'Backup and restore', 'Records only, never credentials');
   const exportBtn = cardButton('Export...', async () => {
@@ -2469,58 +2541,8 @@ async function renderAbout() {
   backup.appendChild(oneColumn(configCard));
   panel.appendChild(backup);
 
-  const install = toolSection('about-install', 'This install', repo ? `Updates come from ${repo}` : 'No update source configured');
-  const verNote = el('div', 'qnote', 'Not checked yet in this session.');
-  const checkBtn = cardButton('Check for updates', async () => {
-    checkBtn.disabled = true;
-    checkBtn.textContent = 'Checking…';
-    const r = await sb.updateCheck();
-    checkBtn.disabled = false;
-    checkBtn.textContent = 'Check for updates';
-    if (r.available) {
-      verNote.innerHTML = `A newer version is available: <b>${esc(r.tag)}</b>. `;
-      const go = el('button', 'btn primary', `Update to ${esc(r.tag)}`);
-      go.addEventListener('click', () => runUpdate(r, go));
-      verNote.appendChild(go);
-      showUpdateButton(r);
-    } else if (r.error === 'no-repo') {
-      verNote.textContent = 'No update source configured yet.';
-      openRepoModal();
-    } else if (r.error) {
-      verNote.textContent = UPDATE_ERRORS[r.error] || r.error;
-    } else {
-      verNote.textContent = 'You are on the latest version.';
-    }
-  });
-  const { card: verCard } = cardShell({
-    titleId: 'about-version',
-    title: `Version ${state.version}`,
-    person: 'MIT licensed, free to share',
-    actions: [checkBtn],
-  });
-  const { area: verArea } = cardArea(verCard, 'Updates', 'note-area');
-  verArea.appendChild(verNote);
-
-  if (repo) {
-    const { area: linkArea } = cardArea(verCard, 'Project', 'note-area');
-    const links = el('div', 'card-links');
-    const mkLink = (label, url) => {
-      const link = el('button', 'linkbtn', esc(label));
-      link.type = 'button';
-      link.addEventListener('click', () => sb.openExternal(url));
-      return link;
-    };
-    links.appendChild(mkLink('Open the project on GitHub', `https://github.com/${repo}`));
-    links.appendChild(mkLink('Report an issue or request a feature', `https://github.com/${repo}/issues/new`));
-    links.appendChild(mkLink('All releases', `https://github.com/${repo}/releases`));
-    linkArea.appendChild(links);
-  }
-  install.appendChild(oneColumn(verCard));
-  panel.appendChild(install);
-
   realPanel.replaceChildren(...panel.childNodes);
 }
-
 const MARK = { ok: '&#10003;', warn: '!', bad: '&#10007;', info: 'i' };
 
 /** The pill word for one provider-health card. Live cards read off their own level;
@@ -2883,10 +2905,10 @@ async function renderMcp() {
   foot.style.gap = '6px';
   const nameIn = el('input');
   nameIn.placeholder = 'name (e.g. my-tracker)';
-  nameIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;width:170px';
+  nameIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 140px;min-width:120px;max-width:100%';
   const urlIn = el('input');
   urlIn.placeholder = 'https://.../mcp';
-  urlIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1;min-width:200px';
+  urlIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 140px;min-width:120px;max-width:100%';
   const add = el('button', 'btn primary', 'Add server');
   add.addEventListener('click', async () => {
     try {
