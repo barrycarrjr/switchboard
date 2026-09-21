@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trayModel, trayTooltip, accountNote, accountUsage, whenBack, WATCH_MODES, TOOLTIP_LIMIT } from '../core/tray.js';
+import { trayModel, trayTooltip, accountNote, accountUsage, whenBack, WATCH_MODES, TOOLTIP_LIMIT, antigravityMenuUsage, antigravityTooltipLines, parseAntigravityWindows } from '../core/tray.js';
 
 /**
  * The tray menu is the part of Switchboard most people see most days, and until the rows
@@ -425,4 +425,115 @@ test('quota replies update only the tray instead of recursively redrawing the Ac
   const handler = main.slice(start, end);
   assert.match(handler, /trayFacts\.quotas = \{ \.\.\.trayFacts\.quotas, \[account\.id\]: result \};\s+refreshTray\(\);/);
   assert.doesNotMatch(handler, /\brefresh\(\);/, 'a quota response must not trigger another render and another quota response');
+});
+
+test('antigravityMenuUsage formats rate limits and credits for the menu', () => {
+  const snapshot = {
+    source: 'live',
+    windows: [
+      { key: 'gemini-5h', label: 'Gemini (5h)', usedPercent: 19 },
+      { key: 'gemini-week', label: 'Gemini (weekly)', usedPercent: 1 },
+      { key: 'claude-5h', label: 'Claude & GPT (5h)', usedPercent: 0 },
+      { key: 'claude-week', label: 'Claude & GPT (weekly)', usedPercent: 0 },
+      { key: 'credits', label: 'Credits', valueLabel: '$10.00 of $10.00 left' },
+    ],
+  };
+  const lines = antigravityMenuUsage(snapshot, NOW);
+  assert.deepEqual(lines, [
+    'Gemini: 5h 19%, week 1%',
+    'Claude & GPT: 5h 0%, week 0%',
+    'Credits: $10.00 of $10.00 left',
+  ]);
+});
+
+test('trayModel appends antigravity rate limits under Also signed in', () => {
+  const snapshot = {
+    source: 'live',
+    windows: [
+      { key: 'gemini-5h', label: 'Gemini (5h)', usedPercent: 19 },
+      { key: 'gemini-week', label: 'Gemini (weekly)', usedPercent: 1 },
+      { key: 'claude-5h', label: 'Claude & GPT (5h)', usedPercent: 0 },
+      { key: 'claude-week', label: 'Claude & GPT (weekly)', usedPercent: 0 },
+    ],
+  };
+  const rows = model({
+    alsoSignedIn: [
+      { name: 'Antigravity', who: 'test-account, Pro', signedIn: true },
+    ],
+    antigravityQuota: snapshot,
+  });
+  const statusRows = kinds(rows, 'status').map((r) => r.label);
+  assert.deepEqual(statusRows, [
+    'Antigravity, test-account, Pro',
+    '  Gemini: 5h 19%, week 1%',
+    '  Claude & GPT: 5h 0%, week 0%',
+  ]);
+});
+
+test('trayTooltip includes Antigravity usage and stays within Windows limit', () => {
+  const agSnapshot = {
+    source: 'live',
+    windows: [
+      { key: 'gemini-5h', label: 'Gemini (5h)', usedPercent: 19 },
+      { key: 'gemini-week', label: 'Gemini (weekly)', usedPercent: 1 },
+      { key: 'claude-5h', label: 'Claude & GPT (5h)', usedPercent: 0 },
+      { key: 'claude-week', label: 'Claude & GPT (weekly)', usedPercent: 0 },
+    ],
+  };
+  const text = trayTooltip({
+    providers: PROVIDERS,
+    accounts: [
+      { id: 'claude-1', provider: 'claude', label: 'primary-user' },
+      { id: 'codex-1', provider: 'codex', label: 'Default' },
+    ],
+    activeIds: { claude: 'claude-1', codex: 'codex-1' },
+    quotas: {
+      'claude-1': { windows: [{ key: 'session', usedPercent: 1 }, { key: 'week', usedPercent: 98 }] },
+      'codex-1': { windows: [{ key: 'week', usedPercent: 95 }] },
+    },
+    antigravityQuota: agSnapshot,
+  });
+  assert.ok(text.length <= TOOLTIP_LIMIT, `Tooltip length ${text.length} exceeds ${TOOLTIP_LIMIT}`);
+  assert.ok(text.includes('Antigravity:'));
+  assert.ok(text.includes('Gemini'));
+  assert.ok(text.includes('Claude'));
+});
+
+test('trayTooltip prioritizes active accounts across providers when multiple accounts overflow', () => {
+  const agSnapshot = {
+    source: 'live',
+    windows: [
+      { key: 'gemini-5h', label: 'Gemini (5h)', usedPercent: 19 },
+      { key: 'gemini-week', label: 'Gemini (weekly)', usedPercent: 1 },
+      { key: 'claude-5h', label: 'Claude & GPT (5h)', usedPercent: 0 },
+      { key: 'claude-week', label: 'Claude & GPT (weekly)', usedPercent: 0 },
+    ],
+  };
+  const accounts = [
+    { id: 'c1', provider: 'claude', label: 'primary-acct-1' },
+    { id: 'c2', provider: 'claude', label: 'backup-acct' },
+    { id: 'c3', provider: 'claude', label: 'secondary-acct2' },
+    { id: 'codex', provider: 'codex', label: 'Default' },
+  ];
+  const quota = (session, week) => ({ windows: [
+    { key: 'session', usedPercent: session },
+    { key: 'week', usedPercent: week },
+  ] });
+  const text = trayTooltip({
+    providers: PROVIDERS,
+    accounts,
+    activeIds: { claude: 'c1', codex: 'codex' },
+    signedIn: { c1: true, c2: true, c3: true, codex: true },
+    quotas: {
+      c1: quota(88, 95),
+      c2: quota(0, 97),
+      c3: quota(0, 100),
+      codex: { windows: [{ key: 'week', usedPercent: 21 }] },
+    },
+    antigravityQuota: agSnapshot,
+  });
+  assert.ok(text.length <= TOOLTIP_LIMIT, `Tooltip length ${text.length} exceeds ${TOOLTIP_LIMIT}`);
+  assert.ok(text.includes('Claude Code:'));
+  assert.ok(text.includes('Codex:'));
+  assert.ok(text.includes('Antigravity:'));
 });

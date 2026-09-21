@@ -62,7 +62,7 @@ export function accountUsage(snapshot) {
 }
 
 /** The same two meters, squeezed enough for several accounts in the Windows tooltip. */
-function compactAccountUsage(snapshot) {
+export function compactAccountUsage(snapshot) {
   if (!readable(snapshot)) return null;
   const values = [
     ['5h', pct(snapshot, 'session')],
@@ -72,6 +72,139 @@ function compactAccountUsage(snapshot) {
     .filter(([, value]) => value != null && Number.isFinite(Number(value)))
     .map(([label, value]) => `${label}${Number(value)}%`);
   return shown.length ? shown.join(' ') : null;
+}
+
+/**
+ * Extract Antigravity quota rate-limit windows into Gemini, Claude & GPT, and Credits.
+ */
+export function parseAntigravityWindows(snapshot) {
+  if (!readable(snapshot) || !Array.isArray(snapshot?.windows)) return null;
+  let gemini5h = null;
+  let geminiWeek = null;
+  let claude5h = null;
+  let claudeWeek = null;
+  let credits = null;
+
+  for (const w of snapshot.windows) {
+    if (w.key === 'credits') {
+      credits = w;
+      continue;
+    }
+    const raw = `${w.label || ''} ${w.key || ''}`.toLowerCase();
+    const isGemini = raw.includes('gemini');
+    const isClaude = raw.includes('claude') || raw.includes('gpt');
+    const is5h = raw.includes('5h') || raw.includes('5-hour') || raw.includes('five hour') || raw.includes('5 hour');
+    const isWeek = raw.includes('week') || raw.includes('weekly') || raw.includes('wk');
+
+    if (isGemini) {
+      if (is5h) gemini5h = w;
+      else if (isWeek) geminiWeek = w;
+    } else if (isClaude) {
+      if (is5h) claude5h = w;
+      else if (isWeek) claudeWeek = w;
+    }
+  }
+
+  if (!gemini5h && !geminiWeek && !claude5h && !claudeWeek && !credits) return null;
+  return { gemini5h, geminiWeek, claude5h, claudeWeek, credits };
+}
+
+/**
+ * Detailed usage and availability lines for Antigravity in the tray menu.
+ */
+export function antigravityMenuUsage(snapshot, now = Date.now(), format = {}) {
+  const parsed = parseAntigravityWindows(snapshot);
+  if (!parsed) return [];
+  const lines = [];
+
+  const formatBucket = (name, b5h, bWk) => {
+    if (!b5h && !bWk) return null;
+    const parts = [];
+    if (b5h && b5h.usedPercent != null) {
+      if (b5h.usedPercent >= 100) {
+        parts.push(b5h.resetsAt ? `5h out until ${whenBack(b5h.resetsAt, now, format)}` : '5h out of quota');
+      } else {
+        parts.push(`5h ${b5h.usedPercent}%`);
+      }
+    }
+    if (bWk && bWk.usedPercent != null) {
+      if (bWk.usedPercent >= 100) {
+        parts.push(bWk.resetsAt ? `week out until ${whenBack(bWk.resetsAt, now, format)}` : 'week out of quota');
+      } else {
+        parts.push(`week ${bWk.usedPercent}%`);
+      }
+    }
+    return parts.length ? `${name}: ${parts.join(', ')}` : null;
+  };
+
+  const gemini = formatBucket('Gemini', parsed.gemini5h, parsed.geminiWeek);
+  if (gemini) lines.push(gemini);
+
+  const claude = formatBucket('Claude & GPT', parsed.claude5h, parsed.claudeWeek);
+  if (claude) lines.push(claude);
+
+  if (parsed.credits?.valueLabel) {
+    lines.push(`Credits: ${parsed.credits.valueLabel}`);
+  }
+
+  return lines;
+}
+
+/**
+ * Compact or detailed usage lines for Antigravity in the tray tooltip.
+ */
+export function antigravityTooltipLines(snapshot, { compact = false, singleLine = false, now = Date.now(), format = {} } = {}) {
+  const parsed = parseAntigravityWindows(snapshot);
+  if (!parsed) return [];
+
+  const formatWindow = (b5h, bWk, name, shortName) => {
+    if (!b5h && !bWk) return null;
+    if (compact) {
+      const parts = [];
+      if (b5h && b5h.usedPercent != null) {
+        if (b5h.usedPercent >= 100) {
+          parts.push(b5h.resetsAt ? `out until ${whenBack(b5h.resetsAt, now, format)}` : 'out');
+        } else {
+          parts.push(`5h${b5h.usedPercent}%`);
+        }
+      }
+      if (bWk && bWk.usedPercent != null) {
+        if (bWk.usedPercent >= 100) {
+          parts.push(bWk.resetsAt ? `wk out` : 'out');
+        } else {
+          parts.push(`wk${bWk.usedPercent}%`);
+        }
+      }
+      return parts.length ? `${shortName} ${parts.join(' ')}` : null;
+    } else {
+      const parts = [];
+      if (b5h && b5h.usedPercent != null) {
+        if (b5h.usedPercent >= 100) {
+          parts.push(b5h.resetsAt ? `out until ${whenBack(b5h.resetsAt, now, format)}` : 'out of quota');
+        } else {
+          parts.push(`5h ${b5h.usedPercent}%`);
+        }
+      }
+      if (bWk && bWk.usedPercent != null) {
+        if (bWk.usedPercent >= 100) {
+          parts.push(bWk.resetsAt ? `week out until ${whenBack(bWk.resetsAt, now, format)}` : 'week out of quota');
+        } else {
+          parts.push(`week ${bWk.usedPercent}%`);
+        }
+      }
+      return parts.length ? `${name}, ${parts.join(', ')}` : null;
+    }
+  };
+
+  const gemini = formatWindow(parsed.gemini5h, parsed.geminiWeek, 'Gemini', 'Gemini');
+  const claude = formatWindow(parsed.claude5h, parsed.claudeWeek, 'Claude & GPT', 'Claude');
+
+  const items = [gemini, claude].filter(Boolean);
+  if (!items.length) return [];
+  if (singleLine) {
+    return [items.join(' ')];
+  }
+  return items;
 }
 
 /** The three things the watch can do when an account runs out, in plain words. */
@@ -121,6 +254,7 @@ export function trayModel({
   startWithWindows = false,
   now = Date.now(),
   locale = undefined,
+  antigravityQuota = null,
 } = {}) {
   const rows = [];
 
@@ -156,6 +290,13 @@ export function trayModel({
     for (const tool of alsoSignedIn) {
       const who = tool.who || (tool.signedIn ? 'signed in' : 'not signed in');
       rows.push({ kind: 'status', label: `${tool.name}, ${who}` });
+      const agQuota = tool.quota ?? (tool.name === 'Antigravity' ? antigravityQuota : null);
+      if (agQuota && readable(agQuota)) {
+        const usageLines = antigravityMenuUsage(agQuota, now, { locale });
+        for (const line of usageLines) {
+          rows.push({ kind: 'status', label: `  ${line}` });
+        }
+      }
     }
     rows.push({ kind: 'separator' });
   }
@@ -210,22 +351,29 @@ const TOOLTIP_INDENT = '\u2003';
  * It takes the same input as the menu and says the same things in the same words,
  * because a hover that disagrees with the menu underneath it is worse than one that
  * says less. What cannot be fitted is counted rather than quietly dropped, so the
- * hover never passes off a part as the whole. Tools with one machine-wide sign-in are
- * left to the menu on purpose: they are lines that never change, and they would crowd
- * out the ones that do.
+ * hover never passes off a part as the whole. When multiple accounts overflow the 127-char
+ * limit, active accounts across providers are prioritized so each active tool (including
+ * Antigravity) remains visible.
  */
 export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
   const {
     providers = [], accounts = [], activeIds = {}, notes = {}, quotas = {}, signedIn = {},
+    antigravityQuota = null, alsoSignedIn = [], now = Date.now(), locale = undefined,
   } = options;
   const detailed = [];
   const compact = [];
+  const activeDetailed = [];
+  const activeCompact = [];
+
   for (const provider of providers) {
     const mine = accounts
       .filter((a) => a.provider === provider.id)
       .sort((a, b) => Number(activeIds[provider.id] === b.id) - Number(activeIds[provider.id] === a.id));
     const detailedAccounts = [];
     const compactAccounts = [];
+    let activeDetailedAccount = null;
+    let activeCompactAccount = null;
+
     for (const account of mine) {
       const note = notes[account.id];
       const usage = accountUsage(quotas[account.id]);
@@ -238,14 +386,43 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
       // known to be gone, saying so is more useful than repeating its old percentages.
       const detail = note === 'signed out' ? note : (usage ?? note);
       const shortDetail = note === 'signed out' ? note : (compactUsage ?? note);
-      detailedAccounts.push(`${TOOLTIP_INDENT}${account.label}${detail ? `, ${detail}` : ''}`);
-      compactAccounts.push(`${TOOLTIP_INDENT}${account.label}${shortDetail ? ` ${shortDetail}` : ''}`);
+      const detLine = `${TOOLTIP_INDENT}${account.label}${detail ? `, ${detail}` : ''}`;
+      const cmpLine = `${TOOLTIP_INDENT}${account.label}${shortDetail ? ` ${shortDetail}` : ''}`;
+      detailedAccounts.push(detLine);
+      compactAccounts.push(cmpLine);
+      if (selected || !activeDetailedAccount) {
+        activeDetailedAccount = detLine;
+        activeCompactAccount = cmpLine;
+      }
     }
     if (detailedAccounts.length) {
       detailed.push({ lines: [`${provider.name}:`, ...detailedAccounts], count: detailedAccounts.length });
       compact.push({ lines: [`${provider.name}:`, ...compactAccounts], count: compactAccounts.length });
+      if (activeDetailedAccount) {
+        activeDetailed.push({ lines: [`${provider.name}:`, activeDetailedAccount], count: 1 });
+        activeCompact.push({ lines: [`${provider.name}:`, activeCompactAccount], count: 1 });
+      }
     }
   }
+
+  const agQuota = antigravityQuota ?? alsoSignedIn.find((t) => t.name === 'Antigravity')?.quota ?? null;
+  const hasAgQuota = agQuota && readable(agQuota);
+  if (hasAgQuota) {
+    const agDetailed = antigravityTooltipLines(agQuota, { compact: false, now, format: { locale } });
+    const agCompact = antigravityTooltipLines(agQuota, { compact: true, singleLine: false, now, format: { locale } });
+
+    if (agDetailed.length) {
+      const detLines = ['Antigravity:', ...agDetailed.map((l) => `${TOOLTIP_INDENT}${l}`)];
+      detailed.push({ lines: detLines, count: agDetailed.length });
+      activeDetailed.push({ lines: detLines, count: agDetailed.length });
+    }
+    if (agCompact.length) {
+      const cmpLines = ['Antigravity:', ...agCompact.map((l) => `${TOOLTIP_INDENT}${l}`)];
+      compact.push({ lines: cmpLines, count: agCompact.length });
+      activeCompact.push({ lines: cmpLines, count: agCompact.length });
+    }
+  }
+
   const warnings = trayWarnings(options).map((w) => w.label);
 
   const complete = (groups) => [...warnings, ...groups.flatMap((group) => group.lines)].join('\n') || 'No active accounts';
@@ -254,13 +431,33 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
   const compactText = complete(compact);
   if (compactText.length <= limit) return compactText;
 
+  // Prioritize active accounts so all active providers fit within the limit
+  if (activeCompact.length) {
+    const activeCompactText = complete(activeCompact);
+    if (activeCompactText.length <= limit) return activeCompactText;
+
+    if (hasAgQuota) {
+      const agSingle = antigravityTooltipLines(agQuota, { compact: true, singleLine: true, now, format: { locale } });
+      if (agSingle.length) {
+        const singleCompactGroups = activeCompact.map((group) => {
+          if (group.lines[0] === 'Antigravity:') {
+            return { lines: ['Antigravity:', `${TOOLTIP_INDENT}${agSingle[0]}`], count: 1 };
+          }
+          return group;
+        });
+        const singleCompactText = complete(singleCompactGroups);
+        if (singleCompactText.length <= limit) return singleCompactText;
+      }
+    }
+  }
+
   const kept = [];
   const keptUnits = [];
   let used = 0;
   let dropped = 0;
   const units = [
     ...warnings.map((line) => ({ lines: [line], count: 1 })),
-    ...compact,
+    ...(activeCompact.length ? activeCompact : compact),
   ];
   for (let index = 0; index < units.length; index += 1) {
     const unit = units[index];

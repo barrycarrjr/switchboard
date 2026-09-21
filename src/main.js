@@ -309,10 +309,34 @@ function createWindow() {
  * startup and at the end of every quota-watch pass, which is also when the account
  * readings it reports were taken.
  */
+let antigravityQuotaCache = { at: 0, result: null };
+let antigravityQuotaInflight = null;
+
+async function getAntigravityQuota(force = false) {
+  const now = Date.now();
+  if (!force && antigravityQuotaCache.result && (now - antigravityQuotaCache.at < 90 * 1000)) {
+    return antigravityQuotaCache.result;
+  }
+  if (antigravityQuotaInflight) return antigravityQuotaInflight;
+
+  antigravityQuotaInflight = (async () => {
+    try {
+      const res = await fetchAntigravityQuota({ now });
+      if (!res.error) {
+        antigravityQuotaCache = { at: Date.now(), result: res };
+      }
+      return res;
+    } finally {
+      antigravityQuotaInflight = null;
+    }
+  })();
+  return antigravityQuotaInflight;
+}
+
 // installedProviders starts null, meaning "not yet detected": the menu shows every
 // provider until the first detect lands, rather than briefly hiding tools that are there.
 let trayFacts = {
-  terminals: [], alsoSignedIn: [], notes: {}, quotas: {}, signedIn: {}, update: null, installedProviders: null,
+  terminals: [], alsoSignedIn: [], notes: {}, quotas: {}, signedIn: {}, update: null, installedProviders: null, antigravityQuota: null,
 };
 
 async function refreshTrayFacts() {
@@ -338,6 +362,11 @@ async function refreshTrayFacts() {
         who: antigravity.who && antigravity.plan ? `${antigravity.who}, ${antigravity.plan}` : (antigravity.who ?? antigravity.plan),
         signedIn: antigravity.signedIn,
       });
+      if (antigravity.signedIn) {
+        try {
+          trayFacts.antigravityQuota = await getAntigravityQuota(false);
+        } catch (_) {}
+      }
     }
     trayFacts.alsoSignedIn = rows;
     // The menu offers accounts to switch between, and an account for a tool this machine
@@ -377,6 +406,7 @@ function trayInputs() {
     quotas: trayFacts.quotas,
     signedIn: trayFacts.signedIn,
     alsoSignedIn: trayFacts.alsoSignedIn,
+    antigravityQuota: trayFacts.antigravityQuota,
     terminals: trayFacts.terminals,
     watchMode: settings.quotaWatch,
     lanes: settings.lanes,
@@ -626,6 +656,11 @@ async function runQuotaWatch() {
     trayFacts.notes = notes;
     trayFacts.quotas = snapshots;
     trayFacts.signedIn = Object.fromEntries(reg.accounts.map((a) => [a.id, loginStates[a.id]?.signedIn ?? null]));
+    if (trayFacts.alsoSignedIn.some((t) => t.name === 'Antigravity' && t.signedIn)) {
+      try {
+        trayFacts.antigravityQuota = await getAntigravityQuota(false);
+      } catch (_) {}
+    }
     refreshTray();
 
     if (settings.quotaWatch === 'off') return;
@@ -1273,29 +1308,7 @@ ipcMain.handle('sb:removeCustomApp', (_e, appId) => {
   return { ok: true };
 });
 
-let antigravityQuotaCache = { at: 0, result: null };
-let antigravityQuotaInflight = null;
-
-ipcMain.handle('sb:antigravityQuota', async (_e, force = false) => {
-  const now = Date.now();
-  if (!force && antigravityQuotaCache.result && (now - antigravityQuotaCache.at < 90 * 1000)) {
-    return antigravityQuotaCache.result;
-  }
-  if (antigravityQuotaInflight) return antigravityQuotaInflight;
-
-  antigravityQuotaInflight = (async () => {
-    try {
-      const res = await fetchAntigravityQuota({ now });
-      if (!res.error) {
-        antigravityQuotaCache = { at: Date.now(), result: res };
-      }
-      return res;
-    } finally {
-      antigravityQuotaInflight = null;
-    }
-  })();
-  return antigravityQuotaInflight;
-});
+ipcMain.handle('sb:antigravityQuota', (_e, force = false) => getAntigravityQuota(force));
 
 ipcMain.handle('sb:antigravity', () => antigravityPresence());
 
