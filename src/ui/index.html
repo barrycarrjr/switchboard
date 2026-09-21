@@ -257,22 +257,19 @@
   .account-head{cursor:pointer}
   .account-head-toggle{background:none;border:none;color:var(--muted);font-size:.78rem;cursor:pointer;padding:2px 4px;margin-left:4px;display:inline-flex;align-items:center;vertical-align:middle;line-height:1}
   .account-head-toggle:hover{color:var(--accent)}
-  .account-meter{margin-top:8px;padding:6px 9px;background:#f6f8fa;border-radius:6px;border:1px solid var(--line)}
+  .account-meter{display:none;width:100%;box-sizing:border-box;margin:0;padding:8px 12px;background:#f8fafc;border-top:1px solid var(--line)}
   .account-meter-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:.76rem;margin-bottom:4px}
   .account-meter-left{font-weight:600;color:var(--accent)}
   .account-meter-left.good{color:#107c41}
   .account-meter-left.warn{color:var(--warn)}
   .account-meter-left.hot{color:var(--bad)}
   .account-meter-used{color:var(--muted);font-size:.72rem}
-  .account-meter .quota-bar{height:6px;margin-top:0;background:#e2e5e9;border-radius:3px}
+  .account-meter .quota-bar{width:100%;height:6px;margin-top:0;background:#e2e5e9;border-radius:3px}
   .account-meter .quota-bar i{border-radius:3px}
   .bar.good i{background:#107c41}
   @media (min-width:760px){
-    .account-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-    .account-grid>.account-card:only-child{grid-column:1 / -1}
     /* Lanes and the settings cards read top to bottom, so they never go two-up. */
     .account-grid.one-column{grid-template-columns:minmax(0,1fr)}
-    .account-head{min-height:72px}
   }
   @media (max-width:600px){
     .provider-head{align-items:flex-start;flex-direction:column;gap:1px}
@@ -1085,7 +1082,7 @@ function accountCard(p, account) {
 
   const accountBar = el('div', 'account-meter');
   accountBar.style.display = 'none';
-  card.querySelector('.account-identity')?.appendChild(accountBar);
+  card.appendChild(accountBar);
 
   const usage = cardUsage(card);
   if (p.hasQuota) {
@@ -1273,7 +1270,7 @@ async function antigravitySection() {
   });
   const agBar = el('div', 'account-meter');
   agBar.style.display = 'none';
-  card.querySelector('.account-identity')?.appendChild(agBar);
+  card.appendChild(agBar);
 
   const usage = cardUsage(card);
   if (ag.signedIn && ag.cliInstalled) {

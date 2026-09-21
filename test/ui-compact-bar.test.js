@@ -168,3 +168,9 @@ test('CSS rules hide account-path when compact and when account has person line'
   assert.match(HTML, /\.account-person \+ \.account-path\{display:none\}/);
   assert.match(HTML, /\.account-meter\{/);
 });
+
+test('account-meter spans full width of card and account-grid remains single column', () => {
+  assert.match(HTML, /\.account-meter\{[^}]*width:100%/);
+  assert.match(HTML, /\.account-meter \.quota-bar\{[^}]*width:100%/);
+  assert.doesNotMatch(HTML, /\.account-grid\{grid-template-columns:repeat\(2/);
+});
