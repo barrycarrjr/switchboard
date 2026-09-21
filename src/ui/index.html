@@ -1668,8 +1668,9 @@ async function renderLanes() {
   let draggedId = null;
   const grid = el('div', 'account-grid one-column');
 
+  const laneAccounts = state.laneAccounts || state.accounts;
   for (const lane of data.lanes) {
-    const account = state.accounts.find((a) => a.id === lane.accountId);
+    const account = laneAccounts.find((a) => a.id === lane.accountId);
     const card = laneCard(lane, account, {
       reorderable,
       budget: data.spendPolicies[lane.id]?.budget ?? null,
@@ -1725,7 +1726,7 @@ async function renderLanes() {
 
   const select = el('select');
   select.appendChild(new Option('Select account...', ''));
-  for (const a of state.accounts) select.appendChild(new Option(`${a.label} (${a.provider})`, a.id));
+  for (const a of laneAccounts) select.appendChild(new Option(`${a.label} (${a.provider})`, a.id));
   form.appendChild(select);
 
   const billing = el('select');

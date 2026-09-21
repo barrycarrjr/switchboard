@@ -205,10 +205,18 @@ async function stateSnapshot(forceAuthAccountId = null) {
   const allAccounts = await resolveAllAccounts(reg);
   // Login state travels with each account so the Accounts page can say why its
   // sign-in link is there, rather than offering it identically in every state.
-  const accounts = await Promise.all(allAccounts.map(async (a) => ({
+  const accounts = await Promise.all(reg.accounts.map(async (a) => ({
     ...a,
-    login: a.login || await cachedLoginState(a, a.id === forceAuthAccountId),
+    login: await cachedLoginState(a, a.id === forceAuthAccountId),
   })));
+  const laneAccounts = await Promise.all(allAccounts.map(async (a) => {
+    const existing = accounts.find((acc) => acc.id === a.id);
+    if (existing) return existing;
+    return {
+      ...a,
+      login: a.login || await cachedLoginState(a, a.id === forceAuthAccountId),
+    };
+  }));
   // A forced or newly refreshed Accounts-page check is newer than the tray's last
   // five-minute pass. Reconcile the one categorical state here so the hover cannot
   // keep saying "signed out" beside a card that Claude has just verified as signed in.
@@ -230,7 +238,7 @@ async function stateSnapshot(forceAuthAccountId = null) {
   if (notesChanged || signedInChanged) {
     refreshTray();
   }
-  return { accounts, providers, watchMode: settings.quotaWatch, version: app.getVersion() };
+  return { accounts, laneAccounts, providers, watchMode: settings.quotaWatch, version: app.getVersion() };
 }
 
 function showWindow(hash = '') {

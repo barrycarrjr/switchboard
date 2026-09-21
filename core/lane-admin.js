@@ -252,12 +252,13 @@ export async function resolveAllAccounts(registry, {
 
   const accounts = [...(registry?.accounts || [])];
   const seenIds = new Set(accounts.map((a) => a.id));
+  const seenProviders = new Set(accounts.map((a) => a.provider));
 
   // 1. Antigravity
   try {
     const ag = await getAntigravity();
     if (ag && (ag.signedIn || ag.cliInstalled || ag.appInstalled)) {
-      if (!seenIds.has('antigravity')) {
+      if (!seenIds.has('antigravity') && !seenProviders.has('antigravity')) {
         const label = ag.who
           ? `Antigravity (${ag.who}${ag.plan ? `, ${ag.plan}` : ''})`
           : 'Antigravity';
@@ -274,6 +275,7 @@ export async function resolveAllAccounts(registry, {
           },
         });
         seenIds.add('antigravity');
+        seenProviders.add('antigravity');
       }
     }
   } catch { /* ignore */ }
@@ -282,7 +284,9 @@ export async function resolveAllAccounts(registry, {
   try {
     const presences = await getPresence();
     for (const p of presences || []) {
-      if (!seenIds.has(p.id) && (p.signedIn || p.cliInstalled)) {
+      if (p.id in PROVIDERS) continue;
+      if (seenIds.has(p.id) || seenProviders.has(p.id)) continue;
+      if (p.signedIn || p.cliInstalled) {
         const label = p.who ? `${p.name || p.id} (${p.who})` : (p.name || p.id);
         accounts.push({
           id: p.id,
@@ -297,6 +301,7 @@ export async function resolveAllAccounts(registry, {
           },
         });
         seenIds.add(p.id);
+        seenProviders.add(p.id);
       }
     }
   } catch { /* ignore */ }
@@ -305,7 +310,9 @@ export async function resolveAllAccounts(registry, {
   try {
     const installed = await getInstalled();
     for (const tool of installed || []) {
-      if (!seenIds.has(tool.id) && tool.installed) {
+      if (tool.id in PROVIDERS) continue;
+      if (seenIds.has(tool.id) || seenProviders.has(tool.id)) continue;
+      if (tool.installed) {
         accounts.push({
           id: tool.id,
           label: tool.name || tool.id,
@@ -319,6 +326,7 @@ export async function resolveAllAccounts(registry, {
           },
         });
         seenIds.add(tool.id);
+        seenProviders.add(tool.id);
       }
     }
   } catch { /* ignore */ }

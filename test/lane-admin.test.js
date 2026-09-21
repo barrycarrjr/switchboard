@@ -271,3 +271,31 @@ test('addLane supports Antigravity and Copilot single-sign-in accounts', () => {
   assert.equal(second.lane.harness, 'copilot');
   assert.equal(second.lane.provider, 'github');
 });
+
+test('resolveAllAccounts does not duplicate multi-account providers like Claude or Codex', async () => {
+  const reg = {
+    accounts: [
+      { id: 'claude-1', provider: 'claude', label: 'Claude Acc 1', home: '/mock/c1' },
+      { id: 'codex-1', provider: 'codex', label: 'Codex Acc 1', home: '/mock/o1' },
+    ],
+  };
+  const all = await resolveAllAccounts(reg, {
+    antigravityFn: async () => null,
+    presenceFn: async () => [],
+    installedFn: async () => [
+      { id: 'claude', installed: true, name: 'Claude Code' },
+      { id: 'codex', installed: true, name: 'Codex' },
+      { id: 'grok', installed: true, name: 'Grok' },
+    ],
+  });
+
+  const ids = all.map((a) => a.id);
+  assert.ok(ids.includes('claude-1'));
+  assert.ok(ids.includes('codex-1'));
+  assert.ok(ids.includes('grok'));
+  assert.ok(!ids.includes('claude'));
+  assert.ok(!ids.includes('codex'));
+
+  assert.equal(all.filter((a) => a.provider === 'claude').length, 1);
+  assert.equal(all.filter((a) => a.provider === 'codex').length, 1);
+});
