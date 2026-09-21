@@ -188,8 +188,9 @@ test('CSS rules hide account-path when compact and when account has person line'
   assert.match(HTML, /\.account-meter\{/);
 });
 
-test('account-meter spans full width of card and account-grid remains single column', () => {
+test('account-meter spans full width of card and account-grid uses responsive multi-column layout', () => {
   assert.match(HTML, /\.account-meter\{[^}]*width:100%/);
   assert.match(HTML, /\.account-meter \.quota-bar\{[^}]*width:100%/);
-  assert.doesNotMatch(HTML, /\.account-grid\{grid-template-columns:repeat\(2/);
+  assert.match(HTML, /\.account-grid\{display:grid;grid-template-columns:repeat\(auto-fit,/);
+  assert.match(HTML, /\.account-grid\.one-column\{grid-template-columns:minmax\(0,1fr\)\}/);
 });
