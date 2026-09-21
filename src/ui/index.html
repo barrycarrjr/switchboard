@@ -249,6 +249,12 @@
   .toast{position:fixed;left:12px;right:12px;bottom:12px;background:#1f2937;color:#fff;border-radius:8px;padding:10px 14px;font-size:.84rem;opacity:0;transition:opacity .25s;pointer-events:none}
   .toast.show{opacity:.96}
   .empty{color:var(--muted);font-size:.85rem;padding:14px 4px}
+  .accounts-toolbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:-2px 0 10px;padding:0 2px}
+  .account-card.compact .account-area{display:none}
+  .account-card.compact .account-head{min-height:unset;padding-top:7px;padding-bottom:7px}
+  .account-head{cursor:pointer}
+  .account-head-toggle{background:none;border:none;color:var(--muted);font-size:.78rem;cursor:pointer;padding:2px 4px;margin-left:4px;display:inline-flex;align-items:center;vertical-align:middle;line-height:1}
+  .account-head-toggle:hover{color:var(--accent)}
   @media (min-width:760px){
     .account-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
     .account-grid>.account-card:only-child{grid-column:1 / -1}
@@ -359,6 +365,10 @@ function toast(msg) {
 
 document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => openTab(t.dataset.tab)));
 function openTab(name) {
+  if (name !== 'apps' && runningTimer) {
+    clearInterval(runningTimer);
+    runningTimer = null;
+  }
   document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.tab === name));
   document.querySelectorAll('.panel').forEach((x) => x.classList.toggle('on', x.id === 'tab-' + name));
   // Accounts is the one panel that is not rebuilt on return, so its figures are the
@@ -1262,11 +1272,39 @@ async function antigravitySection() {
       });
     }, { primary: true });
   }
+  const syncBtn = cardButton('Sync plan', async () => {
+    syncBtn.disabled = true;
+    try {
+      if (sb.antigravityQuota) await sb.antigravityQuota(true);
+      await sb.appLaunch('antigravity');
+      toast('Opened Antigravity to sync Google AI plan...');
+      const startPlan = ag.plan;
+      pollUntil(
+        async () => {
+          const latest = await sb.antigravity();
+          return Boolean(latest && latest.plan && latest.plan !== startPlan);
+        },
+        (latest) => {
+          toast(`Google AI plan updated: ${latest?.plan || 'Ultra'}!`);
+          renderAccounts();
+        },
+        async () => {
+          const check = await sb.antigravity();
+          toast(`Google AI plan checked: ${check?.plan || 'Pro'}. Complete any Google login prompt in Antigravity.`);
+          syncBtn.disabled = false;
+        }
+      );
+    } catch (e) {
+      syncBtn.disabled = false;
+      toast('Could not sync Antigravity plan: ' + (e.message || e));
+    }
+  }, { title: 'Launch Google Antigravity desktop app to refresh Google AI Ultra subscription status' });
+
   cardSignIn(card, {
     signedIn: ag.signedIn,
     detail: ag.signedIn ? 'Signed in' : 'Not signed in',
     note: [ag.appInstalled ? 'app installed' : 'app not installed', ag.cliInstalled ? 'agy CLI installed' : 'agy CLI not installed'].join(' · '),
-    button,
+    buttons: [button, syncBtn].filter(Boolean),
   });
   const grid = el('div', 'account-grid');
   grid.appendChild(card);
@@ -1347,6 +1385,27 @@ async function renderAccounts() {
   state.candidates = await sb.candidates();
   const realPanel = $('#tab-accounts');
   const panel = el('div');
+
+  let isCompact = localStorage.getItem('sb-compact-cards') !== 'false';
+  const toolbar = el('div', 'accounts-toolbar');
+  const toggleBtn = el('button', 'btn', isCompact ? 'Expand all cards' : 'Compact all cards');
+  toggleBtn.type = 'button';
+  toggleBtn.style.fontSize = '.74rem';
+  toggleBtn.addEventListener('click', () => {
+    isCompact = !isCompact;
+    localStorage.setItem('sb-compact-cards', isCompact ? 'true' : 'false');
+    toggleBtn.textContent = isCompact ? 'Expand all cards' : 'Compact all cards';
+    for (const c of panel.querySelectorAll('.account-card')) {
+      c.classList.toggle('compact', isCompact);
+      const tog = c.querySelector('.account-head-toggle');
+      if (tog) {
+        tog.innerHTML = isCompact ? '&#9656;' : '&#9662;';
+        tog.setAttribute('aria-expanded', isCompact ? 'false' : 'true');
+      }
+    }
+  });
+  toolbar.appendChild(toggleBtn);
+  panel.appendChild(toolbar);
   const { present, absent } = splitToolsByPresence(Object.values(state.providers), state.accounts, state.candidates || []);
 
   for (const p of present) {
@@ -1385,6 +1444,17 @@ async function renderAccounts() {
   if (absent.length) panel.appendChild(shelfSection(absent, present.length === 0, state.accounts));
 
   panel.appendChild(el('p', 'panelnote', 'Switching changes which account <b>new</b> terminals and newly launched tools use. Running apps and pinned automation are never touched.'));
+
+  if (isCompact) {
+    for (const c of panel.querySelectorAll('.account-card')) {
+      c.classList.add('compact');
+      const tog = c.querySelector('.account-head-toggle');
+      if (tog) {
+        tog.innerHTML = '&#9656;';
+        tog.setAttribute('aria-expanded', 'false');
+      }
+    }
+  }
 
   if (!isCurrentRender('accounts', seq)) return;
   if (!$('#ver').querySelector('button')) $('#ver').textContent = 'v' + state.version;
@@ -2839,7 +2909,17 @@ sb.onUpdateAvailable((info) => showUpdateButton(info));
 // The window lives in the tray, so it is usually reopened rather than started. What
 // it was left showing is exactly what must not greet whoever opens it.
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && $('#tab-accounts').classList.contains('on')) refreshVisibleUsage();
+  if (document.hidden) {
+    if (runningTimer) {
+      clearInterval(runningTimer);
+      runningTimer = null;
+    }
+  } else {
+    if ($('#tab-accounts').classList.contains('on')) refreshVisibleUsage();
+    if ($('#tab-apps').classList.contains('on') && !runningTimer) {
+      watchRunning(renderSeqs['apps'] || 0);
+    }
+  }
 });
 
 sb.onRefresh(() => renderAccounts());
