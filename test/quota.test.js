@@ -619,8 +619,9 @@ test('fetchAntigravityQuota runs agy usage and credits commands and returns unif
     return { stdout: '' };
   };
 
-  const quota = await fetchAntigravityQuota({ agyBin: 'agy', runImpl: fakeRun, now: 1000 });
+  const quota = await fetchAntigravityQuota({ agyBin: 'agy', runImpl: fakeRun, now: 1000, plan: 'Ultra' });
   assert.equal(quota.source, 'cli');
+  assert.equal(quota.plan, 'Ultra');
   assert.equal(quota.vendor, 'Google Antigravity');
   assert.equal(quota.windows.length, 2);
   assert.equal(quota.windows[0].usedPercent, 10);

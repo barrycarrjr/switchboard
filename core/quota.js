@@ -766,6 +766,7 @@ export async function fetchAntigravityQuota({
   agyBin = null,
   runImpl = null,
   now = Date.now(),
+  plan = null,
 } = {}) {
   try {
     let bin = agyBin;
@@ -819,11 +820,20 @@ export async function fetchAntigravityQuota({
       }
     }
 
+    let resolvedPlan = plan;
+    if (!resolvedPlan) {
+      try {
+        const { antigravityPresence } = await import('./apps.js');
+        const pres = await antigravityPresence();
+        resolvedPlan = pres?.plan ?? null;
+      } catch { /* presence lookup optional */ }
+    }
+
     return {
       windows,
       source: 'cli',
       vendor: 'Google Antigravity',
-      plan: 'Pro',
+      plan: resolvedPlan,
       observedAt: now,
     };
   } catch {
