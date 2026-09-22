@@ -51,6 +51,8 @@ contextBridge.exposeInMainWorld('sb', {
   mcpRegister: (clientId, name) => ipcRenderer.invoke('sb:mcpRegister', clientId, name),
   mcpUnregister: (clientId, name) => ipcRenderer.invoke('sb:mcpUnregister', clientId, name),
   mcpList: (clientId) => ipcRenderer.invoke('sb:mcpList', clientId),
+  mcpDisable: (name) => ipcRenderer.invoke('sb:mcpDisable', name),
+  mcpEnable: (name) => ipcRenderer.invoke('sb:mcpEnable', name),
   updateCheck: () => ipcRenderer.invoke('sb:updateCheck'),
   updateRun: (tag, assetUrl) => ipcRenderer.invoke('sb:updateRun', tag, assetUrl),
   getUpdateRepo: () => ipcRenderer.invoke('sb:getUpdateRepo'),

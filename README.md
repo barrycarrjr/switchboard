@@ -149,6 +149,14 @@ short suggested list at the top of it.
   signed in, and plain registered for a client that cannot report its sign-in state. A
   tick that meant "signed out and broken" would be worse than no tick, so that last case
   says what it knows rather than guessing.
+- The mark at the left of an active row is a switch for the whole server: one click takes
+  it out of every client that has it, and the next click puts it back. Switching off
+  copies each client's own entry out first, so it works for the servers a client starts
+  itself, which Switchboard could otherwise remove but never re-create. Those copies are
+  the client's entry as written, arguments and environment included, because a partial
+  copy could not be put back; they live in `%APPDATA%\Switchboard\mcp.json`, are never
+  shown in the panel, and are not part of an exported configuration. A client that refuses
+  keeps its copy and is named in the message, so the button can be pressed again.
 - Servers needing an API key are deliberately absent from the catalogue. They cannot work
   without stored secrets, and listing them would offer a server that looks configured and
   fails on first use.

@@ -42,6 +42,14 @@ import {
   searchCatalog,
   categoriesOf,
   catalogServers,
+  captureClientEntry,
+  restoreClientEntry,
+  extractCodexServerBlock,
+  appendCodexServerBlock,
+  describeStash,
+  disableServer,
+  enableServer,
+  disabledServers,
 } from '../core/mcp.js';
 
 function tmp() {
@@ -845,4 +853,256 @@ test('a name that a shell would act on is still refused', async () => {
 test('adding is still held to the stricter rule', () => {
   assert.throws(() => assertValidServer({ name: 'MCP_DOCKER', url: 'https://example.com/mcp' }), /invalid server name/);
   assert.throws(() => assertValidServer({ name: 'ok', command: 'thing' }), /invalid server url/);
+});
+
+// ---- Switching a whole server off, and back on ----
+//
+// The promise these keep: switching off is a move, not a delete. Whatever the client had
+// is copied out first, exactly as it was written, so the same button puts it back, even
+// for a server Switchboard could never have added in the first place.
+
+const DOCKER_ENTRY = {
+  command: 'docker',
+  args: ['mcp', 'gateway', 'run'],
+  env: { LOCALAPPDATA: '%LOCALAPPDATA%', API_KEY: 'copied as written, or it could not go back' },
+  type: 'stdio',
+};
+
+function vscodeConfig(dir, servers) {
+  const file = path.join(dir, 'mcp.json');
+  fs.writeFileSync(file, JSON.stringify({ servers, inputs: [] }, null, 2));
+  return file;
+}
+
+test('a client entry is copied out exactly as it was written', () => {
+  const file = vscodeConfig(tmp(), { MCP_DOCKER: DOCKER_ENTRY, other: { type: 'http', url: 'https://mcp.example.com/mcp' } });
+  const stash = captureClientEntry('vscode', 'MCP_DOCKER', file);
+  assert.equal(stash.format, 'json');
+  assert.deepEqual(stash.entry, DOCKER_ENTRY, 'arguments and environment travel with it, or it could not go back');
+  assert.equal(captureClientEntry('vscode', 'absent', file), null);
+});
+
+test('a config that will not parse is refused rather than half-copied', () => {
+  const dir = tmp();
+  const file = path.join(dir, 'mcp.json');
+  fs.writeFileSync(file, '{not json');
+  assert.throws(() => captureClientEntry('vscode', 'MCP_DOCKER', file), /not valid JSON/);
+});
+
+test('a copied entry goes back where it came from, unchanged', () => {
+  const dir = tmp();
+  const file = vscodeConfig(dir, { MCP_DOCKER: DOCKER_ENTRY, keep: { type: 'http', url: 'https://mcp.example.com/mcp' } });
+  const stash = captureClientEntry('vscode', 'MCP_DOCKER', file);
+  fs.writeFileSync(file, deleteJsonServer(fs.readFileSync(file, 'utf8'), 'servers', 'MCP_DOCKER').out);
+  restoreClientEntry('vscode', 'MCP_DOCKER', stash, file);
+  const back = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(back.servers.MCP_DOCKER, DOCKER_ENTRY);
+  assert.ok(back.servers.keep, 'the servers that were never switched off are untouched');
+});
+
+// Between the two clicks someone may have put the server back by hand. Theirs is the
+// newer entry, and overwriting it with a copy taken earlier would be the wrong answer.
+test('putting a server back leaves an entry that is already there alone', () => {
+  const file = vscodeConfig(tmp(), { MCP_DOCKER: { type: 'stdio', command: 'newer' } });
+  const result = restoreClientEntry('vscode', 'MCP_DOCKER', { format: 'json', entry: DOCKER_ENTRY }, file);
+  assert.match(result.output, /already in/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).servers.MCP_DOCKER, { type: 'stdio', command: 'newer' });
+});
+
+test('nothing kept for a client is said plainly, not written as an empty entry', () => {
+  const file = vscodeConfig(tmp(), {});
+  assert.throws(() => restoreClientEntry('vscode', 'MCP_DOCKER', null, file), /nothing was kept/);
+  assert.throws(() => restoreClientEntry('vscode', 'MCP_DOCKER', { format: 'json' }, file), /nothing was kept/);
+});
+
+const CODEX_TOML = `model_reasoning_effort = "high"
+
+[mcp_servers.node_repl]
+command = "node_repl.exe"
+args = ["--stdio"]
+
+[mcp_servers.node_repl.env]
+CODEX_HOME = "somewhere"
+
+[mcp_servers.phpstorm]
+url = "http://127.0.0.1:64410/stream"
+`;
+
+test('a codex server is lifted out with its sub-tables and nothing else', () => {
+  const block = extractCodexServerBlock(CODEX_TOML, 'node_repl');
+  assert.ok(block.includes('[mcp_servers.node_repl]'));
+  assert.ok(block.includes('CODEX_HOME = "somewhere"'), 'its environment table goes with it');
+  assert.ok(!block.includes('phpstorm'), 'and the next server stays where it is');
+  assert.ok(!block.includes('model_reasoning_effort'), 'as does everything above it');
+  assert.equal(extractCodexServerBlock(CODEX_TOML, 'absent'), null);
+});
+
+test('a codex block goes back at the end, where it cannot swallow what came before', () => {
+  const block = extractCodexServerBlock(CODEX_TOML, 'node_repl');
+  const without = 'model_reasoning_effort = "high"\n\n[mcp_servers.phpstorm]\nurl = "http://127.0.0.1:64410/stream"\n';
+  const back = appendCodexServerBlock(without, block);
+  assert.deepEqual(parseCodexServerNames(back).sort(), ['node_repl', 'phpstorm']);
+  const [restored] = parseCodexServerEntries(back).filter((s) => s.name === 'node_repl');
+  assert.equal(restored.command, 'node_repl.exe');
+  assert.ok(back.includes('CODEX_HOME = "somewhere"'), 'the environment table survives the trip');
+  assert.ok(back.startsWith('model_reasoning_effort'), 'nothing that was already there moved');
+});
+
+test('an empty codex config takes a block without a leading blank line', () => {
+  assert.equal(appendCodexServerBlock('', '[mcp_servers.a]\ncommand = "a"\n'), '[mcp_servers.a]\ncommand = "a"\n');
+  assert.equal(appendCodexServerBlock('x = 1\n', ''), 'x = 1\n', 'an empty block changes nothing');
+});
+
+// Codex indents the tables it writes itself, and a block that comes back a column to the
+// left is not quite the entry that was taken away, even though TOML reads it the same.
+test('a codex block keeps its own indentation when it goes back', () => {
+  const indented = '  [mcp_servers.node_repl]\n    command = "node_repl.exe"\n\n    [mcp_servers.node_repl.env]\n      CODEX_HOME = "somewhere"\n';
+  const back = appendCodexServerBlock('x = 1\n', indented);
+  assert.equal(extractCodexServerBlock(back, 'node_repl'), indented, 'byte for byte, indentation included');
+});
+
+test('a copy describes itself well enough for a row to show it', () => {
+  assert.deepEqual(describeStash({ format: 'json', entry: DOCKER_ENTRY }), { command: 'docker' });
+  assert.deepEqual(describeStash({ format: 'json', entry: { url: 'https://mcp.example.com/mcp' } }), { url: 'https://mcp.example.com/mcp' });
+  assert.deepEqual(describeStash({ format: 'toml', block: '[mcp_servers.a]\nurl = "https://mcp.example.com/mcp"\n' }), { url: 'https://mcp.example.com/mcp' });
+  assert.deepEqual(describeStash(null), {});
+});
+
+/** A disable run against fakes: which clients have it, and what each removal does. */
+function fakeDisable({ has = {}, refuse = [] } = {}) {
+  const removed = [];
+  return {
+    removed,
+    opts: {
+      clientIds: Object.keys(has),
+      read: (id) => (has[id] ? [has[id].name] : []),
+      capture: (id) => ({ format: 'json', entry: has[id].entry }),
+      remove: async (id, server) => {
+        if (refuse.includes(id)) throw new Error(`${id} said no`);
+        removed.push(`${id}:${server.name}`);
+      },
+    },
+  };
+}
+
+test('switching a server off keeps every client copy before anything is removed', async () => {
+  const file = path.join(tmp(), 'mcp.json');
+  const fake = fakeDisable({ has: { junie: { name: 'MCP_DOCKER', entry: DOCKER_ENTRY }, vscode: { name: 'MCP_DOCKER', entry: DOCKER_ENTRY } } });
+  const registry = { servers: [], disabled: [] };
+  const result = await disableServer('MCP_DOCKER', { ...fake.opts, registry, file });
+  assert.deepEqual(result.clients.sort(), ['junie', 'vscode']);
+  assert.deepEqual(fake.removed.sort(), ['junie:MCP_DOCKER', 'vscode:MCP_DOCKER']);
+  const held = loadServers(file).disabled;
+  assert.equal(held.length, 1);
+  assert.deepEqual(Object.keys(held[0].clients).sort(), ['junie', 'vscode']);
+  assert.deepEqual(held[0].clients.junie.entry, DOCKER_ENTRY, 'the copy is the client entry, whole');
+});
+
+test('a client that refuses is reported, and the ones that worked still count', async () => {
+  const file = path.join(tmp(), 'mcp.json');
+  const fake = fakeDisable({
+    has: { junie: { name: 'MCP_DOCKER', entry: DOCKER_ENTRY }, vscode: { name: 'MCP_DOCKER', entry: DOCKER_ENTRY } },
+    refuse: ['vscode'],
+  });
+  const registry = { servers: [], disabled: [] };
+  const result = await disableServer('MCP_DOCKER', { ...fake.opts, registry, file });
+  assert.deepEqual(result.clients, ['junie']);
+  assert.equal(result.failed.length, 1);
+  assert.match(result.failed[0], /VS Code/, 'named by the button it is on, not its id');
+  assert.deepEqual(Object.keys(loadServers(file).disabled[0].clients), ['junie'], 'no copy is kept for a client that still has it');
+});
+
+test('switching off a server no client has says so rather than writing an empty record', async () => {
+  const file = path.join(tmp(), 'mcp.json');
+  const registry = { servers: [], disabled: [] };
+  await assert.rejects(
+    () => disableServer('MCP_DOCKER', { ...fakeDisable({ has: {} }).opts, clientIds: ['junie'], registry, file }),
+    /not registered with any client/,
+  );
+  assert.equal(fs.existsSync(file), false, 'and nothing is saved');
+});
+
+test('switching off twice in a row cannot strand the first half', async () => {
+  const file = path.join(tmp(), 'mcp.json');
+  const registry = { servers: [], disabled: [] };
+  const first = fakeDisable({ has: { junie: { name: 'MCP_DOCKER', entry: DOCKER_ENTRY } } });
+  await disableServer('MCP_DOCKER', { ...first.opts, registry, file });
+  const second = fakeDisable({ has: { vscode: { name: 'MCP_DOCKER', entry: DOCKER_ENTRY } } });
+  await disableServer('MCP_DOCKER', { ...second.opts, registry, file });
+  assert.deepEqual(Object.keys(loadServers(file).disabled[0].clients).sort(), ['junie', 'vscode']);
+});
+
+test('switching a server back on puts every copy back and forgets it was ever off', () => {
+  const file = path.join(tmp(), 'mcp.json');
+  const registry = {
+    servers: [],
+    disabled: [{ name: 'MCP_DOCKER', at: '2026-01-01T00:00:00.000Z', clients: { junie: { format: 'json', entry: DOCKER_ENTRY } } }],
+  };
+  const put = [];
+  const result = enableServer('MCP_DOCKER', { registry, file, restore: (id, name, stash) => put.push(`${id}:${name}:${stash.entry.command}`) });
+  assert.deepEqual(result.clients, ['junie']);
+  assert.deepEqual(put, ['junie:MCP_DOCKER:docker']);
+  assert.deepEqual(loadServers(file).disabled, [], 'nothing is held for a server that is running again');
+});
+
+// Throwing away the only copy of an entry because one write failed is not a trade worth
+// making: the button has to stay pressable.
+test('a client that cannot be written keeps its copy for another try', () => {
+  const file = path.join(tmp(), 'mcp.json');
+  const registry = {
+    servers: [],
+    disabled: [{
+      name: 'MCP_DOCKER',
+      at: '2026-01-01T00:00:00.000Z',
+      clients: { junie: { format: 'json', entry: DOCKER_ENTRY }, vscode: { format: 'json', entry: DOCKER_ENTRY } },
+    }],
+  };
+  const result = enableServer('MCP_DOCKER', {
+    registry,
+    file,
+    restore: (id) => { if (id === 'vscode') throw new Error('the file is read only'); },
+  });
+  assert.deepEqual(result.clients, ['junie']);
+  assert.equal(result.failed.length, 1);
+  const held = loadServers(file).disabled;
+  assert.deepEqual(Object.keys(held[0].clients), ['vscode'], 'only the client that refused is still held');
+});
+
+test('switching on a server that was never switched off says so', () => {
+  const file = path.join(tmp(), 'mcp.json');
+  assert.throws(() => enableServer('MCP_DOCKER', { registry: { servers: [], disabled: [] }, file }), /not switched off/);
+});
+
+// A switched-off server is in no client config, so this list is the only thing that can
+// put it back on screen, and a row nobody can see is a server nobody can switch back on.
+test('a switched-off server stays on the active list, marked as off', () => {
+  const registry = {
+    servers: [],
+    disabled: [{ name: 'MCP_DOCKER', at: '2026-01-01T00:00:00.000Z', clients: { junie: { format: 'json', entry: DOCKER_ENTRY } } }],
+  };
+  const listed = activeServers(registry, ['junie'], () => []);
+  const row = listed.find((s) => s.name === 'MCP_DOCKER');
+  assert.ok(row, 'it is still listed');
+  assert.equal(row.disabled, true);
+  assert.equal(row.command, 'docker', 'described from the copy, since no client config has it now');
+  assert.deepEqual(row.disabledClients, ['junie']);
+});
+
+test('a switched-off server keeps the catalogue description of what it is', () => {
+  const registry = {
+    servers: [],
+    disabled: [{ name: 'atlassian', at: '2026-01-01T00:00:00.000Z', clients: { claude: { format: 'json', entry: { url: 'https://mcp.atlassian.com/v1/mcp' } } } }],
+  };
+  const [row] = disabledServers(registry);
+  assert.equal(row.label, 'Atlassian (Jira, Confluence)');
+  assert.equal(row.disabled, true);
+});
+
+test('the copies survive a save and a load', () => {
+  const file = path.join(tmp(), 'mcp.json');
+  const reg = loadServers(file);
+  assert.deepEqual(reg.disabled, [], 'a registry that has never held one reads as none');
+  reg.disabled = [{ name: 'MCP_DOCKER', at: '2026-01-01T00:00:00.000Z', clients: { junie: { format: 'json', entry: DOCKER_ENTRY } } }];
+  saveServers(reg, file);
+  assert.deepEqual(loadServers(file).disabled[0].clients.junie.entry, DOCKER_ENTRY);
 });

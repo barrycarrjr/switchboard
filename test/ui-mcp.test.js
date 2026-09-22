@@ -57,8 +57,8 @@ const CLIENTS = [
   { id: 'codex', name: 'Codex', canRemove: true },
 ];
 
-const rowParts = ['MARK', 'MCP_CHIP', 'mcpWhyNotAddable', 'mcpChip', 'mcpRow'];
-const loadRow = () => load(rowParts, ['mcpRow', 'mcpChip', 'mcpWhyNotAddable']);
+const rowParts = ['MARK', 'MCP_CHIP', 'mcpWhyNotAddable', 'mcpDisableQuestion', 'mcpClientNames', 'mcpError', 'mcpToggle', 'mcpChip', 'mcpRow'];
+const loadRow = () => load(rowParts, ['mcpRow', 'mcpChip', 'mcpWhyNotAddable', 'mcpToggle', 'mcpClientNames', 'mcpDisableQuestion']);
 
 /** The words a row shows, buttons included. */
 function readRow(row) {
@@ -163,4 +163,64 @@ test('removing a server that cannot be put back says so', () => {
 
   const ordinary = mcpRemoveQuestion({ name: 'sentry', url: 'https://mcp.sentry.dev/mcp', addable: true }, CLIENTS[0]);
   assert.equal(ordinary, 'Remove "sentry" from Claude Code?', 'nothing extra when it can simply be added again');
+});
+
+// ---- Switching a whole server off from its mark ----
+//
+// Unchecking client by client is a click each, and for a server the client starts itself
+// there is nothing to uncheck at all: those buttons are greyed because Switchboard could
+// never put such a server back. The mark at the left of the row is the switch for the
+// whole server, and it is only a switch where pressing it can do something.
+
+test('the mark on an active row is a switch, and says which way it is set', () => {
+  const { mcpRow } = loadRow();
+  const row = mcpRow({ name: 'MCP_DOCKER', command: 'docker', addable: false, state: { claude: 'on' } }, CLIENTS, () => {}, { togglable: true });
+  const mark = row.children[0];
+  assert.equal(mark.tag, 'button');
+  assert.equal(mark.attrs['aria-pressed'], 'true');
+  assert.ok(mark.title.includes('off in every client'), 'so a click is not a surprise');
+});
+
+test('a switched-off row can be switched back on, and says where it will go', () => {
+  const { mcpRow } = loadRow();
+  const row = mcpRow({
+    name: 'MCP_DOCKER',
+    command: 'docker',
+    disabled: true,
+    disabledClients: ['claude', 'codex'],
+    addable: false,
+    state: {},
+  }, CLIENTS, () => {}, { togglable: true });
+  const mark = row.children[0];
+  assert.equal(mark.tag, 'button');
+  assert.equal(mark.attrs['aria-pressed'], 'false');
+  assert.ok(mark.title.includes('back on'));
+  assert.ok(row.className.includes('off'), 'and it does not look like a running server');
+  const text = row.children.map((c) => c.innerHTML || '').join(' ');
+  assert.ok(text.includes('Switched off'), 'an off row must not read as one that was never switched on');
+  assert.ok(text.includes('Claude Code and Codex'), 'named by the buttons they are on');
+});
+
+test('the mark stays a plain mark where there is nothing to switch', () => {
+  const { mcpRow } = loadRow();
+  const browse = mcpRow({ name: 'sentry', url: 'https://mcp.sentry.dev/mcp', addable: true, state: { claude: 'ready' } }, CLIENTS, () => {});
+  assert.equal(browse.children[0].tag, 'div', 'the browse list switches nothing off');
+
+  const unused = mcpRow({ name: 'sentry', url: 'https://mcp.sentry.dev/mcp', addable: true, state: {} }, CLIENTS, () => {}, { togglable: true });
+  assert.equal(unused.children[0].tag, 'div', 'a server no client has is already off');
+});
+
+test('the question before switching off says it can be switched back on', () => {
+  const { mcpDisableQuestion } = loadRow();
+  const asked = mcpDisableQuestion({ name: 'MCP_DOCKER' });
+  assert.ok(asked.includes('Switch "MCP_DOCKER" off in every client?'));
+  assert.ok(asked.includes('switched back on'), 'the part that makes it a decision rather than a gamble');
+});
+
+test('client ids are reported as the names on their buttons', () => {
+  const { mcpClientNames } = loadRow();
+  assert.equal(mcpClientNames(['claude'], CLIENTS), 'Claude Code');
+  assert.equal(mcpClientNames(['claude', 'codex'], CLIENTS), 'Claude Code and Codex');
+  assert.equal(mcpClientNames([], CLIENTS), '');
+  assert.equal(mcpClientNames(['junie'], CLIENTS), 'junie', 'a client that is not here is still named, not dropped');
 });

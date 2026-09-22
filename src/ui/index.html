@@ -210,6 +210,11 @@
   .hc.warn .hi{background:var(--warn-bg);color:var(--warn)}
   .hc.bad .hi{background:var(--bad-bg);color:var(--bad)}
   .hc.info .hi{background:var(--info-bg);color:var(--info)}
+  /* A server switched off from here: still listed, visibly not running. */
+  .hc.off .hi{background:var(--line);color:var(--muted)}
+  .hc.off .hm{color:var(--muted)}
+  button.hi{font:inherit;font-size:11px;font-weight:700;border:0;padding:0;background:none;cursor:pointer}
+  button.hi:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .hc .hm{flex:1 1 180px;min-width:0;overflow-wrap:anywhere;word-break:break-word}
   .hc .hm span{display:block;color:var(--muted);font-size:.76rem;overflow-wrap:anywhere;word-break:break-word}
   .healthfoot{display:flex;align-items:center;gap:10px;margin-top:10px}
@@ -2761,6 +2766,72 @@ function mcpRemoveQuestion(server, client) {
   return question + '\n\nSwitchboard cannot put it back: it was set up inside ' + client.name + ' itself.';
 }
 
+/**
+ * What to ask before switching a whole server off.
+ *
+ * It says where the entries go, because the one thing someone needs to know at that
+ * moment is that this is reversible even for a server Switchboard could never add.
+ */
+function mcpDisableQuestion(server) {
+  return 'Switch "' + server.name + '" off in every client?\n\n'
+    + 'Switchboard copies each client\'s own entry out first, so this can be switched back on from here.';
+}
+
+/** Client ids as the names on their buttons: "Junie and VS Code". */
+function mcpClientNames(ids, clients) {
+  const names = (ids || []).map((id) => (clients.find((c) => c.id === id) || {}).name || id);
+  if (names.length < 2) return names.join('');
+  return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+}
+
+/**
+ * The sentence out of a failed call.
+ *
+ * Electron wraps a handler failure with its own plumbing; the useful sentence is the one
+ * core/mcp.js composed, so strip the wrapper before showing it.
+ */
+function mcpError(e) {
+  return String(e && e.message ? e.message : e)
+    .replace(/^Error invoking remote method '[^']*':\s*/, '')
+    .replace(/^Error:\s*/, '');
+}
+
+/**
+ * The mark at the left of a row, as a switch for the whole server.
+ *
+ * Switching a server off one client at a time is a click per client, and for the servers
+ * most likely to need it (the ones a client starts itself) it cannot be undone at all,
+ * so those buttons are greyed and the row cannot be switched off from here. This button
+ * copies every client's own entry out before removing it, which is what lets the same
+ * button put them all back.
+ */
+function mcpToggle(server, clients, onDone) {
+  const off = Boolean(server.disabled);
+  const name = server.label || server.title || server.name;
+  const btn = el('button', 'hi', off ? '&ndash;' : MARK.ok);
+  btn.setAttribute('aria-pressed', off ? 'false' : 'true');
+  btn.title = off
+    ? 'Switched off. Click to switch ' + name + ' back on.'
+    : 'Switched on. Click to switch ' + name + ' off in every client.';
+  btn.addEventListener('click', async () => {
+    if (!off && !confirm(mcpDisableQuestion(server))) return;
+    btn.disabled = true;
+    try {
+      const res = (off ? await sb.mcpEnable(server.name) : await sb.mcpDisable(server.name)) || {};
+      const where = mcpClientNames(res.clients, clients);
+      toast(name + (off ? ' switched back on' : ' switched off') + (where ? ' in ' + where : '') + '.');
+      // A client that refused is the half of the job that did not happen, and saying so
+      // matters more than the tidy sentence above it.
+      if (res.failed && res.failed.length) toast(res.failed.join(' '));
+    } catch (e) {
+      toast(mcpError(e));
+    } finally {
+      onDone();
+    }
+  });
+  return btn;
+}
+
 /** One client chip. Clicking toggles registration, then re-reads the client afterwards. */
 function mcpChip(server, client, onDone) {
   const state = (server.state && server.state[client.id]) || 'off';
@@ -2801,12 +2872,7 @@ function mcpChip(server, client, onDone) {
         toast('Added to ' + client.name + '. Sign in from ' + client.name + ' itself when it first connects.');
       }
     } catch (e) {
-      // Electron wraps a handler failure with its own plumbing; the useful sentence is
-      // the one core/mcp.js composed, so strip the wrapper before showing it.
-      const msg = String(e && e.message ? e.message : e)
-        .replace(/^Error invoking remote method '[^']*':\s*/, '')
-        .replace(/^Error:\s*/, '');
-      toast(msg);
+      toast(mcpError(e));
     } finally {
       onDone();
     }
@@ -2816,12 +2882,23 @@ function mcpChip(server, client, onDone) {
 
 function mcpRow(server, clients, onDone, opts) {
   opts = opts || {};
+  const off = Boolean(server.disabled);
   const anyOn = clients.some((c) => ((server.state && server.state[c.id]) || 'off') !== 'off');
   const pending = clients.some((c) => server.state && server.state[c.id] === 'needs-auth');
-  const level = (server.caveat || pending) ? 'warn' : anyOn ? 'ok' : 'info';
+  const level = off ? 'off' : (server.caveat || pending) ? 'warn' : anyOn ? 'ok' : 'info';
   const row = el('div', 'hc ' + level);
-  row.appendChild(el('div', 'hi', MARK[level] || 'i'));
+  // The mark is a switch on the active list, where there is something to switch. On the
+  // browse list, and on a row no client has yet, it is what it has always been: a mark.
+  const togglable = opts.togglable && (off || anyOn);
+  row.appendChild(togglable ? mcpToggle(server, clients, onDone) : el('div', 'hi', off ? '&ndash;' : (MARK[level] || 'i')));
   const bits = [];
+  // Said first, because a row that is off looks otherwise exactly like a row that was
+  // never switched on, and the difference is a copy Switchboard is holding for it.
+  if (off) {
+    bits.push('Switched off' + (server.disabledClients && server.disabledClients.length
+      ? ', kept so it can go back to ' + mcpClientNames(server.disabledClients, clients)
+      : ', kept so it can be switched back on'));
+  }
   // A server found in a client's own config has no catalogue description. Its address is
   // the next most useful thing, and for one the client starts itself, the program it runs.
   if (server.description) bits.push(esc(server.description.slice(0, 150)));
@@ -2885,7 +2962,7 @@ async function renderMcp() {
 
   const localNames = new Set(local.map((s) => s.name));
   for (const s of servers) {
-    panel.appendChild(mcpRow(s, usable, renderMcp, { forgettable: localNames.has(s.name) }));
+    panel.appendChild(mcpRow(s, usable, renderMcp, { forgettable: localNames.has(s.name), togglable: true }));
   }
 
   // Clients you do not have are listed rather than hidden: it shows what is possible.

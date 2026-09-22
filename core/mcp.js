@@ -421,13 +421,15 @@ export function assertValidServer(server) {
 export function loadServers(file = mcpFile()) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (Array.isArray(parsed.servers)) return { servers: parsed.servers };
+    if (Array.isArray(parsed.servers)) {
+      return { servers: parsed.servers, disabled: Array.isArray(parsed.disabled) ? parsed.disabled : [] };
+    }
   } catch { /* first run or unreadable: start empty, never guess */ }
-  return { servers: [] };
+  return { servers: [], disabled: [] };
 }
 
 export function saveServers(registry, file = mcpFile()) {
-  writeJsonAtomic(file, { servers: registry.servers });
+  writeJsonAtomic(file, { servers: registry.servers, disabled: registry.disabled ?? [] });
 }
 
 export function addServer(registry, { name, url, label }) {
@@ -475,9 +477,16 @@ export function activeServers(registry = loadServers(), clientIds = Object.keys(
       found.push(described ? { ...described } : { ...entry, discovered: true });
     }
   }
+  // A server switched off from here is in no client config any more, so without this it
+  // would disappear from the only list that can switch it back on. Where the same name
+  // turns up twice, the switched-off description wins: it is the thing the row most needs
+  // to say, and its address comes from the copy that was taken before anything moved.
+  const off = disabledServers(registry);
+  const byName = new Map(off.map((s) => [s.name, s]));
   // By name, because the order clients happen to list their servers in is arbitrary and
   // changes as they are edited. A list someone reads should not reshuffle itself.
-  return dedupeServers([...(registry.servers ?? []), ...found])
+  return dedupeServers([...(registry.servers ?? []), ...found, ...off])
+    .map((s) => (byName.has(s.name) ? { ...s, ...byName.get(s.name) } : s))
     .sort((a, b) => displayName(a).localeCompare(displayName(b), undefined, { sensitivity: 'base' }));
 }
 
@@ -797,4 +806,222 @@ export async function listRegistered(clientId) {
   } catch (e) {
     return { client: c.id, supported: true, output: '', error: String(e?.message ?? e) };
   }
+}
+
+/**
+ * Switching a whole server off, and back on again.
+ *
+ * Unchecking a server client by client works, but it is not the same job: someone who
+ * wants Docker's gateway quiet wants it quiet everywhere, and for the servers most likely
+ * to need that, taking them out is a one-way door. Switchboard writes remote https
+ * addresses and nothing else, so a server the client starts itself, or one on a loopback
+ * address, can be removed here but never put back.
+ *
+ * So switching off is a move, not a delete. Each client's own entry is copied out
+ * verbatim first and kept in Switchboard's registry, then the client is told to remove
+ * it; switching back on writes each copy where it came from. That is what makes the
+ * greyed-out rows toggleable at all, and it is why the copy is taken before anything is
+ * removed rather than reconstructed afterwards from a catalogue that never described it.
+ *
+ * The copy is the client's entry as written, arguments and environment included, because
+ * a partial copy could not be put back. It lives beside the other app data, is never
+ * shown in the panel, and is never written into an exported config.
+ */
+
+/** One client's own entry for a server, taken verbatim. Null when that client has none. */
+export function captureClientEntry(clientId, name, file = client(clientId).configFile()) {
+  const c = client(clientId);
+  const text = readIfPresent(file);
+  if (!text.trim()) return null;
+  if (c.format === 'toml') {
+    const block = extractCodexServerBlock(text, name);
+    return block ? { format: 'toml', block } : null;
+  }
+  // parseJsonObject throws on a file that will not parse, and that is the right answer:
+  // a config nobody can read is one nothing should be removed from either.
+  const map = parseJsonObject(text)[c.rootKey];
+  const entry = map && typeof map === 'object' && !Array.isArray(map) ? map[name] : undefined;
+  if (!entry || typeof entry !== 'object') return null;
+  return { format: 'json', entry };
+}
+
+/**
+ * Put one captured entry back where it came from.
+ *
+ * A client that has the server again already is left alone rather than written twice:
+ * someone may have put it back by hand between the two clicks, and theirs is the newer
+ * entry.
+ */
+export function restoreClientEntry(clientId, name, stash, file = client(clientId).configFile()) {
+  const c = client(clientId);
+  const usable = stash && (stash.format === 'toml' ? typeof stash.block === 'string' : Boolean(stash.entry));
+  if (!usable) throw new Error(`nothing was kept for ${name} in ${c.name}`);
+  const text = readIfPresent(file);
+  // Read from the same text that is about to be rewritten, rather than asking what the
+  // client has: the two could be different files if this one was handed in.
+  const present = c.format === 'toml'
+    ? parseCodexServerNames(text).includes(name)
+    : parseJsonServerNames(text, c.rootKey).includes(name);
+  if (present) return { ok: true, client: c.id, server: name, output: `${name} is already in ${file}` };
+  const out = stash.format === 'toml'
+    ? appendCodexServerBlock(text, stash.block)
+    : upsertJsonServer(text, c.rootKey, name, stash.entry);
+  writeConfig(file, out);
+  return { ok: true, client: c.id, server: name, output: `Put ${name} back into ${file}` };
+}
+
+/**
+ * One server's tables lifted out of a Codex config, as text.
+ *
+ * Text rather than a parsed shape, because putting it back has to reproduce it exactly,
+ * environment variables and all, and this module deliberately never reads those. The
+ * server's sub-tables travel with it; a differently named server does not, even where
+ * the two names share a prefix.
+ */
+export function extractCodexServerBlock(toml, name) {
+  const lines = String(toml ?? '').split(/\r?\n/);
+  const block = [];
+  let mine = false;
+  for (const line of lines) {
+    const header = line.match(/^\s*\[(.+)\]\s*$/);
+    if (header) {
+      const table = header[1].trim().match(/^mcp_servers\.(.+)$/);
+      mine = Boolean(table) && firstTomlKey(table[1].trim()) === name;
+    }
+    if (mine) block.push(line);
+  }
+  if (!block.length) return null;
+  while (block.length && !block[block.length - 1].trim()) block.pop();
+  return block.join('\n') + '\n';
+}
+
+/**
+ * Add a captured server back to a Codex config, at the end.
+ *
+ * The end is always safe: every line after a table header belongs to that table, so a
+ * complete block appended last cannot swallow anything that came before it.
+ */
+export function appendCodexServerBlock(toml, block) {
+  const body = String(toml ?? '').replace(/\s+$/, '');
+  // Blank lines in front go, indentation does not: Codex writes its own tables indented,
+  // and putting a server back should put back what was there, to the space.
+  const add = String(block ?? '').replace(/^(?:[ \t]*\r?\n)+/, '').replace(/\s+$/, '');
+  if (!add.trim()) return String(toml ?? '');
+  return (body ? body + '\n\n' : '') + add + '\n';
+}
+
+/** Whatever address a captured entry carries, for a row that has to describe itself. */
+export function describeStash(stash) {
+  const out = {};
+  if (!stash) return out;
+  if (stash.format === 'toml') {
+    const [found] = parseCodexServerEntries(stash.block);
+    if (found?.url) out.url = found.url;
+    if (found?.command) out.command = found.command;
+    return out;
+  }
+  if (typeof stash.entry?.url === 'string') out.url = stash.entry.url;
+  if (typeof stash.entry?.command === 'string') out.command = stash.entry.command;
+  return out;
+}
+
+/**
+ * Switch one server off in every client that has it.
+ *
+ * A client whose entry cannot be read, or whose removal fails, is reported and left
+ * exactly as it was. A half-done job is worth saying out loud, and the clients that did
+ * work can still be switched back on.
+ */
+export async function disableServer(name, {
+  registry = loadServers(),
+  clientIds = Object.keys(CLIENTS),
+  file = mcpFile(),
+  read = registeredNames,
+  capture = captureClientEntry,
+  remove = unregisterServer,
+} = {}) {
+  if (!isRemovableServerName(name)) throw new Error(`invalid server name: ${name}`);
+  const kept = {};
+  const failed = [];
+  for (const id of clientIds) {
+    if (!CLIENTS[id] || !read(id).includes(name)) continue;
+    let stash = null;
+    try {
+      stash = capture(id, name);
+    } catch (e) {
+      failed.push(`${CLIENTS[id].name}: ${e.message}`);
+      continue;
+    }
+    if (!stash) {
+      failed.push(`${CLIENTS[id].name}: its entry could not be read, so it was left alone`);
+      continue;
+    }
+    try {
+      await remove(id, { name });
+      kept[id] = stash;
+    } catch (e) {
+      failed.push(`${CLIENTS[id].name}: ${cleanCliError(e?.stderr || e?.message || e)}`);
+    }
+  }
+  if (!Object.keys(kept).length) {
+    throw new Error(failed.length ? failed.join('; ') : `${name} is not registered with any client`);
+  }
+  const previous = (registry.disabled ?? []).find((d) => d.name === name);
+  registry.disabled = [...(registry.disabled ?? []).filter((d) => d.name !== name), {
+    name,
+    at: new Date().toISOString(),
+    // Anything already held for a client this run did not touch is kept, so switching a
+    // server off twice in a row cannot strand the first half.
+    clients: { ...(previous?.clients ?? {}), ...kept },
+  }];
+  saveServers(registry, file);
+  return { ok: true, name, clients: Object.keys(kept), failed };
+}
+
+/** Switch one server back on, putting each client's own entry back where it came from. */
+export function enableServer(name, { registry = loadServers(), file = mcpFile(), restore = restoreClientEntry } = {}) {
+  const held = (registry.disabled ?? []).find((d) => d.name === name);
+  if (!held) throw new Error(`${name} is not switched off`);
+  const restored = [];
+  const failed = [];
+  const remaining = {};
+  for (const [id, stash] of Object.entries(held.clients ?? {})) {
+    if (!CLIENTS[id]) continue;
+    try {
+      restore(id, name, stash);
+      restored.push(id);
+    } catch (e) {
+      failed.push(`${CLIENTS[id].name}: ${e.message}`);
+      remaining[id] = stash;
+    }
+  }
+  if (!restored.length) throw new Error(failed.length ? failed.join('; ') : `nothing was kept for ${name}`);
+  // A client that refused keeps its copy, so the button can be pressed again. Throwing
+  // away the only copy of an entry because one write failed is not a trade worth making.
+  registry.disabled = (registry.disabled ?? [])
+    .filter((d) => d.name !== name)
+    .concat(Object.keys(remaining).length ? [{ ...held, clients: remaining }] : []);
+  saveServers(registry, file);
+  return { ok: true, name, clients: restored, failed };
+}
+
+/**
+ * Servers switched off, described well enough to show a row for. They are in no client
+ * config any more, so this is the only thing that can put them back on screen, and a row
+ * nobody can see is a server nobody can switch back on.
+ */
+export function disabledServers(registry = loadServers()) {
+  const known = [...FEATURED, ...catalogServers()];
+  return (registry.disabled ?? []).map((held) => {
+    const address = describeStash(Object.values(held.clients ?? {})[0]);
+    const described = known.find((k) => k.name === held.name || sameEndpoint(k.url, address.url));
+    return {
+      ...(described ?? {}),
+      ...address,
+      name: held.name,
+      disabled: true,
+      disabledAt: held.at ?? null,
+      disabledClients: Object.keys(held.clients ?? {}),
+    };
+  });
 }

@@ -20,7 +20,7 @@ import { detectPresence } from '../core/presence.js';
 import { appRunning, bridgeProblem, bridgeRunning, listProcesses, renameBridgeProblem } from '../core/running.js';
 import { terminalRows, terminalChips } from '../core/terminals.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
-import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix } from '../core/mcp.js';
+import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix, disableServer, enableServer } from '../core/mcp.js';
 import { createRequire } from 'node:module';
 
 // CI stamps updateRepo into the packaged package.json (extraMetadata); the committed
@@ -847,7 +847,10 @@ ipcMain.handle('sb:configImport', async () => {
   const oldMcp = loadServers();
   const nextRegistry = { accounts: imported.accounts };
   const nextSettings = settingsFromConfig(imported, oldSettings);
-  const nextMcp = { servers: imported.mcpServers };
+  // The copies held for switched-off servers are not part of an exported config and are
+  // not something an import should throw away: they are the only way those servers come
+  // back, and the machine they came from is this one.
+  const nextMcp = { servers: imported.mcpServers, disabled: oldMcp.disabled ?? [] };
   try {
     saveRegistry(nextRegistry);
     saveSettings(nextSettings);
@@ -1122,6 +1125,14 @@ ipcMain.handle('sb:mcpRegister', (_e, clientId, name) => registerServer(clientId
 ipcMain.handle('sb:mcpUnregister', (_e, clientId, name) => unregisterServer(clientId, resolveServer(name)));
 
 ipcMain.handle('sb:mcpList', (_e, clientId) => listRegistered(clientId));
+
+/**
+ * Switching a whole server off and on again. The renderer sends a name only; which
+ * clients hold it, and what each of their entries says, is read here and kept here.
+ */
+ipcMain.handle('sb:mcpDisable', (_e, name) => disableServer(name));
+
+ipcMain.handle('sb:mcpEnable', (_e, name) => enableServer(name));
 
 // What the Apps panel last showed, kept so the running poll can match processes to
 // apps without re-running detection (a PowerShell call) every few seconds.
