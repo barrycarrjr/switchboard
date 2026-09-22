@@ -217,6 +217,7 @@ export const TRANSCRIPTS = {
     locate: ({ home, cwd, sessionId }) => (home && cwd && sessionId ? transcriptFile(home, cwd, sessionId) : null),
     turn: (record) => {
       if (record?.type !== 'user' && record?.type !== 'assistant') return null;
+      if (record?.isApiErrorMessage || record?.error === 'server_error' || record?.error === 'overloaded_error') return null;
       const text = messageText(record.message?.content, ['text']);
       return text ? { role: record.message.role, text, key: record.uuid } : null;
     },

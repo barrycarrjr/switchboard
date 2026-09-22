@@ -264,6 +264,29 @@ test('readSessionTurns keeps the text turns and drops the tool traffic', () => {
   }
 });
 
+test('readSessionTurns drops synthetic API error messages from the assistant', () => {
+  const f = fixture();
+  try {
+    const file = seedSession(f.fromHome, f.cwd, 'sid-1', [
+      turn('u1', 'user', 'run the triage job'),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'a-err',
+        isApiErrorMessage: true,
+        error: 'server_error',
+        apiErrorStatus: 500,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'API Error: 500 Internal server error.' }] },
+      }),
+    ]);
+
+    assert.deepEqual(readSessionTurns(file), [
+      { role: 'user', text: 'run the triage job' },
+    ]);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test('readSessionTurns does not report the same turn twice when the windows overlap', () => {
   const f = fixture();
   try {

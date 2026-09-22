@@ -428,14 +428,14 @@ async function main() {
 
           child.on('error', (err) => {
             say(`\n[switchboard] Failed to launch ${executable}: ${err.message}`);
-            done({ code: 1, limitHit: false, authFailed: false });
+            done({ code: 1, limitHit: false, authFailed: false, serverError: false });
           });
 
           child.on('close', (code) => {
             const verdict = classifyRunFailure(code, stderrOutput + '\n' + stdoutTail);
             if (verdict === 'limit') {
               say(`\n[switchboard] Provider limit error detected in lane ${lane.id}.`);
-              done({ code, limitHit: true, authFailed: false });
+              done({ code, limitHit: true, authFailed: false, serverError: false });
             } else if (verdict === 'auth') {
               // Said out loud even though the run carries on elsewhere. A spent lane comes
               // back by itself when its window resets; a lane that cannot sign in does not,
@@ -443,12 +443,15 @@ async function main() {
               // with nobody ever told why.
               say(`\n[switchboard] Lane ${lane.id} (${account.label}) could not authenticate, so it is out for this run.`);
               say(`[switchboard] A run uses the account's own sign-in, so sign ${account.label} back in to bring the lane back.`);
-              done({ code, limitHit: false, authFailed: true });
+              done({ code, limitHit: false, authFailed: true, serverError: false });
+            } else if (verdict === 'server') {
+              say(`\n[switchboard] Provider server error detected in lane ${lane.id} (${account.label}).`);
+              done({ code, limitHit: false, authFailed: false, serverError: true });
             } else {
               if (code !== 0) {
                 say(`\n[switchboard] Process exited with code ${code}. Ambiguous failure, not falling back.`);
               }
-              done({ code, limitHit: false, authFailed: false });
+              done({ code, limitHit: false, authFailed: false, serverError: false });
             }
           });
         });
@@ -583,7 +586,7 @@ async function main() {
         const result = await runInLane(selected.lane, currentArgs, handoffNote);
         handoffNote = null;
 
-        if ((result.limitHit || result.authFailed) && !parsed.noFallback) {
+        if ((result.limitHit || result.authFailed || result.serverError) && !parsed.noFallback) {
           const previousLane = selected.lane;
           currentPool = currentPool.filter(l => l.id !== selected.lane.id);
           

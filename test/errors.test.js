@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isLimitError, isAuthError, classifyRunFailure } from '../core/errors.js';
+import { isLimitError, isAuthError, isServerError, classifyRunFailure } from '../core/errors.js';
 
 test('isLimitError recognizes Claude limits', () => {
   assert.ok(isLimitError('Error: 429 Rate Limit Exceeded'));
@@ -112,6 +112,46 @@ test('the limit and auth readings stay separate', () => {
   assert.equal(isLimitError('401 Unauthorized'), false);
 });
 
+test('isServerError recognizes provider 500 and server errors', () => {
+  assert.ok(isServerError('API Error: 500 Internal server error. This is a server-side issue, usually temporary: try again in a moment.'));
+  assert.ok(isServerError('Error: 500 Internal Server Error'));
+  assert.ok(isServerError('HTTP 502'));
+  assert.ok(isServerError('status code 503'));
+  assert.ok(isServerError('status: 504'));
+  assert.ok(isServerError('API Error: 529 Overloaded'));
+  assert.ok(isServerError('Anthropic is temporarily overloaded'));
+  assert.ok(isServerError('The server had an error processing your request'));
+});
+
+test('isServerError recognizes machine-readable JSON server errors', () => {
+  assert.ok(isServerError('{"type":"api_error","error":{"type":"api_error","message":"Internal server error"}}'));
+  assert.ok(isServerError('{"error":"server_error","isApiErrorMessage":true,"apiErrorStatus":500}'));
+  assert.ok(isServerError('{"status":529,"type":"overloaded_error"}'));
+});
+
+test('isServerError returns false for ambiguous non-server errors', () => {
+  assert.equal(isServerError('SyntaxError: Unexpected token'), false);
+  assert.equal(isServerError('Network timeout'), false);
+  assert.equal(isServerError('Failed to authenticate'), false);
+  assert.equal(isServerError('Rate limit exceeded'), false);
+  assert.equal(isServerError(''), false);
+  assert.equal(isServerError(null), false);
+});
+
+test('isServerError rejects near-miss 500 numbers', () => {
+  assert.equal(isServerError('Server listening on localhost:5000'), false);
+  assert.equal(isServerError('Parsed 500 tokens'), false);
+  assert.equal(isServerError('Task 500 failed'), false);
+  assert.equal(isServerError('Line 500: error'), false);
+});
+
+test('the limit, auth, and server readings stay separate', () => {
+  assert.equal(isServerError('Usage limit reached for this month'), false);
+  assert.equal(isServerError(REAL_CLAUDE_AUTH_FAILURE), false);
+  assert.equal(isLimitError('API Error: 500 Internal server error'), false);
+  assert.equal(isAuthError('API Error: 500 Internal server error'), false);
+});
+
 test('classifyRunFailure never classifies a run that succeeded', () => {
   // An agent that talks about authentication and then exits cleanly did its job.
   assert.equal(classifyRunFailure(0, REAL_CLAUDE_AUTH_FAILURE), 'other');
@@ -121,6 +161,7 @@ test('classifyRunFailure never classifies a run that succeeded', () => {
 test('classifyRunFailure names each kind of failure', () => {
   assert.equal(classifyRunFailure(1, REAL_CLAUDE_AUTH_FAILURE), 'auth');
   assert.equal(classifyRunFailure(1, 'Usage limit reached for this month'), 'limit');
+  assert.equal(classifyRunFailure(1, 'API Error: 500 Internal server error'), 'server');
   assert.equal(classifyRunFailure(1, 'SyntaxError: Unexpected token'), 'other');
   assert.equal(classifyRunFailure(2, ''), 'other');
 });

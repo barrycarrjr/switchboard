@@ -105,7 +105,61 @@ export function isAuthError(output) {
 }
 
 /**
- * How a finished run should be treated: 'limit', 'auth' or 'other'.
+ * Recognize a provider or upstream server error, conservatively, from CLI output.
+ *
+ * This is distinct from a limit (which means the account has exhausted its quota) and
+ * an auth failure (which means the credentials could not sign in). A server error means
+ * the upstream provider API suffered an internal error, gateway timeout, or temporary
+ * overload (such as HTTP 500, 502, 503, 504, or 529).
+ *
+ * Like auth and limit detection, the signatures are conservative vendor phrases and
+ * HTTP-context status codes rather than bare numbers or lone words, so a program or
+ * test in user code that happens to print 500 or mention a server error does not trigger
+ * a lane hop unless the process actually exited with a non-zero exit code and provider-
+ * specific failure phrasing.
+ */
+export function isServerError(output) {
+  if (!output || typeof output !== 'string') return false;
+
+  const text = output.toLowerCase();
+
+  const serverSignatures = [
+    'internal server error',
+    'bad gateway',
+    'service unavailable',
+    'gateway timeout',
+    'temporarily overloaded',
+    'server is overloaded',
+    'the server had an error processing your request',
+    'the server had an error while processing your request',
+    'status.claude.com',
+    'status.openai.com'
+  ];
+
+  if (serverSignatures.some((sig) => text.includes(sig))) {
+    return true;
+  }
+
+  // Machine-readable server errors from Claude Code or OpenAI / Codex JSON events
+  if (/(?:"type"|"error")\s*:\s*"(?:api_error|server_error|overloaded_error)"/.test(text)) {
+    return true;
+  }
+
+  if (/(?:"apiErrorStatus"|"status")\s*:\s*(?:50[0234]|529)\b/.test(text)) {
+    return true;
+  }
+
+  // Conservatively match 500, 502, 503, 504, 529 in a status code or HTTP context,
+  // avoiding plain numbers like a port "localhost:5000" or "500 tokens"
+  if (/\b(?:status(?: code)?|http|error|api error)[\s:]*(?:50[0234]|529)\b/i.test(text)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * How a finished run should be treated: 'limit', 'auth', 'server' or 'other'.
  *
  * A successful run is never classified, and the limit reading is taken first so that an
  * exhausted account which also mentions its sign-in keeps the meaning it has always had.
@@ -116,5 +170,6 @@ export function classifyRunFailure(code, output) {
   if (code === 0) return 'other';
   if (isLimitError(output)) return 'limit';
   if (isAuthError(output)) return 'auth';
+  if (isServerError(output)) return 'server';
   return 'other';
 }

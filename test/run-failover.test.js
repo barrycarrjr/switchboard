@@ -42,15 +42,19 @@ function signedInCredential() {
  * tool puts it. Detection that only read stderr would pass a unit test and never once fire
  * in practice.
  */
-function writeFakeHarness(binDir) {
+function writeFakeHarness(binDir, { mode = 'auth' } = {}) {
   fs.mkdirSync(binDir, { recursive: true });
+  const failureMsg = mode === 'server'
+    ? 'API Error: 500 Internal server error. This is a server-side issue, usually temporary.'
+    : 'Failed to authenticate: OAuth session expired and could not be refreshed';
+
   if (process.platform === 'win32') {
     const shim = path.join(binDir, 'claude.cmd');
     fs.writeFileSync(shim,
       '@echo off\r\n' +
       'echo %CLAUDE_CONFIG_DIR% | findstr /C:"dead" >nul\r\n' +
       'if %errorlevel%==0 (\r\n' +
-      '  echo Failed to authenticate: OAuth session expired and could not be refreshed\r\n' +
+      '  echo ' + failureMsg + '\r\n' +
       '  exit /b 1\r\n' +
       ')\r\n' +
       'echo LIVE_LANE_RAN\r\n' +
@@ -63,7 +67,7 @@ function writeFakeHarness(binDir) {
     '#!/bin/sh\n' +
     'case "$CLAUDE_CONFIG_DIR" in\n' +
     '  *dead*)\n' +
-    '    echo "Failed to authenticate: OAuth session expired and could not be refreshed"\n' +
+    '    echo "' + failureMsg + '"\n' +
     '    exit 1\n' +
     '    ;;\n' +
     'esac\n' +
@@ -75,7 +79,7 @@ function writeFakeHarness(binDir) {
 }
 
 /** A whole machine's worth of Switchboard state in a throwaway folder. */
-function makeWorld() {
+function makeWorld({ mode = 'auth' } = {}) {
   const tmp = tempDir('sb-failover-');
   const appData = path.join(tmp, 'appdata');
   const dataDir = path.join(appData, 'Switchboard');
@@ -86,7 +90,7 @@ function makeWorld() {
   for (const dir of [dataDir, deadHome, liveHome]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(deadHome, '.credentials.json'), signedInCredential());
   fs.writeFileSync(path.join(liveHome, '.credentials.json'), signedInCredential());
-  writeFakeHarness(binDir);
+  writeFakeHarness(binDir, { mode });
 
   fs.writeFileSync(path.join(dataDir, 'accounts.json'), JSON.stringify({
     accounts: [
@@ -159,6 +163,45 @@ test('--no-fallback keeps a refused sign-in on one lane', () => {
     assert.doesNotMatch(output, /Running via lane lane-live/,
       `--no-fallback must not move the run. Output:\n${output}`);
     assert.notEqual(res.status, 0, `expected a failing exit. Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('a provider 500 server error moves the run to the next lane', () => {
+  const world = makeWorld({ mode: 'server' });
+  try {
+    const res = runCli(world, ['run', '--', 'claude', '-p', 'hi']);
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-dead/,
+      `expected the dead lane to be tried first. Output:\n${output}`);
+
+    assert.match(output, /Provider server error detected in lane lane-dead/,
+      `expected the server error to be recognized. Output:\n${output}`);
+    assert.doesNotMatch(output, /Ambiguous failure, not falling back/,
+      `a provider server error must not be treated as an ambiguous failure. Output:\n${output}`);
+
+    assert.match(output, /Running via lane lane-live/,
+      `expected a fall back to the live lane. Output:\n${output}`);
+    assert.match(output, /LIVE_LANE_RAN/,
+      `expected the live lane to run the command. Output:\n${output}`);
+    assert.equal(res.status, 0, `expected the run to end well. Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('--no-fallback keeps a provider 500 server error on one lane', () => {
+  const world = makeWorld({ mode: 'server' });
+  try {
+    const res = runCli(world, ['run', '--no-fallback', '--', 'claude', '-p', 'hi']);
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-dead/,
+      `expected the dead lane to be tried. Output:\n${output}`);
+    assert.doesNotMatch(output, /Running via lane lane-live/,
+      `--no-fallback must not move the run. Output:\n${output}`);
   } finally {
     fs.rmSync(world.tmp, { recursive: true, force: true });
   }
