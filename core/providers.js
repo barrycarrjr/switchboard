@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { freshPathDirs } from './env.js';
+import { agyUpdateClaim, markAgyCheckDone } from './agy-updates.js';
 
 const run = promisify(execFile);
 
@@ -142,6 +143,11 @@ export async function detectTool(tool) {
   out.installed = found.path != null;
   // A version means running the tool, which is the slow part; only the copy found on
   // PATH can answer, and an app-path hit is already proof enough that it is installed.
+  //
+  // Asking Antigravity its version is one of the moments it would start a version check
+  // of its own, in a command window Windows puts on screen. Switchboard runs that update
+  // itself instead, so the check is marked done first (see core/agy-updates.js).
+  if (tool.id === 'antigravity') markAgyCheckDone();
   if (found.onPath) out.version = await binVersion(out.path, tool.versionArgs || ['--version']);
   return out;
 }
@@ -197,7 +203,11 @@ export function isNewerVersion(latest, installedText) {
  * Ask the vendor mechanism whether a newer version exists. This is the ONLY place an
  * "update available" claim may come from; unknown stays unknown.
  */
-export async function checkUpdate(tool, installedVersion) {
+export async function checkUpdate(tool, installedVersion, state = {}) {
+  // Antigravity has no command that reports an available update without installing it,
+  // so its answer comes from the update Switchboard itself ran, and only while that
+  // answer is recent enough to still be true.
+  if (tool.id === 'antigravity') return agyUpdateClaim(state.agyUpdate);
   if (!['winget', 'npm'].includes(tool.install.via)) return { updateAvailable: null, latest: null };
   try {
     if (tool.install.via === 'winget') {
@@ -220,11 +230,11 @@ export async function checkUpdate(tool, installedVersion) {
   return { updateAvailable: null, latest: null };
 }
 
-export async function checkAllUpdates(detected) {
+export async function checkAllUpdates(detected, state = {}) {
   const out = {};
   await Promise.all(detected.filter((d) => d.installed).map(async (d) => {
     const tool = TOOLS.find((t) => t.id === d.id);
-    out[d.id] = await checkUpdate(tool, d.version);
+    out[d.id] = await checkUpdate(tool, d.version, state);
   }));
   return out;
 }

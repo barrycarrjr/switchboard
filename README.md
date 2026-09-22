@@ -114,6 +114,16 @@ For deep-dives into architecture, guides, and full command references, see the *
 - Installs and updates delegate to vendor mechanisms: winget, npm, pip, or the vendor's
   own install script. A tool with no such command for Windows is detected but not
   installed, and links to the vendor site instead. Nothing is bundled.
+- Antigravity is kept up to date by Switchboard rather than by itself. Its CLI looks for a
+  new version of itself whenever it starts, and it does that in a second process it gives
+  a console of its own, so Windows draws a command window on screen for about a second,
+  several times an hour. Nothing the program starting it can do will hide that window.
+  While Switchboard is running it keeps the CLI's own record of that check current, which
+  stops the CLI starting one, and runs `agy update` itself once a day with no window. That
+  is also the only thing the Providers tab will say about Antigravity: the vendor has no
+  command that reports an available update without installing it, so the row reports the
+  result of the last update Switchboard ran, and says it does not know once that result is
+  more than two days old.
 - Execution lanes are the failover pool. `switchboard run` picks the first healthy lane,
   launches the vendor's own CLI pinned to that account, and, when a run stops on a
   provider limit or cannot sign in at all, drops that lane and starts the command again in

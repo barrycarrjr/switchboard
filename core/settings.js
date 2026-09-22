@@ -21,6 +21,10 @@ const DEFAULTS = {
   // NOT on the lane objects: `switchboard lanes --json` and the tray IPC print
   // settings.lanes verbatim, and a secret filed there would ride along.
   laneTokens: {},
+  // The last time Switchboard ran `agy update` on Antigravity's behalf, and what it
+  // found: { at, alreadyLatest, version, message }. Switchboard does that job because
+  // the CLI doing it for itself puts a command window on screen (core/agy-updates.js).
+  agyUpdate: null,
 };
 
 export function settingsFile() {
@@ -42,6 +46,7 @@ export function loadSettings(file = settingsFile()) {
     if (typeof merged.spendPolicies !== 'object' || merged.spendPolicies === null) merged.spendPolicies = {};
     if (typeof merged.cooldowns !== 'object' || merged.cooldowns === null) merged.cooldowns = {};
     if (typeof merged.laneTokens !== 'object' || merged.laneTokens === null || Array.isArray(merged.laneTokens)) merged.laneTokens = {};
+    if (typeof merged.agyUpdate !== 'object' || merged.agyUpdate === null || Array.isArray(merged.agyUpdate)) merged.agyUpdate = null;
     const b = merged.windowBounds;
     if (!b || typeof b.width !== 'number' || typeof b.height !== 'number' || b.width < 380 || b.height < 400) {
       merged.windowBounds = null;

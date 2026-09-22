@@ -14,6 +14,7 @@ import { signinTerminal } from '../core/signin.js';
 import { signOutAccount, signoutSupported } from '../core/signout.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import { validateLaneTokens, mergeLaneTokenResults } from '../core/lane-tokens.js';
+import { maybeUpdateAgy } from '../core/agy-updates.js';
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, resolvePackagedExe, APPS } from '../core/apps.js';
 import { appProfileDef, chooseOpenProfile, describeProfiles, discoverProfileDirs, profileFolderProblem, profileLaunchArgs } from '../core/appprofiles.js';
 import { detectPresence } from '../core/presence.js';
@@ -617,6 +618,17 @@ async function runQuotaWatch() {
       }
     }
 
+    // Antigravity's CLI no longer updates itself while Switchboard is running, because
+    // doing so put a command window on screen several times an hour (core/agy-updates.js
+    // explains the measurement). Switchboard does that job here instead, at most once a
+    // day, quietly. Settings are re-read before the write for the same reason the lane
+    // token merge above re-reads them: another pass may have saved in the meantime.
+    try {
+      const agyBin = await toolExecutable('antigravity');
+      const agyState = await maybeUpdateAgy({ bin: agyBin, state: settings.agyUpdate });
+      if (agyState) saveSettings({ ...loadSettings(), agyUpdate: agyState });
+    } catch { /* an update that cannot run is not worth failing a watch pass over */ }
+
     const reg = registry();
 
     // The hover is useful even when automatic switching is off, but it must not create
@@ -961,7 +973,7 @@ ipcMain.handle('sb:removeAccount', (_e, id) => {
 
 ipcMain.handle('sb:providers', () => detectAll());
 
-ipcMain.handle('sb:updates', async () => checkAllUpdates(await detectAll()));
+ipcMain.handle('sb:updates', async () => checkAllUpdates(await detectAll(), { agyUpdate: loadSettings().agyUpdate }));
 
 ipcMain.handle('sb:detectOne', (_e, toolId) => detectToolById(toolId));
 

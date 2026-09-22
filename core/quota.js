@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { toolExecutable } from './providers.js';
 import { cliLaunch } from './cli-launch.js';
+import { agyStampPath, markAgyCheckDone } from './agy-updates.js';
 import { WINDOW_LIFETIME_MS } from './lanes-util.js';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -765,6 +766,7 @@ export function parseAntigravityCredits(raw) {
 export async function fetchAntigravityQuota({
   agyBin = null,
   runImpl = null,
+  agyStamp = null,
   now = Date.now(),
   plan = null,
 } = {}) {
@@ -788,6 +790,11 @@ export async function fetchAntigravityQuota({
       const { promisify } = await import('node:util');
       return promisify(execFile)(file, args, options);
     });
+
+    // Reading the quota starts the CLI, and a CLI that thinks it is due a version check
+    // starts one in a command window of its own. Switchboard runs that update itself now
+    // (see core/agy-updates.js), so the check is marked done before the CLI can decide.
+    markAgyCheckDone(agyStamp ?? agyStampPath());
 
     const usageLaunch = cliLaunch(bin, ['--output-format', 'json', '-p', '/usage']);
     const creditsLaunch = cliLaunch(bin, ['--output-format', 'json', '-p', '/credits']);
