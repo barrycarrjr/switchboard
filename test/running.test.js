@@ -139,7 +139,12 @@ test('settings default bridges to an empty list and drop malformed entries', () 
   const dir = tempDir('sb-running-');
   const file = path.join(dir, 'settings.json');
   assert.deepEqual(loadSettings(file).bridges, []);
-  fs.writeFileSync(file, JSON.stringify({ bridges: [\n    { id: 'bridge-1', label: 'Slack bridge', match: 'claude-slack-bridge' },\n    { id: 42, label: 'broken', match: 'x' },\n    'junk',\n    null,\n  ] }));
+  fs.writeFileSync(file, JSON.stringify({ bridges: [
+    { id: 'bridge-1', label: 'Slack bridge', match: 'claude-slack-bridge' },
+    { id: 42, label: 'broken', match: 'x' },
+    'junk',
+    null,
+  ] }));
   assert.deepEqual(loadSettings(file).bridges, [{ id: 'bridge-1', label: 'Slack bridge', match: 'claude-slack-bridge' }]);
   fs.rmSync(dir, { recursive: true, force: true });
 });
