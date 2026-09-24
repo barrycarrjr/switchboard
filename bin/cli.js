@@ -15,7 +15,8 @@ import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { selectLane, narrowPool, lanesCallerCannotDrive, selectionFailure, defaultFollowsLanes, switchedAgainstLanesNote } from '../core/lanes.js';
 import { readHandoff, writeHandoff, removeHandoff, handoffOrigin, generateHandoffPrompt, generateHandoffNote, DERIVED_NEXT_ACTIONS } from '../core/handoff.js';
 import { CARRYABLE_HARNESSES, callerManagesSession, namedSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest, transcriptSupport } from '../core/transcripts.js';
-import { parseRunArgs, loadRunSpec, resolveSpecArgv, drivableHarnesses, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs } from '../core/runargs.js';
+import { parseRunArgs, loadRunSpec, resolveSpecArgv, drivableHarnesses, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs, parseNotifyArgs } from '../core/runargs.js';
+import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, DEFAULT_THRESHOLDS } from '../core/hooks.js';
 import { recordPipedInput } from '../core/piped-input.js';
 import readline from 'node:readline/promises';
 
@@ -108,7 +109,7 @@ function formatDecision(decision, accounts) {
  * fresh every pass: this is meant to run for days, and the desktop app or another
  * terminal can change either while it does.
  */
-async function watchPass({ mode, apply }) {
+async function watchPass({ mode, apply, thresholdMemory = {} }) {
   const reg = loadRegistry();
   const stored = loadSettings();
   // The mode override applies to this pass only and is never written back, so a
@@ -130,6 +131,18 @@ async function watchPass({ mode, apply }) {
     // behind for `dry-run` rather than competing with it for the same rate limit.
     snapshots[a.id] = await sharedProviderQuota(a, { usageSource: settings.usageSources[a.id] ?? null, now });
   }));
+
+  const { events: thresholdEvents, memory: nextThresh } = checkThresholds({
+    accounts: reg.accounts,
+    snapshots,
+    thresholds: settings.thresholds,
+    memory: thresholdMemory,
+    now,
+  });
+
+  for (const event of thresholdEvents) {
+    await dispatchNotification(settings, buildNotificationPayload(event, now));
+  }
 
   const pinPresent = configuredClaudeCredentialOverrides({
     user: readUserEnv,
@@ -162,6 +175,25 @@ async function watchPass({ mode, apply }) {
     setActive(reg, decision.to);
     saveSettings({ ...loadSettings(), lastAutoSwitchAt: Date.now() });
     decision.applied = true;
+    await dispatchNotification(settings, buildNotificationPayload({
+      kind: 'switch',
+      event: 'default_switched',
+      provider: decision.provider,
+      to: decision.to,
+      from: decision.from,
+      reason: decision.reason,
+    }, now));
+  }
+
+  for (const decision of decisions) {
+    if (decision.kind === 'exhausted') {
+      await dispatchNotification(settings, buildNotificationPayload({
+        kind: 'exhausted',
+        event: 'quota_exhausted',
+        provider: decision.provider,
+        resetsAt: decision.resetsAt,
+      }, now));
+    }
   }
 
   // Lane tokens ride the same schedule. One probe run per stored live token is the only
@@ -180,7 +212,7 @@ async function watchPass({ mode, apply }) {
     saveSettings(mergeLaneTokenResults(loadSettings(), tokenCheck));
   }
 
-  return { decisions, accounts: reg.accounts };
+  return { decisions, thresholdEvents, thresholdMemory: nextThresh, accounts: reg.accounts };
 }
 
 async function main() {
@@ -211,9 +243,7 @@ async function main() {
         }
       }
 
-      const { pool, context } = await prepareLanesContext(settings, registry, {
-        provider: parsed.provider,
-      });
+      const { pool, context } = await prepareLanesContext(settings, registry, { provider: parsed.provider });
 
       if (parsed.account) {
         context.requirements.accountId = parsed.account; // Not natively in selectLane, but conceptually overrides
@@ -1163,14 +1193,23 @@ async function main() {
         out(`Note: on ${process.platform} a changed default cannot outlive this command, so auto mode reports rather than switches.`);
       }
 
+      let watchThresholdMemory = {};
       const runPass = async () => {
-        const { decisions, accounts } = await watchPass({ mode, apply: mode === 'auto' });
+        const { decisions, thresholdEvents, thresholdMemory, accounts } = await watchPass({
+          mode,
+          apply: mode === 'auto',
+          thresholdMemory: watchThresholdMemory,
+        });
+        watchThresholdMemory = thresholdMemory;
         if (parsed.json) {
-          out(JSON.stringify({ at: new Date().toISOString(), mode, decisions }));
+          out(JSON.stringify({ at: new Date().toISOString(), mode, decisions, thresholdEvents }));
           return;
         }
         const stamp = new Date().toLocaleString();
-        if (!decisions.length) { out(`${stamp}  nothing to do`); return; }
+        for (const ev of (thresholdEvents || [])) {
+          out(`${stamp}  ${formatNotificationText(ev)}`);
+        }
+        if (!decisions.length && !(thresholdEvents || []).length) { out(`${stamp}  nothing to do`); return; }
         for (const decision of decisions) out(`${stamp}  ${formatDecision(decision, accounts)}`);
       };
 
@@ -1190,8 +1229,93 @@ async function main() {
         }
       }
     }
+    // Notification hooks: configure or test webhook / command alerts for threshold crossings.
+    case 'notify': {
+      let parsed;
+      try {
+        parsed = parseNotifyArgs(args);
+      } catch (e) {
+        out(String(e.message || e));
+        process.exitCode = 1;
+        return;
+      }
+
+      let settings = loadSettings();
+      let changed = false;
+
+      if (parsed.webhook !== undefined) {
+        settings.notifyWebhookUrl = parsed.webhook;
+        changed = true;
+      }
+      if (parsed.command !== undefined) {
+        settings.notifyCommand = parsed.command;
+        changed = true;
+      }
+      if (parsed.thresholds && Object.keys(parsed.thresholds).length > 0) {
+        settings.thresholds = { ...settings.thresholds, ...parsed.thresholds };
+        changed = true;
+      }
+
+      if (changed) {
+        saveSettings(settings);
+      }
+
+      if (parsed.test) {
+        const testPayload = buildNotificationPayload({
+          kind: 'test',
+          event: 'test_notification',
+          provider: 'claude',
+          accountId: 'test',
+          accountLabel: 'Test Account',
+          window: 'session',
+          windowLabel: 'Session (5h)',
+          usedPercent: 82,
+          threshold: settings.thresholds?.session ?? DEFAULT_THRESHOLDS.session,
+          resetsAt: Date.now() + 2 * 3600 * 1000,
+        });
+        const result = await dispatchNotification(settings, testPayload);
+        if (parsed.json) {
+          out(JSON.stringify({ test: true, result, settings: { webhook: settings.notifyWebhookUrl, command: settings.notifyCommand, thresholds: settings.thresholds } }, null, 2));
+        } else {
+          out('Dispatched test notification:');
+          out(`  Message: ${testPayload.text}`);
+          if (result.webhook) {
+            out(`  Webhook: ${result.webhook.ok ? `OK (${result.webhook.status})` : `FAILED (${result.webhook.error || result.webhook.status})`}`);
+          } else {
+            out('  Webhook: not configured');
+          }
+          if (result.command) {
+            out(`  Command: ${result.command.ok ? 'OK (spawned)' : `FAILED (${result.command.error})`}`);
+          } else {
+            out('  Command: not configured');
+          }
+        }
+        return;
+      }
+
+      if (parsed.json) {
+        out(JSON.stringify({
+          webhook: settings.notifyWebhookUrl,
+          command: settings.notifyCommand,
+          thresholds: settings.thresholds ?? DEFAULT_THRESHOLDS,
+        }, null, 2));
+        return;
+      }
+
+      out('Switchboard notification hooks:');
+      out(`  Webhook:    ${settings.notifyWebhookUrl || '(none)'}`);
+      out(`  Command:    ${settings.notifyCommand || '(none)'}`);
+      out(`  Thresholds: session=${settings.thresholds?.session ?? DEFAULT_THRESHOLDS.session}% week=${settings.thresholds?.week ?? DEFAULT_THRESHOLDS.week}%`);
+      out('');
+      out('Configure with:');
+      out('  switchboard notify --webhook <url|none>');
+      out('  switchboard notify --command <cmd|none>');
+      out('  switchboard notify --threshold session=80 --threshold week=85');
+      out('  switchboard notify --test');
+      return;
+    }
     default:
-      out(`switchboard <status|accounts|add|remove|use|detect|providers|doctor|quota|lanes|lane-token|watch|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|detect|providers|doctor|quota|lanes|lane-token|watch|notify|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> [folder]   leave out the folder for a brand-new account`);
@@ -1204,6 +1328,7 @@ async function main() {
       out('  lanes [...]                 the failover pool: list, add, remove, order, budget');
       out('  lane-token <laneId> [--remove|--check]   mint, delete or validate the token a lane hands to automation');
       out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
+      out('  notify [--webhook <url>] [--command <cmd>] [--threshold <w=pct>] [--test] [--json]   manage notification hooks');
       out('  dry-run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--spec <file>] [--json] [--with-token]   explain which lane would be selected');
       out('  run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');
       out(`  <p> is a harness (${providerList}) or the vendor behind it (anthropic|openai|google)`);

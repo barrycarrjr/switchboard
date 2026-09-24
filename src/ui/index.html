@@ -2547,6 +2547,147 @@ async function renderAbout() {
   backup.appendChild(oneColumn(configCard));
   panel.appendChild(backup);
 
+  const notif = toolSection('about-notifications', 'Notification hooks', 'Slack webhooks, scripts, and threshold alerts');
+  const notifyState = await sb.notifySettings();
+  if (!isCurrentRender('about', seq)) return;
+
+  const testBtn = cardButton('Send test alert', async () => {
+    testBtn.disabled = true;
+    testBtn.textContent = 'Sending...';
+    try {
+      const res = await sb.testNotify();
+      let msg = 'Test alert dispatched.';
+      if (res && res.webhook) msg += ' Webhook: ' + (res.webhook.ok ? 'sent' : res.webhook.error) + '.';
+      if (res && res.command) msg += ' Command: ' + (res.command.ok ? 'executed' : res.command.error) + '.';
+      toast(msg);
+    } catch (e) {
+      toast('Test failed: ' + (e.message || e));
+    } finally {
+      testBtn.disabled = false;
+      testBtn.textContent = 'Send test alert';
+    }
+  });
+
+  const saveHooksBtn = cardButton('Save hooks', async () => {
+    saveHooksBtn.disabled = true;
+    try {
+      const webhookVal = webhookInput.value.trim();
+      const commandVal = commandInput.value.trim();
+      const sessionVal = parseInt(sessionInput.value.trim(), 10);
+      const weekVal = parseInt(weekInput.value.trim(), 10);
+      const thresholds = {};
+      if (!Number.isNaN(sessionVal)) thresholds.session = sessionVal;
+      if (!Number.isNaN(weekVal)) thresholds.week = weekVal;
+
+      await sb.setNotifySettings({
+        webhookUrl: webhookVal || 'none',
+        command: commandVal || 'none',
+        thresholds,
+      });
+      toast('Notification hooks saved.');
+      renderAbout();
+    } catch (e) {
+      toast('Save failed: ' + (e.message || e));
+    } finally {
+      saveHooksBtn.disabled = false;
+    }
+  }, { primary: true });
+
+  const { card: notifCard } = cardShell({
+    titleId: 'about-notif',
+    title: 'Notification hooks',
+    person: 'Alerts via Slack incoming webhook or local shell command when usage thresholds cross',
+    actions: [testBtn, saveHooksBtn],
+  });
+
+  const { area: notifConfigArea } = cardArea(notifCard, 'Configuration', 'note-area');
+  const formBox = el('div', null);
+  formBox.style.display = 'flex';
+  formBox.style.flexDirection = 'column';
+  formBox.style.gap = '8px';
+  formBox.style.marginTop = '6px';
+
+  const whRow = el('div', null);
+  whRow.style.display = 'flex';
+  whRow.style.flexDirection = 'column';
+  whRow.style.gap = '3px';
+  whRow.appendChild(el('label', null, '<b>Slack / Discord Webhook URL</b> (optional)'));
+  const webhookInput = el('input');
+  webhookInput.type = 'text';
+  webhookInput.placeholder = 'https://hooks.slack.com/services/...';
+  webhookInput.style.font = 'inherit';
+  webhookInput.style.padding = '5px 8px';
+  webhookInput.style.border = '1px solid var(--line)';
+  webhookInput.style.borderRadius = '6px';
+  webhookInput.value = notifyState?.webhookUrl || '';
+  whRow.appendChild(webhookInput);
+  formBox.appendChild(whRow);
+
+  const cmdRow = el('div', null);
+  cmdRow.style.display = 'flex';
+  cmdRow.style.flexDirection = 'column';
+  cmdRow.style.gap = '3px';
+  cmdRow.appendChild(el('label', null, '<b>Command Hook</b> (optional shell command, receives JSON on stdin)'));
+  const commandInput = el('input');
+  commandInput.type = 'text';
+  commandInput.placeholder = 'node scripts/alert.js';
+  commandInput.style.font = 'inherit';
+  commandInput.style.padding = '5px 8px';
+  commandInput.style.border = '1px solid var(--line)';
+  commandInput.style.borderRadius = '6px';
+  commandInput.value = notifyState?.command || '';
+  cmdRow.appendChild(commandInput);
+  formBox.appendChild(cmdRow);
+
+  const threshRow = el('div', null);
+  threshRow.style.display = 'flex';
+  threshRow.style.gap = '12px';
+  threshRow.style.flexWrap = 'wrap';
+
+  const sBox = el('div', null);
+  sBox.style.display = 'flex';
+  sBox.style.flexDirection = 'column';
+  sBox.style.gap = '3px';
+  sBox.appendChild(el('label', null, '<b>Session limit threshold (%)</b>'));
+  const sessionInput = el('input');
+  sessionInput.type = 'number';
+  sessionInput.min = '1';
+  sessionInput.max = '100';
+  sessionInput.style.font = 'inherit';
+  sessionInput.style.padding = '5px 8px';
+  sessionInput.style.border = '1px solid var(--line)';
+  sessionInput.style.borderRadius = '6px';
+  sessionInput.style.width = '100px';
+  sessionInput.value = String(notifyState?.thresholds?.session ?? 80);
+  sBox.appendChild(sessionInput);
+  threshRow.appendChild(sBox);
+
+  const wBox = el('div', null);
+  wBox.style.display = 'flex';
+  wBox.style.flexDirection = 'column';
+  wBox.style.gap = '3px';
+  wBox.appendChild(el('label', null, '<b>Weekly limit threshold (%)</b>'));
+  const weekInput = el('input');
+  weekInput.type = 'number';
+  weekInput.min = '1';
+  weekInput.max = '100';
+  weekInput.style.font = 'inherit';
+  weekInput.style.padding = '5px 8px';
+  weekInput.style.border = '1px solid var(--line)';
+  weekInput.style.borderRadius = '6px';
+  weekInput.style.width = '100px';
+  weekInput.value = String(notifyState?.thresholds?.week ?? 85);
+  wBox.appendChild(weekInput);
+  threshRow.appendChild(wBox);
+
+  formBox.appendChild(threshRow);
+  notifConfigArea.appendChild(formBox);
+
+  cardNote(notifCard, 'How notifications work', 'Alerts are dispatched when usage reaches or crosses the configured percentage within the 5-hour session or weekly limit window. Each threshold crossing alerts once per turnover period. Slack webhooks receive direct message text; command hooks receive JSON on standard input.');
+
+  notif.appendChild(oneColumn(notifCard));
+  panel.appendChild(notif);
+
   realPanel.replaceChildren(...panel.childNodes);
 }
 const MARK = { ok: '&#10003;', warn: '!', bad: '&#10007;', info: 'i' };

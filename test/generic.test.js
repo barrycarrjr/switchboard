@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,4 +49,30 @@ test('no personal, company, or machine-specific strings in the source tree', () 
     }
   }
   assert.deepEqual(offenders, []);
+});
+
+test('all javascript files and html scripts in src, core, and bin pass syntax parsing', () => {
+  const failures = [];
+  for (const dir of ['src', 'core', 'bin']) {
+    for (const file of sourceFiles(path.join(root, dir))) {
+      if (/\.(js|cjs|mjs)$/.test(file)) {
+        try {
+          execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' });
+        } catch (err) {
+          failures.push(`${path.relative(root, file)}: ${err.stderr?.toString() || err.message}`);
+        }
+      } else if (file.endsWith('.html')) {
+        const html = fs.readFileSync(file, 'utf8');
+        const matches = html.matchAll(/<script(?:\s+[^>]*)?>([\s\S]*?)<\/script>/gi);
+        for (const match of matches) {
+          try {
+            new Function(match[1]);
+          } catch (err) {
+            failures.push(`${path.relative(root, file)} script: ${err.message}`);
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(failures, []);
 });

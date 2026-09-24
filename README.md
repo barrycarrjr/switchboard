@@ -236,7 +236,7 @@ address and drops any that need an API key.
 The core (`core/`, `bin/cli.js`) is plain Node with no Electron dependency; the tray shell
 is a thin skin over it. `switchboard` is also a CLI: `status`, `accounts`, `add`,
 `remove`, `use`, `detect`, `providers`, `doctor`, `quota`, `lanes`, `lane-token`, `watch`,
-`dry-run` and `run`. Running it with no command prints the same list with a line each.
+`notify`, `dry-run` and `run`. Running it with no command prints the same list with a line each.
 
 Everything the tray decides, the CLI decides the same way, because both call the same code
 in `core/`. That is what makes a machine with no desktop usable: `switchboard lanes` edits
@@ -334,6 +334,24 @@ On "Tell me", the tray says each suggestion once instead of on every five-minute
 "no account has room" once for each time it ends. A suggestion is said again only after the
 account in use has changed, or after the watch setting is chosen again. A switch the watch
 makes on "Switch automatically" is always reported.
+
+`switchboard notify` manages notification hooks for quota thresholds, lane switches and
+exhaustion events. You can configure an incoming webhook URL (such as a Slack or Discord webhook),
+a local shell command hook, and threshold percentages for the session and weekly windows:
+- `switchboard notify` shows current notification hooks and threshold settings.
+- `switchboard notify --webhook <url|none>` configures or removes the webhook URL.
+- `switchboard notify --command <cmd|none>` configures or removes the local command hook.
+- `switchboard notify --threshold session=80 --threshold week=85` sets alert thresholds.
+- `switchboard notify --test` dispatches a test alert through configured hooks.
+- `switchboard notify --json` outputs configuration and status in JSON.
+
+Notifications are evaluated automatically during background quota passes (in both
+`switchboard watch` and the system tray watch). When an account crosses a threshold
+(default: 80% of the 5-hour session window, 85% of the weekly window), Switchboard emits
+an alert once per reset period. Payloads include standard `text` (Slack) and `content` (Discord)
+fields, along with structured JSON delivered to command hooks via stdin and the
+`SWITCHBOARD_EVENT` environment variable. The same settings can also be configured from the
+Notification hooks section under the About tab in the desktop app.
 
 `switchboard run` is the execution broker. It reads where every lane stands, takes the
 first healthy one, and launches the vendor's own CLI with an environment scoped to that

@@ -212,3 +212,50 @@ export function parseWatchArgs(rawArgs = []) {
   }
   return parsed;
 }
+
+/**
+ * `switchboard notify [--webhook <url|none>] [--command <cmd|none>] [--threshold <window=percent>] [--test] [--json]`.
+ */
+export function parseNotifyArgs(rawArgs = []) {
+  const parsed = {
+    webhook: undefined,
+    command: undefined,
+    thresholds: {},
+    test: false,
+    json: false,
+  };
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (arg === '--webhook') {
+      if (i + 1 >= rawArgs.length) throw new Error('--webhook needs a URL or "none"');
+      const val = rawArgs[++i];
+      if (val !== 'none') {
+        try {
+          const u = new URL(val);
+          if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error();
+        } catch {
+          throw new Error(`--webhook requires a valid http: or https: URL, or "none": "${val}"`);
+        }
+      }
+      parsed.webhook = val;
+    } else if (arg === '--command') {
+      if (i + 1 >= rawArgs.length) throw new Error('--command needs a shell command or "none"');
+      parsed.command = rawArgs[++i];
+    } else if (arg === '--threshold') {
+      if (i + 1 >= rawArgs.length) throw new Error('--threshold needs <window>=<percent> (e.g. session=80)');
+      const val = rawArgs[++i];
+      const match = /^([a-z0-9_-]+)=(\d+)$/i.exec(val);
+      if (!match) throw new Error(`invalid threshold: "${val}". Use <window>=<percent> (e.g. session=80)`);
+      const num = parseInt(match[2], 10);
+      if (num < 1 || num > 100) throw new Error(`threshold percent must be between 1 and 100: ${num}`);
+      parsed.thresholds[match[1].toLowerCase()] = num;
+    } else if (arg === '--test') {
+      parsed.test = true;
+    } else if (arg === '--json') {
+      parsed.json = true;
+    } else {
+      throw new Error(`unknown option: ${arg}`);
+    }
+  }
+  return parsed;
+}

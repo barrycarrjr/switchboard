@@ -37,6 +37,7 @@ import { accountNote, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
+import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText } from '../core/hooks.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let win = null;
@@ -557,6 +558,7 @@ function setWatchMode(mode) {
   saveSettings(settings);
   // Choosing a mode again is asking to be told again.
   watchNotices = {};
+  thresholdMemory = {};
   refresh();
   if (mode !== 'off') runQuotaWatch();
 }
@@ -565,6 +567,7 @@ let pinNotified = false;
 // What the watch has already told the user, so an unchanged suggestion or "no account has
 // room" is said once rather than every five minutes. See freshNotices.
 let watchNotices = {};
+let thresholdMemory = {};
 
 function configuredClaudeOverrides() {
   return configuredClaudeCredentialOverrides({
@@ -639,7 +642,7 @@ async function runQuotaWatch() {
     const loginStates = {};
     const activeIds = Object.fromEntries(Object.keys(PROVIDERS).map((id) => [id, activeAccount(reg, id)?.id ?? null]));
     const liveQuotaAccountIds = new Set();
-    if (settings.quotaWatch !== 'off') {
+    if (settings.quotaWatch !== 'off' || settings.notifyWebhookUrl || settings.notifyCommand) {
       const watchProviders = new Set(['claude']);
       settings.lanes.forEach((lane) => watchProviders.add(lane.harness));
       for (const account of reg.accounts) {
@@ -682,6 +685,20 @@ async function runQuotaWatch() {
     }
     refreshTray();
 
+    const { events: thresholdEvents, memory: nextThresh } = checkThresholds({
+      accounts: reg.accounts,
+      snapshots,
+      thresholds: settings.thresholds,
+      memory: thresholdMemory,
+      now: Date.now(),
+    });
+    thresholdMemory = nextThresh;
+
+    for (const ev of thresholdEvents) {
+      dispatchNotification(settings, buildNotificationPayload(ev));
+      new Notification({ title: 'Switchboard quota alert', body: formatNotificationText(ev) }).show();
+    }
+
     if (settings.quotaWatch === 'off') return;
 
     const pinPresent = configuredClaudeOverrides().length > 0;
@@ -713,6 +730,7 @@ async function runQuotaWatch() {
       if (decision.kind === 'exhausted') {
         const when = decision.resetsAt ? ` Earliest reset: ${new Date(decision.resetsAt).toLocaleString()}.` : '';
         new Notification({ title: 'Switchboard', body: `No signed-in ${decision.provider} account with readable quota has room.${when}` }).show();
+        dispatchNotification(settings, buildNotificationPayload({ kind: 'exhausted', event: 'quota_exhausted', provider: decision.provider, resetsAt: decision.resetsAt }));
         continue;
       }
       if (decision.kind === 'switch') {
@@ -730,6 +748,7 @@ async function runQuotaWatch() {
         saveSettings({ ...loadSettings(), lastAutoSwitchAt: Date.now() });
         refresh();
         new Notification({ title: 'Switchboard switched the default', body: `${decision.reason}. New terminals and apps now use it; running processes are unchanged.` }).show();
+        dispatchNotification(settings, buildNotificationPayload({ kind: 'switch', event: 'default_switched', provider: decision.provider, to: decision.to, reason: decision.reason }));
         continue;
       }
       if (decision.kind === 'suggest') {
@@ -1646,6 +1665,58 @@ ipcMain.handle('sb:setLaneBudget', (_e, laneId, budget) => {
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
   }
+});
+
+ipcMain.handle('sb:notifySettings', () => {
+  const s = loadSettings();
+  return {
+    webhookUrl: s.notifyWebhookUrl,
+    command: s.notifyCommand,
+    thresholds: s.thresholds,
+  };
+});
+
+ipcMain.handle('sb:setNotifySettings', (_e, { webhookUrl, command, thresholds } = {}) => {
+  const s = loadSettings();
+  if (webhookUrl !== undefined) {
+    if (!webhookUrl || !webhookUrl.trim() || webhookUrl.trim().toLowerCase() === 'none') {
+      s.notifyWebhookUrl = null;
+    } else {
+      try {
+        const u = new URL(webhookUrl.trim());
+        if (u.protocol === 'http:' || u.protocol === 'https:') s.notifyWebhookUrl = u.href;
+      } catch {}
+    }
+  }
+  if (command !== undefined) {
+    if (!command || !command.trim() || command.trim().toLowerCase() === 'none') {
+      s.notifyCommand = null;
+    } else {
+      s.notifyCommand = command.trim();
+    }
+  }
+  if (thresholds && typeof thresholds === 'object') {
+    s.thresholds = { ...s.thresholds, ...thresholds };
+  }
+  saveSettings(s);
+  return { ok: true };
+});
+
+ipcMain.handle('sb:testNotify', async () => {
+  const s = loadSettings();
+  const payload = buildNotificationPayload({
+    kind: 'test',
+    event: 'test_notification',
+    provider: 'claude',
+    accountId: 'test',
+    accountLabel: 'Test Account',
+    window: 'session',
+    windowLabel: 'Session (5h)',
+    usedPercent: 82,
+    threshold: s.thresholds?.session ?? 80,
+    resetsAt: Date.now() + 2 * 3600 * 1000,
+  });
+  return dispatchNotification(s, payload);
 });
 
 ipcMain.handle('sb:openPath', (_e, p) => shell.openPath(p));

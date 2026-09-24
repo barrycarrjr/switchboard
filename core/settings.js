@@ -25,6 +25,9 @@ const DEFAULTS = {
   // found: { at, alreadyLatest, version, message }. Switchboard does that job because
   // the CLI doing it for itself puts a command window on screen (core/agy-updates.js).
   agyUpdate: null,
+  notifyWebhookUrl: null,     // URL to POST notification events to (e.g. Slack webhook)
+  notifyCommand: null,        // Shell command to run on notification events
+  thresholds: { session: 80, week: 85 }, // windowKey -> percentage
 };
 
 export function settingsFile() {
@@ -47,6 +50,31 @@ export function loadSettings(file = settingsFile()) {
     if (typeof merged.cooldowns !== 'object' || merged.cooldowns === null) merged.cooldowns = {};
     if (typeof merged.laneTokens !== 'object' || merged.laneTokens === null || Array.isArray(merged.laneTokens)) merged.laneTokens = {};
     if (typeof merged.agyUpdate !== 'object' || merged.agyUpdate === null || Array.isArray(merged.agyUpdate)) merged.agyUpdate = null;
+    if (typeof merged.notifyWebhookUrl === 'string' && merged.notifyWebhookUrl.trim()) {
+      try {
+        const u = new URL(merged.notifyWebhookUrl.trim());
+        merged.notifyWebhookUrl = (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
+      } catch {
+        merged.notifyWebhookUrl = null;
+      }
+    } else {
+      merged.notifyWebhookUrl = null;
+    }
+    if (typeof merged.notifyCommand !== 'string' || !merged.notifyCommand.trim()) {
+      merged.notifyCommand = null;
+    } else {
+      merged.notifyCommand = merged.notifyCommand.trim();
+    }
+    if (typeof merged.thresholds !== 'object' || merged.thresholds === null || Array.isArray(merged.thresholds)) {
+      merged.thresholds = { session: 80, week: 85 };
+    } else {
+      const clean = {};
+      for (const [k, v] of Object.entries(merged.thresholds)) {
+        const num = Math.round(Number(v));
+        if (!Number.isNaN(num) && num >= 1 && num <= 100) clean[k] = num;
+      }
+      merged.thresholds = Object.keys(clean).length ? clean : { session: 80, week: 85 };
+    }
     const b = merged.windowBounds;
     if (!b || typeof b.width !== 'number' || typeof b.height !== 'number' || b.width < 380 || b.height < 400) {
       merged.windowBounds = null;
