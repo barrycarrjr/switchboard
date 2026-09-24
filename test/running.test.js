@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from '../test-support/tempdir.js';
-import { appRunning, bridgeProblem, bridgeRunning, parseProcessList, renameBridgeProblem } from '../core/running.js';
+import { appRunning, bridgeProblem, bridgeRunning, candidateBridgeProcesses, parseProcessList, renameBridgeProblem, suggestBridgeDetails } from '../core/running.js';
 import { loadSettings } from '../core/settings.js';
 
 const procs = [
@@ -70,16 +70,76 @@ test('renameBridgeProblem validates the new label', () => {
   assert.ok(renameBridgeProblem({}));
 });
 
+test('suggestBridgeDetails derives a friendly label and script match for node, python and powershell processes', () => {
+  const nodeProc = {
+    name: 'node.exe',
+    commandLine: '"C:\\Program Files\\nodejs\\node.exe" C:\\projects\\my-agent-bridge\\src\\index.mjs',
+  };
+  assert.deepEqual(suggestBridgeDetails(nodeProc), {
+    label: 'my-agent-bridge',
+    match: 'C:\\projects\\my-agent-bridge\\src\\index.mjs',
+  });
+
+  const nodeSupervisor = {
+    name: 'node.exe',
+    commandLine: '"C:\\Program Files\\nodejs\\node.exe" C:\\projects\\my-agent-bridge\\supervisor.mjs',
+  };
+  assert.deepEqual(suggestBridgeDetails(nodeSupervisor), {
+    label: 'my-agent-bridge (supervisor)',
+    match: 'C:\\projects\\my-agent-bridge\\supervisor.mjs',
+  });
+
+  const psProc = {
+    name: 'powershell.exe',
+    commandLine: '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Sta -File "C:\\projects\\my-agent-bridge\\src\\windows\\tray.ps1"',
+  };
+  assert.deepEqual(suggestBridgeDetails(psProc), {
+    label: 'my-agent-bridge (tray)',
+    match: 'C:\\projects\\my-agent-bridge\\src\\windows\\tray.ps1',
+  });
+
+  const pythonProc = {
+    name: 'python.exe',
+    commandLine: 'python -m slack_worker --verbose',
+  };
+  assert.deepEqual(suggestBridgeDetails(pythonProc), {
+    label: 'slack_worker',
+    match: 'slack_worker',
+  });
+});
+
+test('candidateBridgeProcesses filters out switchboard itself and noisy system processes', () => {
+  const sample = [
+    { name: 'Switchboard.exe', commandLine: 'Switchboard.exe' },
+    { name: 'Switchboard.exe', commandLine: 'Switchboard.exe --type=renderer' },
+    { name: 'svchost.exe', commandLine: 'C:\\Windows\\system32\\svchost.exe -k netsvcs' },
+    { name: 'node.exe', commandLine: 'node C:\\apps\\slack-bot\\index.js' },
+  ];
+  const candidates = candidateBridgeProcesses(sample);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].label, 'slack-bot');
+  assert.equal(candidates[0].match, 'C:\\apps\\slack-bot\\index.js');
+});
+
+test('candidateBridgeProcesses filters candidates by query case-insensitively and puts script interpreters first', () => {
+  const sample = [
+    { name: 'custom.exe', commandLine: 'custom.exe --bridge' },
+    { name: 'node.exe', commandLine: 'node C:\\apps\\my-bridge\\index.js' },
+    { name: 'other.exe', commandLine: 'other.exe --worker' },
+  ];
+  const candidates = candidateBridgeProcesses(sample, { query: 'bridge' });
+  assert.equal(candidates.length, 2);
+  // Script interpreter node.exe should come first
+  assert.equal(candidates[0].name, 'node.exe');
+  assert.equal(candidates[0].label, 'my-bridge');
+  assert.equal(candidates[1].name, 'custom.exe');
+});
+
 test('settings default bridges to an empty list and drop malformed entries', () => {
   const dir = tempDir('sb-running-');
   const file = path.join(dir, 'settings.json');
   assert.deepEqual(loadSettings(file).bridges, []);
-  fs.writeFileSync(file, JSON.stringify({ bridges: [
-    { id: 'bridge-1', label: 'Slack bridge', match: 'claude-slack-bridge' },
-    { id: 42, label: 'broken', match: 'x' },
-    'junk',
-    null,
-  ] }));
+  fs.writeFileSync(file, JSON.stringify({ bridges: [\n    { id: 'bridge-1', label: 'Slack bridge', match: 'claude-slack-bridge' },\n    { id: 42, label: 'broken', match: 'x' },\n    'junk',\n    null,\n  ] }));
   assert.deepEqual(loadSettings(file).bridges, [{ id: 'bridge-1', label: 'Slack bridge', match: 'claude-slack-bridge' }]);
   fs.rmSync(dir, { recursive: true, force: true });
 });

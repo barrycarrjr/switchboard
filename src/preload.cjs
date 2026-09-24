@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('sb', {
   removeCustomApp: (appId) => ipcRenderer.invoke('sb:removeCustomApp', appId),
   running: () => ipcRenderer.invoke('sb:running'),
   bridges: () => ipcRenderer.invoke('sb:bridges'),
+  bridgeProcessCandidates: (query = '') => ipcRenderer.invoke('sb:bridgeProcessCandidates', query),
   addBridge: (entry) => ipcRenderer.invoke('sb:addBridge', entry),
   removeBridge: (id) => ipcRenderer.invoke('sb:removeBridge', id),
   renameBridge: (id, label) => ipcRenderer.invoke('sb:renameBridge', { id, label }),
@@ -68,5 +69,4 @@ contextBridge.exposeInMainWorld('sb', {
   onUpdateAvailable: (cb) => ipcRenderer.on('sb:updateAvailable', (_e, info) => cb(info)),
   onUpdateProgress: (cb) => ipcRenderer.on('sb:updateProgress', (_e, p) => cb(p)),
   onRefresh: (cb) => ipcRenderer.on('sb:refresh', cb),
-  onNavigate: (cb) => ipcRenderer.on('sb:navigate', (_e, hash) => cb(hash)),
 });

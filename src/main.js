@@ -18,7 +18,7 @@ import { maybeUpdateAgy } from '../core/agy-updates.js';
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, resolvePackagedExe, APPS } from '../core/apps.js';
 import { appProfileDef, chooseOpenProfile, describeProfiles, discoverProfileDirs, profileFolderProblem, profileLaunchArgs } from '../core/appprofiles.js';
 import { detectPresence } from '../core/presence.js';
-import { appRunning, bridgeProblem, bridgeRunning, listProcesses, renameBridgeProblem } from '../core/running.js';
+import { appRunning, bridgeProblem, bridgeRunning, candidateBridgeProcesses, listProcesses, renameBridgeProblem } from '../core/running.js';
 import { terminalRows, terminalChips } from '../core/terminals.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
 import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix, disableServer, enableServer } from '../core/mcp.js';
@@ -1227,6 +1227,12 @@ ipcMain.handle('sb:renameBridge', (_e, { id, label } = {}) => {
   bridge.label = label.trim();
   saveSettings(settings);
   return { ok: true };
+});
+
+ipcMain.handle('sb:bridgeProcessCandidates', async (_e, query = '') => {
+  const processes = await listProcesses();
+  if (!processes) return [];
+  return candidateBridgeProcesses(processes, { query });
 });
 
 ipcMain.handle('sb:setAppOrder', (_e, ids) => {

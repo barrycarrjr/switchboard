@@ -342,11 +342,17 @@
     </div>
   </div>
   <div id="bridgeModal" style="display:none;position:fixed;inset:0;background:rgba(20,25,35,.45);z-index:6">
-    <div style="background:var(--card);border-radius:10px;max-width:380px;margin:90px auto;padding:16px;display:flex;flex-direction:column;gap:9px">
+    <div style="background:var(--card);border-radius:10px;max-width:440px;margin:80px auto;padding:16px;display:flex;flex-direction:column;gap:9px">
       <b style="font-size:.95rem">Watch a background process</b>
       <span style="font-size:.8rem;color:var(--muted)">For a bridge, bot, or worker that runs without a window. Switchboard marks it running while any process&rsquo;s command line contains the match text, so use something unique to it, such as the path of the script it runs.</span>
       <input id="bridgeName" placeholder="Name, e.g. Slack bridge" style="font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px">
-      <input id="bridgeMatch" placeholder="Command-line text, e.g. claude-slack-bridge" style="font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px">
+      <div style="position:relative;display:flex;flex-direction:column">
+        <div style="display:flex;gap:4px">
+          <input id="bridgeMatch" placeholder="Command-line text, e.g. claude-slack-bridge" autocomplete="off" style="font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1">
+          <button class="btn" id="bridgeMatchToggle" type="button" title="Browse running processes" style="padding:4px 8px;font-size:0.75rem">&#x25BC;</button>
+        </div>
+        <div id="bridgeProcessList" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--card);border:1px solid var(--line);border-radius:6px;max-height:190px;overflow-y:auto;z-index:20;box-shadow:0 4px 12px rgba(0,0,0,0.12)"></div>
+      </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn" id="bridgeCancel">Cancel</button>
         <button class="btn primary" id="bridgeSave">Watch it</button>
@@ -2237,15 +2243,159 @@ function openBridgeModal() {
   const overlay = $('#bridgeModal');
   const name = $('#bridgeName');
   const match = $('#bridgeMatch');
+  const toggle = $('#bridgeMatchToggle');
+  const list = $('#bridgeProcessList');
+
   overlay.style.display = 'block';
   name.value = '';
   match.value = '';
+  name.dataset.autofilled = 'false';
+  list.style.display = 'none';
+  list.innerHTML = '';
   name.focus();
-  $('#bridgeCancel').onclick = () => { overlay.style.display = 'none'; };
+
+  let candidates = [];
+  let loaded = false;
+  let activeIdx = -1;
+
+  name.oninput = () => {
+    name.dataset.autofilled = 'false';
+  };
+
+  const loadProcesses = async () => {
+    if (loaded) return;
+    list.innerHTML = '<div style="padding:8px 10px;font-size:0.8rem;color:var(--muted)">Loading running processes&hellip;</div>';
+    list.style.display = 'block';
+    try {
+      candidates = await sb.bridgeProcessCandidates() || [];
+    } catch {
+      candidates = [];
+    }
+    loaded = true;
+  };
+
+  const selectCandidate = (c) => {
+    match.value = c.match;
+    if (!name.value.trim() || name.dataset.autofilled === 'true') {
+      name.value = c.label;
+      name.dataset.autofilled = 'true';
+    }
+    list.style.display = 'none';
+    activeIdx = -1;
+  };
+
+  const renderDropdown = (query = '') => {
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? candidates.filter((c) =>
+          c.label.toLowerCase().includes(q) ||
+          c.match.toLowerCase().includes(q) ||
+          (c.name && c.name.toLowerCase().includes(q)) ||
+          (c.commandLine && c.commandLine.toLowerCase().includes(q)))
+      : candidates;
+
+    activeIdx = -1;
+    list.innerHTML = '';
+
+    if (!filtered.length) {
+      list.innerHTML = `<div style="padding:8px 10px;font-size:0.8rem;color:var(--muted)">${q ? 'No running processes match &ldquo;' + esc(q) + '&rdquo;' : 'No background processes detected'}</div>`;
+      list.style.display = 'block';
+      return;
+    }
+
+    filtered.slice(0, 30).forEach((c, idx) => {
+      const item = el('div', 'bridge-candidate-item');
+      item.style.padding = '6px 9px';
+      item.style.cursor = 'pointer';
+      item.style.borderBottom = '1px solid var(--line)';
+      item.dataset.index = String(idx);
+      item.innerHTML = `
+        <div style="font-weight:600;font-size:0.82rem;color:var(--ink);display:flex;justify-content:space-between">
+          <span>${esc(c.label)}</span>
+          <span style="font-weight:400;font-size:0.75rem;color:var(--muted)">${esc(c.name)}</span>
+        </div>
+        <div style="font-size:0.75rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(c.match)}">${esc(c.match)}</div>
+      `;
+      item.addEventListener('mouseenter', () => {
+        list.querySelectorAll('.bridge-candidate-item').forEach((it) => { it.style.background = 'none'; });
+        item.style.background = '#f0f4f8';
+        activeIdx = idx;
+      });
+      item.addEventListener('mouseleave', () => {
+        item.style.background = 'none';
+      });
+      item.addEventListener('click', () => {
+        selectCandidate(c);
+      });
+      list.appendChild(item);
+    });
+    list.style.display = 'block';
+  };
+
+  match.oninput = async () => {
+    if (!loaded) await loadProcesses();
+    renderDropdown(match.value);
+  };
+
+  match.onfocus = async () => {
+    if (!loaded) await loadProcesses();
+    renderDropdown(match.value);
+  };
+
+  match.onkeydown = (e) => {
+    if (list.style.display !== 'block') return;
+    const items = list.querySelectorAll('.bridge-candidate-item');
+    if (!items.length) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeIdx = (activeIdx + 1) % items.length;
+      items.forEach((it, i) => { it.style.background = i === activeIdx ? '#f0f4f8' : 'none'; });
+      items[activeIdx].scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIdx = (activeIdx - 1 + items.length) % items.length;
+      items.forEach((it, i) => { it.style.background = i === activeIdx ? '#f0f4f8' : 'none'; });
+      items[activeIdx].scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter' && activeIdx >= 0 && items[activeIdx]) {
+      e.preventDefault();
+      items[activeIdx].click();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      list.style.display = 'none';
+    }
+  };
+
+  toggle.onclick = async (e) => {
+    e.stopPropagation();
+    if (list.style.display === 'block') {
+      list.style.display = 'none';
+      return;
+    }
+    if (!loaded) await loadProcesses();
+    renderDropdown(match.value);
+    match.focus();
+  };
+
+  const closeDropdown = (e) => {
+    if (list.style.display === 'block' && e.target !== match && e.target !== toggle && !list.contains(e.target)) {
+      list.style.display = 'none';
+    }
+  };
+  document.addEventListener('click', closeDropdown);
+
+  $('#bridgeCancel').onclick = () => {
+    overlay.style.display = 'none';
+    list.style.display = 'none';
+    document.removeEventListener('click', closeDropdown);
+  };
+
   $('#bridgeSave').onclick = async () => {
     const r = await sb.addBridge({ label: name.value, match: match.value });
     if (!r.ok) { toast(r.error); return; }
     overlay.style.display = 'none';
+    list.style.display = 'none';
+    document.removeEventListener('click', closeDropdown);
     renderApps();
   };
 }
