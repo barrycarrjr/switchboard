@@ -12,7 +12,7 @@ import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTo
 import { readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
-import { selectLane, narrowPool, lanesCallerCannotDrive, selectionFailure, defaultFollowsLanes, switchedAgainstLanesNote } from '../core/lanes.js';
+import { selectLaneAsNeeded, narrowPool, lanesCallerCannotDrive, selectionFailure, defaultFollowsLanes, switchedAgainstLanesNote } from '../core/lanes.js';
 import { readHandoff, writeHandoff, removeHandoff, handoffOrigin, generateHandoffPrompt, generateHandoffNote, DERIVED_NEXT_ACTIONS } from '../core/handoff.js';
 import { CARRYABLE_HARNESSES, callerManagesSession, namedSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest, transcriptSupport } from '../core/transcripts.js';
 import { parseRunArgs, loadRunSpec, resolveSpecArgv, drivableHarnesses, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs, parseNotifyArgs } from '../core/runargs.js';
@@ -30,36 +30,33 @@ function fmtWindow(w) {
   return `  ${w.label}: ${pct}${w.valueLabel && w.usedPercent != null ? ` (${w.valueLabel})` : ''}${reset}`;
 }
 
-async function prepareLanesContext(settings, registry, overrides = {}) {
+/**
+ * What lane selection starts from: the settings every lane is judged by, and a reader for
+ * one account's sign-in and usage. selectLaneAsNeeded calls the reader only for accounts
+ * it actually reaches, which is what keeps `dry-run` quick; see there for why.
+ */
+async function laneSelection(settings, registry, overrides = {}) {
   const { lanes = [], spendPolicies = {}, cooldowns = {}, usageSources = {} } = settings;
   const accounts = await resolveAllAccounts(registry);
-  
-  const loginStates = {};
-  const quotas = {};
   const now = Date.now();
 
-  for (const account of accounts) {
-    if (!lanes.some(l => l.accountId === account.id)) continue;
-    loginStates[account.id] = await accountLoginState(account);
+  const readAccount = async (accountId) => {
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) return {};
+    const login = accountLoginState(account);
     const def = PROVIDERS[account.provider];
-    if ((def && def.quota) || account.provider === 'antigravity') {
-      // Through the shared cache: `dry-run` is what Paperclip and the Slack bridge
-      // invoke before every spawn, so uncached live calls here multiplied across
-      // every automation on the machine.
-      quotas[account.id] = await sharedProviderQuota(account, { fetchImpl: fetch, usageSource: usageSources[account.id] ?? null, now });
-    }
-  }
+    if (!((def && def.quota) || account.provider === 'antigravity')) return { login };
+    // Through the shared cache: `dry-run` is what Paperclip and the Slack bridge
+    // invoke before every spawn, so uncached live calls here multiplied across
+    // every automation on the machine.
+    const quota = await sharedProviderQuota(account, { fetchImpl: fetch, usageSource: usageSources[account.id] ?? null, now });
+    return { login, quota };
+  };
 
   return {
     pool: lanes,
-    context: {
-      now,
-      loginStates,
-      quotas,
-      spendPolicies,
-      cooldowns,
-      requirements: overrides
-    }
+    context: { now, loginStates: {}, quotas: {}, spendPolicies, cooldowns, requirements: overrides },
+    readAccount,
   };
 }
 
@@ -243,7 +240,7 @@ async function main() {
         }
       }
 
-      const { pool, context } = await prepareLanesContext(settings, registry, { provider: parsed.provider });
+      const { pool, context, readAccount } = await laneSelection(settings, registry, { provider: parsed.provider });
 
       if (parsed.account) {
         context.requirements.accountId = parsed.account; // Not natively in selectLane, but conceptually overrides
@@ -269,7 +266,7 @@ async function main() {
       // this machine.
       const narrowedTo = harnesses ? { harnesses } : {};
 
-      const selected = filteredPool.length ? selectLane(filteredPool, context) : null;
+      const selected = filteredPool.length ? await selectLaneAsNeeded(filteredPool, context, readAccount) : null;
 
       if (!selected) {
         const reason = selectionFailure(pool, filteredPool);
@@ -352,11 +349,11 @@ async function main() {
       };
       let currentPool = narrowPool(settings.lanes, narrowing);
 
-      let { context } = await prepareLanesContext(settings, registry, {
+      const { context, readAccount } = await laneSelection(settings, registry, {
         provider: parsed.provider,
       });
 
-      let selected = currentPool.length ? selectLane(currentPool, context) : null;
+      let selected = currentPool.length ? await selectLaneAsNeeded(currentPool, context, readAccount) : null;
 
       if (!selected) {
         say(selectionFailure(settings.lanes, currentPool));
@@ -620,11 +617,11 @@ async function main() {
           const previousLane = selected.lane;
           currentPool = currentPool.filter(l => l.id !== selected.lane.id);
           
-          const nextContext = (await prepareLanesContext(loadSettings(), registry, {
+          const next = await laneSelection(loadSettings(), registry, {
             provider: parsed.provider,
-          })).context;
-          
-          selected = selectLane(currentPool, nextContext);
+          });
+
+          selected = await selectLaneAsNeeded(currentPool, next.context, next.readAccount);
           
           if (!selected) {
             say(`[switchboard] No more available lanes to fall back to.`);

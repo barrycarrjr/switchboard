@@ -1,4 +1,4 @@
-import { PROVIDERS } from './accounts.js';
+import { PROVIDERS, antigravityAccount } from './accounts.js';
 import { TOOLS } from './providers.js';
 import os from 'node:os';
 import path from 'node:path';
@@ -263,10 +263,8 @@ export async function resolveAllAccounts(registry, {
           ? `Antigravity (${ag.who}${ag.plan ? `, ${ag.plan}` : ''})`
           : 'Antigravity';
         accounts.push({
-          id: 'antigravity',
+          ...antigravityAccount(),
           label,
-          provider: 'antigravity',
-          home: path.join(os.homedir(), '.gemini'),
           singleSignIn: true,
           login: {
             signedIn: Boolean(ag.signedIn),

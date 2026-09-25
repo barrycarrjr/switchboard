@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { dataDir, writeJsonAtomic } from './paths.js';
-import { PROVIDERS } from './accounts.js';
+import { PROVIDERS, antigravityAccount } from './accounts.js';
 import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota } from './quota.js';
 
 /**
@@ -84,6 +84,22 @@ export function writeSharedQuota(accountId, key, result, at = Date.now(), file =
   } catch {
     // the cache is an optimization; failing to write it must never fail the reading
   }
+}
+
+/**
+ * Share a live Antigravity reading the tray took, under the account every CLI reader asks
+ * for (see antigravityAccount).
+ *
+ * The tray reads Antigravity on every five-minute pass, but it used to keep the answer to
+ * itself, unlike its Claude and Codex readings. So the shared entry was only ever filled by
+ * a CLI caller that found it missing or old, and that caller then waited while the `agy`
+ * CLI started twice, which takes several seconds and is only cut off at fifteen. The Slack
+ * bridge allows `dry-run` eight seconds and was running past it (diagnosed 2026-09-25).
+ * With the tray's reading shared, that wait is normally the tray's.
+ */
+export function shareAntigravityQuota(result, at = Date.now(), file = quotaCacheFile()) {
+  const account = antigravityAccount();
+  writeSharedQuota(account.id, sharedQuotaKey(account.provider, account.home), result, at, file);
 }
 
 /**

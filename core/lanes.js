@@ -194,6 +194,21 @@ export function lanesCallerCannotDrive(lanes = [], { account = null, provider = 
 }
 
 /**
+ * Whether a caller's requirements allow a lane at all, before its account is looked at.
+ * One test for selectLane and selectLaneAsNeeded, so they cannot disagree about which lanes
+ * are in the running.
+ */
+function meetsRequirements(lane, requirements = {}) {
+  if (requirements.harness && lane.harness !== requirements.harness) return false;
+  if (requirements.provider && !laneAnswersTo(lane, requirements.provider)) return false;
+  if (requirements.capabilities) {
+    const laneCaps = lane.capabilities || [];
+    if (!requirements.capabilities.every(c => laneCaps.includes(c))) return false;
+  }
+  return true;
+}
+
+/**
  * Select the next healthy account or provider deterministically.
  */
 export function selectLane(pool = [], context = {}) {
@@ -201,12 +216,7 @@ export function selectLane(pool = [], context = {}) {
   let fallback = null;
 
   for (const lane of pool) {
-    if (requirements.harness && lane.harness !== requirements.harness) continue;
-    if (requirements.provider && !laneAnswersTo(lane, requirements.provider)) continue;
-    if (requirements.capabilities) {
-      const laneCaps = lane.capabilities || [];
-      if (!requirements.capabilities.every(c => laneCaps.includes(c))) continue;
-    }
+    if (!meetsRequirements(lane, requirements)) continue;
 
     const stat = laneStatus(lane, context);
     if (stat.status === 'available') {
@@ -221,4 +231,48 @@ export function selectLane(pool = [], context = {}) {
     }
   }
   return fallback;
+}
+
+/**
+ * selectLane, reading each account only when its lane comes up.
+ *
+ * selectLane wants every account's sign-in and usage in hand before it starts, and reading
+ * them is the slow part: a usage reading older than the shared cache allows means asking
+ * the vendor, and for Antigravity it means starting the `agy` CLI twice. `dry-run` and
+ * `run` used to read every lane's account first, one after another, so naming the lane at
+ * the top of the list waited on lanes far below it. The Slack bridge allows `dry-run`
+ * eight seconds, and about one of its checks in ten ran past that (diagnosed 2026-09-25):
+ * the bridge then ran the work unbrokered and logged that no lane was available, while
+ * the first lane had room all along.
+ *
+ * Nothing below the first lane with room can change the answer, because selectLane returns
+ * that lane without looking further. So the lanes are walked in order, an account is read
+ * the first time one of its lanes comes up, and the walk stops at the first lane with room.
+ * Only when no lane has room is every account read, since the last resort (a lane whose
+ * meter could not be read) is only chosen once all of them have been seen.
+ *
+ * `readAccount(accountId)` resolves to `{ login, quota }` for one account, either of which
+ * may be missing. The answer is always the one selectLane gives with every account read up
+ * front.
+ */
+export async function selectLaneAsNeeded(pool = [], context = {}, readAccount = async () => ({})) {
+  const candidates = pool.filter((lane) => meetsRequirements(lane, context.requirements));
+  const known = { ...context, loginStates: { ...context.loginStates }, quotas: { ...context.quotas } };
+  const read = new Set();
+
+  for (let i = 0; i < candidates.length; i++) {
+    const { accountId } = candidates[i];
+    if (!read.has(accountId)) {
+      read.add(accountId);
+      const { login, quota } = (await readAccount(accountId)) ?? {};
+      if (login !== undefined) known.loginStates[accountId] = login;
+      if (quota !== undefined) known.quotas[accountId] = quota;
+    }
+    // Judged over the lanes walked so far and no further. A lane further down can share an
+    // account that has now been read, and must not win over a lane between the two that
+    // has not been read yet.
+    const picked = selectLane(candidates.slice(0, i + 1), known);
+    if (picked?.status.status === 'available') return picked;
+  }
+  return selectLane(candidates, known);
 }

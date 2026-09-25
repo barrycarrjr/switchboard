@@ -353,8 +353,8 @@ fields, along with structured JSON delivered to command hooks via stdin and the
 `SWITCHBOARD_EVENT` environment variable. The same settings can also be configured from the
 Notification hooks section under the About tab in the desktop app.
 
-`switchboard run` is the execution broker. It reads where every lane stands, takes the
-first healthy one, and launches the vendor's own CLI with an environment scoped to that
+`switchboard run` is the execution broker. It walks the lanes in order, takes the first
+healthy one, and launches the vendor's own CLI with an environment scoped to that
 lane's account: the account's own folder and nothing inherited from the calling shell that
 could bill somebody else. Your arguments are passed through as you wrote them, with one
 addition: on a Claude lane it puts `--session-id` in front of them, so that if the run
@@ -382,6 +382,18 @@ work from that caller does not look broken. This used to be decided the other wa
 the first healthy lane won whatever its tool, and a fallback onto a tool the spec said
 nothing about ended the run, with a usable lane one place lower. The order then had to be
 arranged around each caller, which defeats the point of having one.
+
+Choosing a lane reads each account only when its lane comes up, and stops at the first lane
+with room, for `dry-run`, for the first pick of a run and for every fallback. A lane further
+down cannot change that answer, and reading it can be slow: a usage reading older than five
+minutes means asking the vendor, and Antigravity's means starting its CLI twice. Every
+lane's account used to be read first, so an answer about the top lane could wait many
+seconds on a lane it was never going to pick, long enough for an automated caller with a
+deadline to give up. Every account is still read when no lane has room, because the last
+resort, a lane whose usage could not be read, is only chosen once all of them have been
+seen. Readings come from the shared cache the tray fills on its five-minute pass, and that
+now includes its Antigravity reading, so a check that does reach Antigravity normally
+finds one there instead of starting the CLI itself.
 
 A prompt piped into `switchboard run` reaches every lane the run lands on, not only the
 first. An automated caller hands its prompt over on standard input, and the first tool

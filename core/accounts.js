@@ -105,6 +105,18 @@ export function defaultHome(def, homeDir = os.homedir()) {
   return path.join(homeDir, def.dirName);
 }
 
+/**
+ * Antigravity as an account. It keeps one sign-in for the whole machine, so it is never
+ * registered, and every surface that treats it as an account makes this same one: lane
+ * selection (through resolveAllAccounts), `switchboard status`, and the tray's own reading.
+ * They have to agree exactly, because the shared quota cache files a reading under the
+ * account's id and folder, and a reading filed under anything else is one `dry-run` never
+ * finds.
+ */
+export function antigravityAccount(homeDir = os.homedir()) {
+  return { id: 'antigravity', provider: 'antigravity', home: path.join(homeDir, '.gemini') };
+}
+
 /** The config folder a value of the provider's variable selects. */
 export function homeFromEnvValue(def, value) {
   if (!value) return null;

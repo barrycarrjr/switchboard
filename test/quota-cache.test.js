@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
-import { sharedQuotaKey, readSharedQuota, writeSharedQuota, sharedProviderQuota, lastSharedQuota, quotaCacheFile, SHARED_QUOTA_TTL_MS } from '../core/quota-cache.js';
+import { sharedQuotaKey, readSharedQuota, writeSharedQuota, sharedProviderQuota, lastSharedQuota, quotaCacheFile, shareAntigravityQuota, SHARED_QUOTA_TTL_MS } from '../core/quota-cache.js';
+import { resolveAllAccounts } from '../core/lane-admin.js';
+import { collectStatus } from '../core/status.js';
 
 const LIVE = { windows: [{ key: 'week', label: 'Week (all models)', usedPercent: 12, resetsAt: null }], source: 'token', vendor: 'Anthropic' };
 
@@ -217,4 +219,36 @@ test('sharedProviderQuota does not share a failed reading, so the next caller re
   } finally {
     process.env.APPDATA = prevAppData;
   }
+});
+
+// The tray reads Antigravity on its own schedule, and that reading only saves `dry-run` and
+// `status` from starting agy themselves if it is filed under the account they ask for. They
+// make that account in two other places, so this fails if either drifts from the tray's.
+test('the tray\'s Antigravity reading is the one lane selection and status find, without starting agy', async () => {
+  const file = tempFile();
+  const now = 1_000_000;
+  const reading = { windows: [{ key: 'gemini-week', label: 'Gemini (Week)', usedPercent: 22, resetsAt: null }], source: 'cli', vendor: 'Google Antigravity' };
+  shareAntigravityQuota(reading, now, file);
+  const agyMustNotRun = async () => assert.fail('a reading this fresh must be served from the shared file, not read from agy again');
+  const signedIn = {
+    antigravityFn: async () => ({ signedIn: true }),
+    presenceFn: async () => [],
+    installedFn: async () => [],
+  };
+
+  const accounts = await resolveAllAccounts({ accounts: [] }, signedIn);
+  const forLanes = await sharedProviderQuota(accounts.find((a) => a.provider === 'antigravity'), { now: now + 1_000, file, antigravityQuotaFn: agyMustNotRun });
+  assert.equal(forLanes.cached, true);
+  assert.equal(forLanes.windows[0].usedPercent, 22);
+
+  const status = await collectStatus({
+    registry: { accounts: [] },
+    envReader: () => null,
+    now: now + 1_000,
+    quotaCacheFile: file,
+    antigravityQuotaFn: agyMustNotRun,
+    ...signedIn,
+  });
+  const ag = status.providers.find((p) => p.id === 'antigravity');
+  assert.equal(ag.accounts[0].quota?.windows?.[0]?.usedPercent, 22, 'status served the tray\'s reading');
 });

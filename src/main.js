@@ -7,7 +7,7 @@ import { loadRegistry, saveRegistry, addAccount, createAccount, removeAccount, r
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
 import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
 import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage, fetchAntigravityQuota } from '../core/quota.js';
-import { lastSharedQuota, readSharedQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
+import { lastSharedQuota, readSharedQuota, shareAntigravityQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
 import { fetchAllProviderStatus } from '../core/provider-status.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
@@ -326,7 +326,11 @@ async function getAntigravityQuota(force = false) {
     try {
       const res = await fetchAntigravityQuota({ now });
       if (!res.error) {
-        antigravityQuotaCache = { at: Date.now(), result: res };
+        const completedAt = Date.now();
+        antigravityQuotaCache = { at: completedAt, result: res };
+        // Shared the way the Claude and Codex readings are, so `dry-run` and `status`
+        // find it instead of starting agy themselves. See shareAntigravityQuota.
+        shareAntigravityQuota(res, completedAt);
       }
       return res;
     } finally {

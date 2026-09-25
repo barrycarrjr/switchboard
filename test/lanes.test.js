@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { laneStatus, selectLane, narrowPool, lanesCallerCannotDrive, laneAnswersTo, selectionFailure, worthSwitchingTo, defaultFollowsLanes, followsLanesNote, switchedAgainstLanesNote, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
+import { laneStatus, selectLane, selectLaneAsNeeded, narrowPool, lanesCallerCannotDrive, laneAnswersTo, selectionFailure, worthSwitchingTo, defaultFollowsLanes, followsLanesNote, switchedAgainstLanesNote, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
 import { expiringWeek, hasHeadroom, isRunningOut, spentEvidence, tightestWindow, SPEND_DOWN_HORIZON_MS, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
 
 function makeLane(id, accountId, billing = 'subscription') {
@@ -420,6 +420,104 @@ test('the filter still applies to a last-resort lane', () => {
   const ctx = contextFor({ unreadable: ['a1'] });
   assert.ok(selectLane(pool, { ...ctx, requirements: { provider: 'claude' } }), 'matching name, so it is offered');
   assert.equal(selectLane(pool, { ...ctx, requirements: { provider: 'openai' } }), null, 'wrong name, so it is not');
+});
+
+// ---- Reading accounts only as far as the answer needs ----
+//
+// Reading an account is the slow part of choosing a lane: an old reading means asking the
+// vendor, and Antigravity's means starting its CLI twice. The Slack bridge allows dry-run
+// eight seconds and was running past it on readings for lanes it would never have picked.
+
+/** A reader over fixed facts that notes which accounts it was asked about. */
+function recordingReader(facts) {
+  const asked = [];
+  const read = async (accountId) => {
+    asked.push(accountId);
+    return facts[accountId] ?? {};
+  };
+  return { read, asked };
+}
+
+const ROOM = { login: { signedIn: true }, quota: { windows: [{ key: 'session', usedPercent: 10 }] } };
+const SPENT = { login: { signedIn: true }, quota: { windows: [{ key: 'session', usedPercent: 100, resetsAt: 5000 }] } };
+const UNREADABLE = { login: { signedIn: true }, quota: { error: 'fetch failed' } };
+const SIGNED_OUT = { login: { signedIn: false } };
+
+test('the walk stops at the first lane with room, so the accounts below it are never read', async () => {
+  const { read, asked } = recordingReader({ a1: ROOM, a2: ROOM, a3: ROOM });
+  const pool = [makeLane('l1', 'a1'), makeLane('l2', 'a2'), makeLane('l3', 'a3')];
+  const selected = await selectLaneAsNeeded(pool, { now: 1000 }, read);
+  assert.equal(selected.lane.id, 'l1');
+  assert.deepEqual(asked, ['a1'], 'nothing below the answer was read');
+});
+
+test('a lane further down is read when the ones above it have no room', async () => {
+  const { read, asked } = recordingReader({ a1: SPENT, a2: ROOM, a3: ROOM });
+  const pool = [makeLane('l1', 'a1'), makeLane('l2', 'a2'), makeLane('l3', 'a3')];
+  const selected = await selectLaneAsNeeded(pool, { now: 1000 }, read);
+  assert.equal(selected.lane.id, 'l2');
+  assert.deepEqual(asked, ['a1', 'a2']);
+});
+
+test('with no lane that has room every account is read, and the first unreadable one is the last resort', async () => {
+  const { read, asked } = recordingReader({ a1: SIGNED_OUT, a2: UNREADABLE, a3: UNREADABLE });
+  const pool = [makeLane('l1', 'a1'), makeLane('l2', 'a2'), makeLane('l3', 'a3')];
+  const selected = await selectLaneAsNeeded(pool, { now: 1000 }, read);
+  assert.equal(selected.lane.id, 'l2');
+  assert.equal(selected.status.status, 'quota-unknown');
+  assert.deepEqual(asked, ['a1', 'a2', 'a3'], 'a lane with room further down would have beaten it');
+});
+
+test('an unreadable lane above a lane with room still loses to it when read as needed', async () => {
+  const { read } = recordingReader({ a1: UNREADABLE, a2: ROOM });
+  const selected = await selectLaneAsNeeded([makeLane('l1', 'a1'), makeLane('l2', 'a2')], { now: 1000 }, read);
+  assert.equal(selected.lane.id, 'l2');
+});
+
+test('an account with two lanes is read once', async () => {
+  const { read, asked } = recordingReader({ a1: ROOM });
+  const pool = [makeLane('l1', 'a1'), makeLane('l2', 'a1')];
+  const selected = await selectLaneAsNeeded(pool, { now: 1000, cooldowns: { l1: 5000 } }, read);
+  assert.equal(selected.lane.id, 'l2');
+  assert.deepEqual(asked, ['a1']);
+});
+
+test('a lower lane on an account already read does not jump ahead of a lane not read yet', async () => {
+  // l3 shares a1 with l1, so reading a1 for l1 makes l3 look ready before l2 has been read.
+  const { read } = recordingReader({ a1: ROOM, a2: ROOM });
+  const pool = [makeLane('l1', 'a1'), makeLane('l2', 'a2'), makeLane('l3', 'a1')];
+  const selected = await selectLaneAsNeeded(pool, { now: 1000, cooldowns: { l1: 5000 } }, read);
+  assert.equal(selected.lane.id, 'l2', 'pool order decides, as it does when everything is read first');
+});
+
+test('a lane the requirements rule out is never read', async () => {
+  const { read, asked } = recordingReader({ a1: ROOM, a2: ROOM });
+  const codex = { ...makeLane('l2', 'a2'), harness: 'codex', provider: 'openai' };
+  const selected = await selectLaneAsNeeded([makeLane('l1', 'a1'), codex], { now: 1000, requirements: { provider: 'openai' } }, read);
+  assert.equal(selected.lane.id, 'l2');
+  assert.deepEqual(asked, ['a2']);
+});
+
+test('reading as needed always gives the answer that reading everything first gives', async () => {
+  // Every way three accounts can stand, with a fourth lane sharing the first account and
+  // with and without a cooldown on the first lane, against selectLane given everything.
+  const states = { ROOM, SPENT, UNREADABLE, SIGNED_OUT, MISSING: {} };
+  const names = Object.keys(states);
+  const pool = [makeLane('l1', 'a1'), makeLane('l2', 'a2'), makeLane('l3', 'a3'), makeLane('l4', 'a1')];
+  for (const s1 of names) for (const s2 of names) for (const s3 of names) for (const cooled of [false, true]) {
+    const facts = { a1: states[s1], a2: states[s2], a3: states[s3] };
+    const context = { now: 1000, cooldowns: cooled ? { l1: 5000 } : {} };
+    const everything = { ...context, loginStates: {}, quotas: {} };
+    for (const [id, f] of Object.entries(facts)) {
+      if (f.login !== undefined) everything.loginStates[id] = f.login;
+      if (f.quota !== undefined) everything.quotas[id] = f.quota;
+    }
+    const expected = selectLane(pool, everything);
+    const actual = await selectLaneAsNeeded(pool, context, recordingReader(facts).read);
+    const label = `${s1}/${s2}/${s3}${cooled ? ' with l1 cooling down' : ''}`;
+    assert.equal(actual?.lane.id ?? null, expected?.lane.id ?? null, label);
+    assert.equal(actual?.status.status ?? null, expected?.status.status ?? null, label);
+  }
 });
 
 // ---- What a reading we could not refresh still proves ----

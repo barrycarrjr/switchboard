@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { PROVIDERS, activeAccount, activeHome } from './accounts.js';
+import { PROVIDERS, activeAccount, activeHome, antigravityAccount } from './accounts.js';
 import { accountLoginState } from './doctor.js';
 import { sharedProviderQuota } from './quota-cache.js';
 import { readUserEnv } from './env.js';
@@ -69,11 +69,12 @@ export async function collectStatus({
 
   let antigravityQuota = null;
   if (antigravity && (antigravity.signedIn || antigravity.cliInstalled || antigravity.appInstalled)) {
-    const agHome = path.join(os.homedir(), '.gemini');
+    const agAccount = antigravityAccount();
+    const agHome = agAccount.home;
     if (antigravity.signedIn) {
       try {
         antigravityQuota = await sharedProviderQuota(
-          { id: 'antigravity', provider: 'antigravity', home: agHome },
+          agAccount,
           { fetchImpl, now, file: quotaCacheFile, antigravityQuotaFn }
         );
       } catch (suppressed) { /* ignore */ }
