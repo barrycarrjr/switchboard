@@ -9,7 +9,8 @@ const run = promisify(execFile);
 /**
  * Self-update against a GitHub repository's Releases. Public repositories work with
  * plain HTTPS (no tooling, no token). Private repositories fall back to the USER'S
- * own GitHub CLI login; no token ever ships in the app or gets stored by it. The
+ * own GitHub CLI login, and so does a public one whenever GitHub refuses the request
+ * made without it (see rateLimit); no token ever ships in the app or gets stored by it. The
  * repo slug ("owner/name") comes from local settings or is stamped into release
  * builds by CI; the committed source stays name-free.
  */
@@ -30,27 +31,56 @@ function classifyGhError(e) {
   return 'api';
 }
 
-async function publicLatest(repo, fetchImpl) {
+/**
+ * Whether GitHub refused a request for going over its rate limit, and when the limit lifts.
+ *
+ * Without signing in, GitHub allows 60 API requests an hour per network address, and
+ * everything on that network draws on the same 60. So this check can be refused through no
+ * fault of its own. On 2026-09-25 it was, and the app said only "Update check failed; try
+ * again later" on a machine whose signed-in gh could have answered at once. GitHub marks the
+ * refusal as a 403 or 429 with no requests remaining, or with a Retry-After.
+ */
+function rateLimit(resp, now) {
+  if (resp.status !== 403 && resp.status !== 429) return null;
+  const header = (name) => resp.headers?.get?.(name) ?? null;
+  const retryAfter = header('retry-after');
+  if (header('x-ratelimit-remaining') !== '0' && retryAfter == null) return null;
+  const reset = Number(header('x-ratelimit-reset'));
+  if (Number.isFinite(reset) && reset > 0) return { resetAt: reset * 1000 };
+  const wait = Number(retryAfter);
+  return { resetAt: retryAfter != null && Number.isFinite(wait) && wait >= 0 ? now + wait * 1000 : null };
+}
+
+async function publicLatest(repo, fetchImpl, now) {
   const resp = await fetchImpl(`https://api.github.com/repos/${repo}/releases/latest`, {
     headers: { accept: 'application/vnd.github+json' },
   });
   if (resp.status === 404) return { private: true }; // or missing; the gh fallback settles it
-  if (!resp.ok) return { error: 'api' };
+  // Refused, which is not the same as missing: gh is asked next, and the refusal is kept in
+  // case gh cannot answer either.
+  if (!resp.ok) return { refused: true, limit: rateLimit(resp, now) };
   const body = await resp.json();
   const asset = (body.assets || []).find((a) => /^Switchboard-Setup-.*\.exe$/.test(a.name));
   return { tag: body.tag_name, assetUrl: asset?.browser_download_url ?? null, assetName: asset?.name ?? null };
 }
 
-/** Check the latest release. Errors are named, never guessed. */
-export async function checkAppUpdate({ repo, currentVersion, fetchImpl = fetch, execFn = run }) {
+/**
+ * Check the latest release. Errors are named, never guessed.
+ *
+ * A rate limit comes back as `{ error: 'rate-limited', resetAt, ghError }`: when the limit
+ * lifts (null if GitHub did not say), and why gh could not stand in, so the words shown can
+ * suggest signing in only when that is what was missing.
+ */
+export async function checkAppUpdate({ repo, currentVersion, fetchImpl = fetch, execFn = run, now = Date.now() }) {
   if (!validRepoSlug(repo)) return { error: 'no-repo' };
 
   let tag = null;
   let assetUrl = null;
+  let refused = null;
   try {
-    const pub = await publicLatest(repo, fetchImpl);
+    const pub = await publicLatest(repo, fetchImpl, now);
     if (pub.tag) ({ tag, assetUrl } = pub);
-    else if (pub.error) return { error: pub.error };
+    else if (pub.refused) refused = pub;
   } catch { /* offline or blocked; try gh below */ }
 
   if (!tag) {
@@ -58,7 +88,13 @@ export async function checkAppUpdate({ repo, currentVersion, fetchImpl = fetch, 
       const { stdout } = await gh(['api', `repos/${repo}/releases/latest`, '--jq', '.tag_name'], execFn);
       tag = stdout.trim();
     } catch (e) {
-      return { error: classifyGhError(e) };
+      const ghError = classifyGhError(e);
+      // After a refusal, gh's own errors would point the wrong way: "no-gh" is worded for a
+      // private repository, and nothing said this one was private. The refusal is what
+      // stopped the check, so it is what gets reported.
+      if (refused?.limit) return { error: 'rate-limited', resetAt: refused.limit.resetAt, ghError };
+      if (refused) return { error: 'api' };
+      return { error: ghError };
     }
   }
   if (!tag) return { error: 'api' };

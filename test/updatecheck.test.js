@@ -55,6 +55,56 @@ test('missing gh is reported as no-gh, never guessed around', async () => {
   assert.equal(r.error, 'no-gh');
 });
 
+// GitHub allows 60 requests an hour without signing in, per network address, shared with
+// everything else on that network. On 2026-09-25 the check ran into that limit and gave up
+// with "Update check failed" while a signed-in gh sat unused.
+const refusal = (status, headers) => ({
+  ok: false,
+  status,
+  headers: { get: (name) => headers[name.toLowerCase()] ?? null },
+  json: async () => ({ message: 'API rate limit exceeded' }),
+});
+const OUT_OF_REQUESTS = refusal(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1790373536' });
+const ghMissing = async () => { throw new Error("'gh' is not recognized as an internal or external command"); };
+
+test('a rate-limited check asks the signed-in gh instead of giving up', async () => {
+  const asked = [];
+  const r = await checkAppUpdate({
+    repo: 'o/r',
+    currentVersion: '0.5.0',
+    fetchImpl: async () => OUT_OF_REQUESTS,
+    execFn: async (file, args) => { asked.push([file, ...args].join(' ')); return { stdout: 'v0.7.0\n' }; },
+  });
+  assert.deepEqual({ available: r.available, tag: r.tag }, { available: true, tag: 'v0.7.0' });
+  assert.deepEqual(asked, ['gh api repos/o/r/releases/latest --jq .tag_name']);
+});
+
+test('with no gh to ask, a rate limit is reported as one, with the time it lifts', async () => {
+  const r = await checkAppUpdate({ repo: 'o/r', currentVersion: '0.5.0', fetchImpl: async () => OUT_OF_REQUESTS, execFn: ghMissing });
+  assert.deepEqual(r, { error: 'rate-limited', resetAt: 1790373536000, ghError: 'no-gh' });
+});
+
+test('a Retry-After refusal lifts that many seconds from now', async () => {
+  const r = await checkAppUpdate({
+    repo: 'o/r',
+    currentVersion: '0.5.0',
+    now: 1_000_000,
+    fetchImpl: async () => refusal(429, { 'retry-after': '120' }),
+    execFn: async () => { const e = new Error('gh: To get started with GitHub CLI, please run: gh auth login'); throw e; },
+  });
+  assert.deepEqual(r, { error: 'rate-limited', resetAt: 1_120_000, ghError: 'no-auth' });
+});
+
+test('a refusal that is not a rate limit still tries gh, and is never called a private repository', async () => {
+  const outage = async () => refusal(503, {});
+  const recovered = await checkAppUpdate({ repo: 'o/r', currentVersion: '0.5.0', fetchImpl: outage, execFn: async () => ({ stdout: 'v0.7.0\n' }) });
+  assert.equal(recovered.tag, 'v0.7.0');
+  assert.deepEqual(await checkAppUpdate({ repo: 'o/r', currentVersion: '0.5.0', fetchImpl: outage, execFn: ghMissing }), { error: 'api' });
+  // A 403 with requests still left is some other refusal, not the rate limit.
+  const forbidden = async () => refusal(403, { 'x-ratelimit-remaining': '41' });
+  assert.deepEqual(await checkAppUpdate({ repo: 'o/r', currentVersion: '0.5.0', fetchImpl: forbidden, execFn: ghMissing }), { error: 'api' });
+});
+
 test('no repo configured is its own named error', async () => {
   assert.deepEqual(await checkAppUpdate({ repo: null, currentVersion: '1.0.0' }), { error: 'no-repo' });
 });

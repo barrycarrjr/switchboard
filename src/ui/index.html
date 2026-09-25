@@ -2629,7 +2629,7 @@ async function renderAbout() {
       verNote.textContent = 'No update source configured yet.';
       openRepoModal();
     } else if (r.error) {
-      verNote.textContent = UPDATE_ERRORS[r.error] || r.error;
+      verNote.textContent = updateErrorText(r);
     } else {
       verNote.textContent = 'You are on the latest version.';
     }
@@ -3343,6 +3343,23 @@ const UPDATE_ERRORS = {
   'api': 'Update check failed; try again later.',
 };
 
+/**
+ * What a check that did not finish says. A rate limit gets its own sentence: it is GitHub's
+ * limit on requests made without signing in, shared by everything on the network, so nothing
+ * here is broken and when it lifts is the useful part. Signing in to gh is suggested only
+ * when gh is what was missing; a signed-in gh that failed too is not helped by being told to
+ * sign in.
+ */
+function updateErrorText(r) {
+  if (r.error !== 'rate-limited') return UPDATE_ERRORS[r.error] || r.error;
+  const time = r.resetAt ? new Date(r.resetAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
+  const when = time ? ` until ${time}. Try again after that.` : ' for now. Try again later.';
+  const signIn = r.ghError === 'no-gh' || r.ghError === 'no-auth'
+    ? ' Signing in to the GitHub CLI (gh auth login) lets the check go around that limit.'
+    : '';
+  return `GitHub is limiting update checks from this network${when}${signIn}`;
+}
+
 let updateBusy = false;
 let updatingTag = null;
 sb.onUpdateProgress(({ received, total }) => {
@@ -3393,7 +3410,7 @@ async function manualUpdateCheck() {
   if (r.available) { showUpdateButton(r); return; }
   v.textContent = original;
   if (r.error === 'no-repo') { openRepoModal(); return; }
-  if (r.error) { toast(UPDATE_ERRORS[r.error] || r.error); return; }
+  if (r.error) { toast(updateErrorText(r)); return; }
   toast('Switchboard is up to date.');
 }
 

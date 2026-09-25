@@ -196,7 +196,10 @@ program is launched; if that backup cannot be written, the upgrade does not star
 
 After installing, updates come from inside the app: it checks the [Releases](../../releases)
 automatically, and the version number in the header becomes an Update button when a newer
-version exists.
+version exists. The check asks GitHub without signing in, which GitHub allows 60 times an
+hour for everything on your network together. When GitHub refuses it, for that limit or
+anything else, the check asks again through the GitHub CLI (`gh`) if it is signed in, and
+otherwise says when the limit lifts rather than that the check failed.
 
 Releases are built by CI from a version tag (`v<version>`); the tag must match the version
 in `package.json`.
