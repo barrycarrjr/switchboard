@@ -5,6 +5,7 @@ import { toolExecutable } from './providers.js';
 import { cliLaunch } from './cli-launch.js';
 import { agyStampPath, markAgyCheckDone } from './agy-updates.js';
 import { WINDOW_LIFETIME_MS } from './lanes-util.js';
+import { openCodeCredential } from './opencode-auth.js';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const OAUTH_BETA = 'oauth-2025-04-20';
@@ -661,10 +662,12 @@ export async function providerQuota(provider, home, {
   now = Date.now(),
   allowDesktopFallback = true,
   antigravityQuotaFn = fetchAntigravityQuota,
+  copilotQuotaFn = copilotAccountQuota,
 } = {}) {
   if (provider === 'claude') return accountQuota(home, fetchImpl, usageSource, now, desktopProfile, allowDesktopFallback);
   if (provider === 'codex') return codexAccountQuota(home, fetchImpl, now);
   if (provider === 'antigravity') return antigravityQuotaFn({ now });
+  if (provider === 'copilot') return copilotQuotaFn(home, fetchImpl, now);
   return { error: 'unsupported' };
 }
 
@@ -848,3 +851,152 @@ export async function fetchAntigravityQuota({
   }
 }
 
+
+/* ------------------------------------------------------------------------- *
+ * GitHub Copilot
+ *
+ * Resolves Copilot/GitHub tokens from environment variables, local Copilot
+ * config files, GitHub CLI config, or OpenCode's auth bridge, and queries
+ * GitHub's internal user quota endpoint.
+ * ------------------------------------------------------------------------- */
+
+export function readCopilotToken(home = null, env = process.env) {
+  const envToken = env.COPILOT_API_TOKEN || env.COPILOT_TOKEN || env.GITHUB_TOKEN || env.GH_TOKEN;
+  if (typeof envToken === 'string' && envToken.trim()) return envToken.trim();
+
+  if (home) {
+    const candidates = [
+      path.join(home, 'hosts.json'),
+      path.join(home, 'config.json'),
+    ];
+    for (const file of candidates) {
+      try {
+        if (fs.existsSync(file)) {
+          const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+          const token = raw?.['github.com']?.oauth_token || raw?.oauth_token || raw?.token;
+          if (typeof token === 'string' && token.trim()) return token.trim();
+        }
+      } catch {}
+    }
+  }
+
+  const userHome = os.homedir();
+  const localAppData = env.LOCALAPPDATA || path.join(userHome, 'AppData', 'Local');
+  const appData = env.APPDATA || path.join(userHome, 'AppData', 'Roaming');
+
+  const copilotConfigPaths = [
+    path.join(localAppData, 'github-copilot', 'hosts.json'),
+    path.join(userHome, '.config', 'github-copilot', 'hosts.json'),
+  ];
+  for (const file of copilotConfigPaths) {
+    try {
+      if (fs.existsSync(file)) {
+        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const token = raw?.['github.com']?.oauth_token || raw?.oauth_token;
+        if (typeof token === 'string' && token.trim()) return token.trim();
+      }
+    } catch {}
+  }
+
+  const ghConfigPaths = [
+    path.join(appData, 'GitHub CLI', 'hosts.yml'),
+    path.join(userHome, '.config', 'gh', 'hosts.yml'),
+  ];
+  for (const file of ghConfigPaths) {
+    try {
+      if (fs.existsSync(file)) {
+        const text = fs.readFileSync(file, 'utf8');
+        const match = text.match(/oauth_token:\s*([^\s\r\n]+)/);
+        if (match?.[1]) return match[1].trim();
+      }
+    } catch {}
+  }
+
+  try {
+    const openCodeToken = openCodeCredential('github-copilot');
+    if (openCodeToken) return openCodeToken;
+  } catch {}
+
+  return null;
+}
+
+export function parseCopilotUsage(body) {
+  if (!body || typeof body !== 'object') return { error: 'no-usage-data' };
+  const resetsAt = toEpochMs(body.quota_reset_date);
+  const snapshots = body.quota_snapshots || {};
+  const windows = [];
+
+  const premium = snapshots.premium_interactions;
+  if (premium && typeof premium.percent_remaining === 'number') {
+    const used = toExactPercent(100 - premium.percent_remaining);
+    windows.push({
+      key: 'session',
+      label: 'Premium (monthly)',
+      usedPercent: used,
+      resetsAt,
+      resetDescription: `${used}% used`,
+    });
+  }
+
+  const chat = snapshots.chat;
+  if (chat && typeof chat.percent_remaining === 'number') {
+    const used = toExactPercent(100 - chat.percent_remaining);
+    windows.push({
+      key: 'week',
+      label: 'Chat (monthly)',
+      usedPercent: used,
+      resetsAt,
+      resetDescription: `${used}% used`,
+    });
+  }
+
+  const planRaw = body.copilot_plan;
+  const plan = planRaw ? `Copilot ${planRaw.charAt(0).toUpperCase() + planRaw.slice(1)}` : 'Copilot';
+
+  return {
+    windows,
+    source: 'token',
+    plan,
+    vendor: 'GitHub',
+  };
+}
+
+export async function fetchCopilotQuota(token, fetchImpl = fetch) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetchImpl('https://api.github.com/copilot_internal/user', {
+      headers: {
+        authorization: `token ${token}`,
+        accept: 'application/json',
+        'editor-version': 'vscode/1.96.2',
+        'editor-plugin-version': 'copilot-chat/0.26.7',
+        'user-agent': 'GitHubCopilotChat/0.26.7',
+        'x-github-api-version': '2025-04-01',
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const err = new Error(`copilot usage endpoint returned ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    const body = await res.json();
+    return parseCopilotUsage(body);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function copilotAccountQuota(home, fetchImpl = fetch, now = Date.now(), env = process.env) {
+  const token = readCopilotToken(home, env);
+  if (!token) return { error: 'no-credentials' };
+
+  try {
+    return await fetchCopilotQuota(token, fetchImpl);
+  } catch (e) {
+    if (e.status === 401 || e.status === 403) return { error: 'auth' };
+    if (e.status === 429) return { error: 'rate-limited' };
+    return { error: 'unavailable' };
+  }
+}
