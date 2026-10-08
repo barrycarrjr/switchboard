@@ -29,7 +29,7 @@ test('readCopilotToken extracts token from env or custom home hosts.json', () =>
   assert.equal(tokenFromEnv, 'copilot-env-token-2');
 
   // When neither is present
-  const emptyDir = tempDir('sb-copilot-empty-');
+  const emptyDir = tempDir('sb-copilot-');
   assert.equal(readCopilotToken(emptyDir, {}), null);
 });
 
@@ -102,7 +102,7 @@ test('copilotAccountQuota handles auth errors, rate limits, and missing token', 
   );
 
   // Missing credentials
-  const noAuthDir = tempDir('sb-copilot-none-');
+  const noAuthDir = tempDir('sb-copilot-');
   const noAuth = await copilotAccountQuota(noAuthDir, async () => {}, Date.now(), {});
   assert.deepEqual(noAuth, { error: 'no-credentials' });
 

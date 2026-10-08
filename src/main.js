@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, Notification, screen } from 'electron';
+import { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, Notification, screen, safeStorage } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -13,6 +13,7 @@ import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { signOutAccount, signoutSupported } from '../core/signout.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
+import { registerVaultDriver } from '../core/vault.js';
 import { validateLaneTokens, mergeLaneTokenResults } from '../core/lane-tokens.js';
 import { maybeUpdateAgy } from '../core/agy-updates.js';
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, resolvePackagedExe, APPS } from '../core/apps.js';
@@ -52,6 +53,17 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 app.setAppUserModelId('io.switchboard.app');
+
+// Register Windows DPAPI credential vault via Electron safeStorage when available
+try {
+  if (safeStorage && typeof safeStorage.isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable()) {
+    registerVaultDriver({
+      id: 'dpapi',
+      encrypt: (plain) => safeStorage.encryptString(plain).toString('base64'),
+      decrypt: (cipher) => safeStorage.decryptString(Buffer.from(cipher, 'base64')),
+    });
+  }
+} catch {}
 
 function registry() {
   return loadRegistry();
