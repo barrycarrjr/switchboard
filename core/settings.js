@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { dataDir, writeJsonAtomic } from './paths.js';
+import { protectSecret, unprotectSecret, isEncrypted } from './vault.js';
 
 export const WATCH_MODES = ['off', 'notify', 'auto'];
 
@@ -34,6 +35,35 @@ export function settingsFile() {
   return path.join(dataDir(), 'settings.json');
 }
 
+export function protectSettings(settings) {
+  if (!settings || typeof settings !== 'object') return settings;
+  const clone = { ...settings };
+  if (clone.laneTokens && typeof clone.laneTokens === 'object' && !Array.isArray(clone.laneTokens)) {
+    const protectedLaneTokens = {};
+    for (const [k, v] of Object.entries(clone.laneTokens)) {
+      if (v && typeof v === 'object' && typeof v.token === 'string' && !isEncrypted(v.token)) {
+        protectedLaneTokens[k] = { ...v, token: protectSecret(v.token) };
+      } else {
+        protectedLaneTokens[k] = v;
+      }
+    }
+    clone.laneTokens = protectedLaneTokens;
+  }
+  return clone;
+}
+
+export function unprotectSettings(settings) {
+  if (!settings || typeof settings !== 'object') return settings;
+  if (settings.laneTokens && typeof settings.laneTokens === 'object' && !Array.isArray(settings.laneTokens)) {
+    for (const [k, v] of Object.entries(settings.laneTokens)) {
+      if (v && typeof v === 'object' && typeof v.token === 'string' && isEncrypted(v.token)) {
+        v.token = unprotectSecret(v.token) ?? v.token;
+      }
+    }
+  }
+  return settings;
+}
+
 export function loadSettings(file = settingsFile()) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -48,7 +78,11 @@ export function loadSettings(file = settingsFile()) {
     if (!Array.isArray(merged.lanes)) merged.lanes = [];
     if (typeof merged.spendPolicies !== 'object' || merged.spendPolicies === null) merged.spendPolicies = {};
     if (typeof merged.cooldowns !== 'object' || merged.cooldowns === null) merged.cooldowns = {};
-    if (typeof merged.laneTokens !== 'object' || merged.laneTokens === null || Array.isArray(merged.laneTokens)) merged.laneTokens = {};
+    if (typeof merged.laneTokens !== 'object' || merged.laneTokens === null || Array.isArray(merged.laneTokens)) {
+      merged.laneTokens = {};
+    } else {
+      unprotectSettings(merged);
+    }
     if (typeof merged.agyUpdate !== 'object' || merged.agyUpdate === null || Array.isArray(merged.agyUpdate)) merged.agyUpdate = null;
     if (typeof merged.notifyWebhookUrl === 'string' && merged.notifyWebhookUrl.trim()) {
       try {
@@ -86,5 +120,5 @@ export function loadSettings(file = settingsFile()) {
 }
 
 export function saveSettings(settings, file = settingsFile()) {
-  writeJsonAtomic(file, settings);
+  writeJsonAtomic(file, protectSettings(settings));
 }
