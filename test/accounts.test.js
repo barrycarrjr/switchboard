@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
-import { loadRegistry, saveRegistry, addAccount, createAccount, newAccountHome, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, strayAccounts, envValueForHome, homeFromEnvValue, PROVIDERS } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, createAccount, newAccountHome, removeAccount, renameAccount, normalizeColor, setAccountColor, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, strayAccounts, envValueForHome, homeFromEnvValue, PROVIDERS } from '../core/accounts.js';
 
 function tmp() {
   return tempDir('sb-test-');
@@ -268,4 +268,41 @@ test('a new account needs a name, and a refused one leaves no folder behind', ()
   assert.throws(() => createAccount({ accounts: [] }, { provider: 'claude', label: '   ' }, { homeDir: dir }), /name/);
   assert.throws(() => createAccount({ accounts: [] }, { provider: 'nope', label: 'Work' }, { homeDir: dir }));
   assert.deepEqual(fs.readdirSync(dir), []);
+});
+test('a color is kept as six lowercase hex digits, whichever way it was typed', () => {
+  assert.equal(normalizeColor('#2563EB'), '#2563eb');
+  assert.equal(normalizeColor('2563eb'), '#2563eb');
+  assert.equal(normalizeColor('#abc'), '#aabbcc', 'the short form is widened rather than refused');
+  assert.equal(normalizeColor('  #b225eb '), '#b225eb');
+  assert.equal(normalizeColor(''), null, 'empty means no color');
+  assert.equal(normalizeColor(null), null);
+});
+
+test('a value that is not a hex color is refused rather than stored', () => {
+  for (const bad of ['blue', '#12345', '#1234567', 'red;background:url(x)', '#ggg']) {
+    assert.throws(() => normalizeColor(bad), /not a color/, bad);
+  }
+});
+
+test('setting a color changes only that account, and clearing it leaves no trace', () => {
+  const registry = { accounts: [
+    { id: 'claude-a', provider: 'claude', label: 'A', home: 'X:\\a' },
+    { id: 'claude-b', provider: 'claude', label: 'B', home: 'X:\\b' },
+  ] };
+  setAccountColor(registry, 'claude-a', '#E7EB25');
+  assert.equal(registry.accounts[0].color, '#e7eb25');
+  assert.equal('color' in registry.accounts[1], false);
+  setAccountColor(registry, 'claude-a', null);
+  assert.equal('color' in registry.accounts[0], false, 'a cleared account looks like one that never had a color');
+  assert.throws(() => setAccountColor(registry, 'claude-missing', '#000000'), /no such account/);
+  assert.throws(() => setAccountColor(registry, 'claude-a', 'yellow'), /not a color/);
+  assert.equal('color' in registry.accounts[0], false, 'a refused value changes nothing');
+});
+
+test('a color survives the trip through accounts.json', () => {
+  const file = path.join(tmp(), 'accounts.json');
+  const registry = { accounts: [{ id: 'claude-a', provider: 'claude', label: 'A', home: 'X:\\a' }] };
+  setAccountColor(registry, 'claude-a', '#2563eb');
+  saveRegistry(registry, file);
+  assert.equal(loadRegistry(file).accounts[0].color, '#2563eb');
 });

@@ -5,8 +5,9 @@ import { accountsFile, samePath, writeJsonAtomic } from './paths.js';
 import { readUserEnv, setUserEnv } from './env.js';
 
 /**
- * An account is a label plus a vendor config folder. Nothing else is stored:
- * credentials stay in the vendor's own folder, owned by the vendor's own login flow.
+ * An account is a label plus a vendor config folder, and optionally the color it is shown
+ * in. Nothing else is stored: credentials stay in the vendor's own folder, owned by the
+ * vendor's own login flow.
  *
  * A tool only belongs here if its own environment variable can move the whole login
  * to another folder. Two shapes exist and they are not interchangeable:
@@ -274,6 +275,34 @@ export function renameAccount(registry, id, label) {
   const clean = String(label ?? '').trim();
   if (!clean) throw new Error('label cannot be empty');
   account.label = clean;
+  return account;
+}
+
+/**
+ * An account color is a six-digit hex value, stored lowercase, or nothing at all.
+ *
+ * Only hex is accepted because the color travels to three places that each speak a
+ * different dialect (page CSS, the tray's bitmap, and T3 Code's settings), and hex is the
+ * one all three read the same way. A short form like #abc is widened rather than refused,
+ * since that is how people type it.
+ */
+export function normalizeColor(value) {
+  if (value == null || String(value).trim() === '') return null;
+  const match = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(String(value).trim());
+  if (!match) throw new Error(`"${value}" is not a color Switchboard can use. Give a hex value such as #2563eb`);
+  const hex = match[1].toLowerCase();
+  return '#' + (hex.length === 3 ? [...hex].map((c) => c + c).join('') : hex);
+}
+
+/** Set or clear (null or empty) the color an account is shown in. The caller saves. */
+export function setAccountColor(registry, id, color) {
+  const account = registry.accounts.find((a) => a.id === id);
+  if (!account) throw new Error(`no such account: ${id}`);
+  const clean = normalizeColor(color);
+  // Cleared means absent, not null, so an account that never had a color and one whose
+  // color was removed look the same in accounts.json.
+  if (clean) account.color = clean;
+  else delete account.color;
   return account;
 }
 

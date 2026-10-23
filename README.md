@@ -14,8 +14,8 @@ For deep-dives into architecture, guides, and full command references, see the *
 
 ## How it works
 
-- An account is a vendor config folder. Switchboard registers labels and folder paths,
-  nothing else. Four tools qualify, because each has a variable that moves its whole
+- An account is a vendor config folder. Switchboard registers labels, folder paths and an
+  optional display color, nothing else. Four tools qualify, because each has a variable that moves its whole
   sign-in to another folder: Claude Code (`CLAUDE_CONFIG_DIR`), Codex (`CODEX_HOME`),
   Gemini CLI (`GEMINI_CLI_HOME`) and Qwen Code (`QWEN_HOME`).
 - Three of those variables name the folder itself. `GEMINI_CLI_HOME` alone names the
@@ -45,6 +45,20 @@ For deep-dives into architecture, guides, and full command references, see the *
   that already holds a login can still be picked by hand from the same form.
   `switchboard add <tool> <label>` does the same from a terminal when the folder is left
   out.
+- An account can have a color, so it is easy to tell at a glance which one you are using,
+  and so it can match the color T3 Code shows it in. Click the dot after an account's name
+  on the Accounts or Lanes tab to pick one, type a hex value, or clear it. The card gets a
+  thin bar of that color along its top, and the same color appears as a dot beside the
+  account on the terminal buttons, the Apps tab menus and the tray menu. None of it moves a
+  name: the bar is drawn inside the card's edge, the dot sits after the name, and in a list
+  where only some accounts have a color the others keep an empty space the same size.
+  Where T3 Code has a color for an account folder Switchboard also knows, the tool's
+  heading offers "Copy colors from T3 Code", and the chooser offers T3's color for that one
+  account. The two are matched by config folder only, never by name, and a T3 entry with
+  no folder set is left alone because it could be any account. From a terminal,
+  `switchboard color <id> <hex|none>` sets or clears one (type `2563eb` without the `#`,
+  which a shell would read as the start of a comment) and `switchboard color --from-t3`
+  copies T3's.
 - Signing in and signing out both stay the vendor's own job. The card's Re-authenticate
   button opens a terminal already pointed at that account's folder, which is also how you
   move a folder to a different subscription or replace a login the vendor has stopped

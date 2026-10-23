@@ -67,7 +67,7 @@ function makeDom() {
 /** Evaluate the lifted helpers against the stub DOM and hand back what the tests drive. */
 function load() {
   const { document, createElement } = makeDom();
-  const src = [lift('el'), lift('esc'), lift('attachMenu'), lift('closeMenus'), 'return { attachMenu, closeMenus };'].join('\n');
+  const src = [lift('el'), lift('esc'), lift('safeColor'), lift('colorDot'), lift('attachMenu'), lift('closeMenus'), 'return { attachMenu, closeMenus };'].join('\n');
   const api = new Function('document', src)(document);
   return { ...api, document, row: () => createElement('div') };
 }
@@ -138,4 +138,25 @@ test('choosing an action closes the menu and runs it once', () => {
   menu.children[0].click();
   assert.equal(ran, 1);
   assert.equal(menu.classList.contains('open'), false);
+});
+
+test('once any entry has a color, every entry keeps a swatch space so the names line up', () => {
+  const { attachMenu, row } = load();
+  const r = row();
+  attachMenu(r, [
+    { label: 'Work', color: '#2563eb', onClick() {} },
+    { label: 'Spare', onClick() {} },
+  ]);
+  const menu = r.children[1];
+  assert.ok(menu.children.every((b) => b.className.includes('has-dot')));
+  assert.match(menu.children[0].innerHTML, /background:#2563eb/);
+  assert.match(menu.children[1].innerHTML, /visibility:hidden/);
+});
+
+test('a menu with no colored entries is drawn exactly as before', () => {
+  const { attachMenu, row } = load();
+  const r = row();
+  attachMenu(r, [{ label: 'Uninstall', onClick() {} }]);
+  assert.equal(r.children[1].children[0].innerHTML, 'Uninstall');
+  assert.equal(r.children[1].children[0].className, '');
 });

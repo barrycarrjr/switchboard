@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('sb', {
   createAccount: (provider, label) => ipcRenderer.invoke('sb:createAccount', provider, label),
   removeAccount: (id) => ipcRenderer.invoke('sb:removeAccount', id),
   rename: (id, label) => ipcRenderer.invoke('sb:rename', id, label),
+  setColor: (id, color) => ipcRenderer.invoke('sb:setColor', id, color),
+  copyT3Colors: () => ipcRenderer.invoke('sb:copyT3Colors'),
   providers: () => ipcRenderer.invoke('sb:providers'),
   install: (toolId, mode) => ipcRenderer.invoke('sb:install', toolId, mode),
   doctor: () => ipcRenderer.invoke('sb:doctor'),

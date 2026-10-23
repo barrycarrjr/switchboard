@@ -64,7 +64,7 @@ function makeDom() {
 }
 
 function load(deps, returns) {
-  const src = [...deps.map(lift), `return { ${returns.join(', ')} };`].join('\n\n');
+  const src = [...[...deps, 'safeColor', 'colorDot', 'accountDot'].map(lift), `return { ${returns.join(', ')} };`].join('\n\n');
   const { document, createElement } = makeDom();
   const api = new Function('document', 'el', 'esc', src)(
     document,

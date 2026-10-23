@@ -7,6 +7,24 @@ arguments for their flags in the meantime.)*
 Everything below works with no desktop session and no Electron: `bin/cli.js` imports only
 `core/`, and reads and writes the same files the tray app does.
 
+## `switchboard color`
+
+The color an account is shown in, in the window and the tray.
+
+```
+switchboard color <id> <hex|none>
+switchboard color --from-t3
+```
+
+- A color is a hex value, `2563eb` or `abc`, stored as `#` plus six lowercase digits.
+  Leave the `#` off when typing it: PowerShell and bash both read `#` after a space as the
+  start of a comment, so the color never reaches Switchboard. A quoted `'#2563eb'` works
+  too. Anything else is refused and nothing changes. `none` clears it.
+- `--from-t3` reads T3 Code's `~/.t3/userdata/settings.json` and gives each registered
+  account the accent color of the T3 Claude or Codex instance on the same config folder.
+  It prints each account it set. A T3 instance with no folder set is skipped.
+- `switchboard accounts` prints an account's color at the end of its line.
+
 ## `switchboard lanes`
 
 The failover pool `switchboard run` chooses from, in priority order. The first healthy lane

@@ -46,7 +46,7 @@ test('a CLI that holds one sign-in per machine gets a single row, marked as such
   const rows = terminalRows({ tools, accounts, activeHomes });
   const copilot = rows.filter((r) => r.toolId === 'copilot');
   assert.equal(copilot.length, 1);
-  assert.deepEqual(copilot[0], { key: 'copilot', toolId: 'copilot', bin: 'copilot', name: 'Copilot CLI', accountId: null, accountLabel: null, home: null, isDefault: true, switchable: false });
+  assert.deepEqual(copilot[0], { key: 'copilot', toolId: 'copilot', bin: 'copilot', name: 'Copilot CLI', accountId: null, accountLabel: null, accountColor: null, home: null, isDefault: true, switchable: false });
 });
 
 test('a switchable CLI with nothing registered yet still gets a row on the current default', () => {
@@ -102,4 +102,14 @@ test('when no account matches the active folder, the button still opens a real o
 test('chips of an empty list are an empty list', () => {
   assert.deepEqual(terminalChips([]), []);
   assert.deepEqual(terminalChips(), []);
+});
+
+test('a terminal button and its list carry each account color, so they match the cards', () => {
+  const colored = accounts.map((a, i) => (i === 0 ? { ...a, color: '#b225eb' } : a));
+  const chips = terminalChips(terminalRows({ tools, accounts: colored, activeHomes: {} }));
+  const claude = chips.find((c) => c.toolId === 'claude');
+  assert.equal(claude.accounts[0].color, '#b225eb');
+  assert.ok(claude.accounts.slice(1).every((a) => a.color === null));
+  const opened = claude.accounts.find((a) => a.id === claude.openAccountId);
+  assert.equal(claude.openColor, opened.color, 'the button shows the color of the account it opens');
 });

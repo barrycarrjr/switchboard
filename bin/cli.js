@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The scriptable core. Everything the tray can do, headless.
 import { spawn } from 'node:child_process';
-import { loadRegistry, saveRegistry, addAccount, createAccount, envValueForHome, removeAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, PROVIDERS, accountScopedEnv, configuredClaudeCredentialOverrides } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, createAccount, envValueForHome, removeAccount, setAccountColor, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, PROVIDERS, accountScopedEnv, configuredClaudeCredentialOverrides } from '../core/accounts.js';
 import { detectAll, detectInstalled, TOOLS, toolExecutable } from '../core/providers.js';
 import { runChecks, accountLoginState } from '../core/doctor.js';
 import { sharedProviderQuota } from '../core/quota-cache.js';
@@ -18,6 +18,7 @@ import { CARRYABLE_HARNESSES, callerManagesSession, namedSession, newSessionId, 
 import { parseRunArgs, loadRunSpec, resolveSpecArgv, drivableHarnesses, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs, parseNotifyArgs } from '../core/runargs.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, DEFAULT_THRESHOLDS } from '../core/hooks.js';
 import { recordPipedInput } from '../core/piped-input.js';
+import { matchT3Colors, readT3Instances } from '../core/t3colors.js';
 import readline from 'node:readline/promises';
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -794,7 +795,7 @@ async function main() {
       if (registry.accounts.length === 0) { out(`No accounts registered. Add one: switchboard add <${providerList}> <label> [folder]`); return; }
       for (const a of registry.accounts) {
         const active = activeAccount(registry, a.provider)?.id === a.id;
-        out(`${active ? '*' : ' '} ${a.id}  [${a.provider}] ${a.label}  ${a.home}`);
+        out(`${active ? '*' : ' '} ${a.id}  [${a.provider}] ${a.label}  ${a.home}${a.color ? `  ${a.color}` : ''}`);
       }
       return;
     }
@@ -826,6 +827,29 @@ async function main() {
       setActive(registry, account.id);
       out(`New terminals and apps will use ${PROVIDERS[account.provider].name} account "${account.label}". Running processes are unchanged.`);
       if (defaultFollowsLanes(loadSettings(), account.provider)) out(switchedAgainstLanesNote(PROVIDERS[account.provider].name));
+      return;
+    }
+    // The color the window and tray show an account in. Here as well as in the window so a
+    // machine set up from a script can match T3 Code without opening anything.
+    case 'color': {
+      if (args[0] === '--from-t3') {
+        const colors = matchT3Colors(registry, readT3Instances());
+        const ids = Object.keys(colors);
+        if (!ids.length) { out('T3 Code has no color for any registered account folder.'); return; }
+        for (const id of ids) {
+          setAccountColor(registry, id, colors[id]);
+          out(`${id}  ${colors[id]}`);
+        }
+        saveRegistry(registry);
+        return;
+      }
+      const [id, value] = args;
+      // The # is optional because a shell reads "#2563eb" after a space as a comment, so
+      // the color never arrives. The usage line says so, since that is where it bites.
+      if (!id || value == null) { out('Usage: switchboard color <id> <hex|none>, for example: switchboard color claude-work 2563eb. Or: switchboard color --from-t3'); process.exitCode = 1; return; }
+      const account = setAccountColor(registry, id, value === 'none' ? null : value);
+      saveRegistry(registry);
+      out(account.color ? `${account.id} is shown in ${account.color}` : `${account.id} has no color now`);
       return;
     }
     case 'detect': {
@@ -1312,12 +1336,13 @@ async function main() {
       return;
     }
     default:
-      out(`switchboard <status|accounts|add|remove|use|detect|providers|doctor|quota|lanes|lane-token|watch|notify|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|watch|notify|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> [folder]   leave out the folder for a brand-new account`);
       out('  remove <id>                 unregister (never deletes the folder)');
       out('  use <id>                    switch the current account');
+      out('  color <id> <hex|none>       the color an account is shown in (2563eb, no #); --from-t3 copies T3 Code colors');
       out('  detect                      register existing vendor folders');
       out('  providers                   installed AI tools and versions');
       out('  doctor                      health checks');

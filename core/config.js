@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { PROVIDERS } from './accounts.js';
+import { PROVIDERS, normalizeColor } from './accounts.js';
 import { WATCH_MODES } from './settings.js';
 import { assertValidServer } from './mcp.js';
 
@@ -53,7 +53,17 @@ function normalizeAccounts(value) {
     const homeKey = `${provider}:${path.win32.normalize(home).toLowerCase()}`;
     if (homes.has(homeKey)) throw new Error(`duplicate ${provider} account folder: ${home}`);
     homes.add(homeKey);
-    return { id, provider, label, home };
+    // A color is optional, and one that does not parse refuses the import like any other
+    // bad field, rather than arriving as a value the page would draw as nothing. A number
+    // is refused too, rather than read as digits of a color nobody chose.
+    let color = null;
+    try {
+      if (account.color != null && typeof account.color !== 'string') throw new Error('not text');
+      color = normalizeColor(account.color);
+    } catch {
+      throw new Error(`accounts[${i}].color is not a hex color`);
+    }
+    return color ? { id, provider, label, home, color } : { id, provider, label, home };
   });
 }
 
@@ -169,6 +179,20 @@ export function parseSwitchboardConfig(source) {
   return normalizeSwitchboardConfig(value);
 }
 
+/**
+ * An account as an export carries it. accounts.json can be edited by hand, and a color the
+ * window would simply not draw must not stop an export, or the safety copy taken before an
+ * import or an update, so one that does not parse is left out rather than refused.
+ */
+function exportableAccount(account) {
+  let color = null;
+  try {
+    color = typeof account.color === 'string' ? normalizeColor(account.color) : null;
+  } catch { /* left out, see above */ }
+  const { color: _stored, ...rest } = account;
+  return color ? { ...rest, color } : rest;
+}
+
 export function createSwitchboardConfig({ registry, settings, mcp, activeAccounts = {}, now = new Date() }) {
   // An account can be removed after a Desktop usage source was selected. The stale
   // preference is harmless in normal use and should not make a later export fail.
@@ -180,7 +204,7 @@ export function createSwitchboardConfig({ registry, settings, mcp, activeAccount
     format: CONFIG_FORMAT,
     version: CONFIG_VERSION,
     exportedAt: now.toISOString(),
-    accounts: registry.accounts,
+    accounts: registry.accounts.map(exportableAccount),
     activeAccounts,
     preferences: {
       quotaWatch: settings.quotaWatch,

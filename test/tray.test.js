@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trayModel, trayTooltip, accountNote, accountUsage, whenBack, WATCH_MODES, TOOLTIP_LIMIT, antigravityMenuUsage, antigravityTooltipLines, parseAntigravityWindows } from '../core/tray.js';
+import { colorDotBitmap, trayModel, trayTooltip, accountNote, accountUsage, whenBack, WATCH_MODES, TOOLTIP_LIMIT, antigravityMenuUsage, antigravityTooltipLines, parseAntigravityWindows } from '../core/tray.js';
 
 /**
  * The tray menu is the part of Switchboard most people see most days, and until the rows
@@ -206,12 +206,12 @@ test('every installed CLI can be opened on each of its accounts', () => {
     'Claude Code on Secondary',
     'Codex on Default',
   ]);
-  assert.deepEqual(submenu.items[0], { kind: 'terminal', label: 'Claude Code on Main Account', bin: 'claude', accountId: 'claude-default' });
+  assert.deepEqual(submenu.items[0], { kind: 'terminal', label: 'Claude Code on Main Account', bin: 'claude', accountId: 'claude-default', color: null });
 });
 
 test('a CLI with no accounts of its own opens on whatever is current', () => {
   const rows = model({ terminals: [{ name: 'Gemini CLI', bin: 'gemini', accounts: [] }] });
-  assert.deepEqual(kinds(rows, 'submenu')[0].items, [{ kind: 'terminal', label: 'Gemini CLI', bin: 'gemini', accountId: null }]);
+  assert.deepEqual(kinds(rows, 'submenu')[0].items, [{ kind: 'terminal', label: 'Gemini CLI', bin: 'gemini', accountId: null, color: null }]);
 });
 
 test('no installed CLI means no terminal entry rather than an empty one', () => {
@@ -536,4 +536,37 @@ test('trayTooltip prioritizes active accounts across providers when multiple acc
   assert.ok(text.includes('Claude Code:'));
   assert.ok(text.includes('Codex:'));
   assert.ok(text.includes('Antigravity:'));
+});
+
+test('an account row and its terminal entry carry the account color, and a plain one carries none', () => {
+  const accounts = ACCOUNTS.map((a) => (a.id === 'claude-default' ? { ...a, color: '#2563eb' } : a));
+  const rows = model({
+    accounts,
+    terminals: [{ name: 'Claude Code', bin: 'claude', accounts: [{ id: 'claude-default', label: 'Main', color: '#2563eb' }, { id: 'claude-account-2', label: 'Two' }] }],
+  });
+  const colors = Object.fromEntries(kinds(rows, 'account').map((r) => [r.accountId, r.color]));
+  assert.equal(colors['claude-default'], '#2563eb');
+  assert.equal(colors['claude-account-2'], null);
+  assert.deepEqual(kinds(rows, 'submenu')[0].items.map((i) => i.color), ['#2563eb', null]);
+  assert.equal(kinds(rows, 'account')[0].label, 'Main Account', 'the color never changes the words on the row');
+});
+
+test('the tray swatch is a round dot of exactly that color on a clear background', () => {
+  const dot = colorDotBitmap('#2563eb');
+  assert.equal(dot.width, 16);
+  assert.equal(dot.height, 16);
+  assert.equal(dot.buffer.length, 16 * 16 * 4);
+  const pixel = (x, y) => [...dot.buffer.subarray((y * 16 + x) * 4, (y * 16 + x) * 4 + 4)];
+  assert.deepEqual(pixel(8, 8), [0xeb, 0x63, 0x25, 255], 'the middle is the color itself, stored blue first');
+  assert.deepEqual(pixel(0, 0), [0, 0, 0, 0], 'the corners stay see-through, so it reads as a dot');
+  assert.equal(colorDotBitmap('blue'), null, 'a value that is not hex draws nothing');
+  assert.equal(colorDotBitmap(null), null);
+});
+
+test('an account with no color still takes a dot-sized space once a neighbour has one', () => {
+  const blank = colorDotBitmap(null, 16, { keepSpace: true });
+  assert.equal(blank.width, 16);
+  assert.ok(blank.buffer.every((v) => v === 0), 'the stand-in is fully see-through');
+  const rows = model({ accounts: ACCOUNTS.map((a) => (a.id === 'claude-default' ? { ...a, color: '#2563eb' } : a)) });
+  assert.ok(kinds(rows, 'account').every((r) => r.provider), 'each row says which tool it belongs to, so space is kept per tool');
 });

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadRegistry, saveRegistry, addAccount, createAccount, removeAccount, renameAccount, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, accountScopedEnv, configuredClaudeCredentialOverrides, PROVIDERS } from '../core/accounts.js';
+import { loadRegistry, saveRegistry, addAccount, createAccount, removeAccount, renameAccount, setAccountColor, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, accountScopedEnv, configuredClaudeCredentialOverrides, PROVIDERS } from '../core/accounts.js';
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
 import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
 import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage, fetchAntigravityQuota } from '../core/quota.js';
@@ -21,6 +21,7 @@ import { appProfileDef, chooseOpenProfile, describeProfiles, discoverProfileDirs
 import { detectPresence } from '../core/presence.js';
 import { appRunning, bridgeProblem, bridgeRunning, candidateBridgeProcesses, listProcesses, renameBridgeProblem } from '../core/running.js';
 import { terminalRows, terminalChips } from '../core/terminals.js';
+import { matchT3Colors, readT3Instances } from '../core/t3colors.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
 import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix, disableServer, enableServer } from '../core/mcp.js';
 import { createRequire } from 'node:module';
@@ -34,7 +35,7 @@ function effectiveUpdateRepo() {
 import { freshNotices, planDefaultSwitches } from '../core/watch.js';
 import { defaultFollowsLanes, followsLanesNote } from '../core/lanes.js';
 import { addLane, removeLane, reorderLanes, setLaneBudget, resolveAllAccounts } from '../core/lane-admin.js';
-import { accountNote, trayModel, trayTooltip } from '../core/tray.js';
+import { accountNote, colorDotBitmap, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
@@ -252,7 +253,10 @@ async function stateSnapshot(forceAuthAccountId = null) {
   if (notesChanged || signedInChanged) {
     refreshTray();
   }
-  return { accounts, laneAccounts, providers, watchMode: settings.quotaWatch, version: app.getVersion() };
+  // What T3 Code would color each account, so the page can offer to match it. Read each
+  // time because T3 is changed in T3, and the file is a few kilobytes.
+  const t3Colors = matchT3Colors(reg, readT3Instances());
+  return { accounts, laneAccounts, providers, t3Colors, watchMode: settings.quotaWatch, version: app.getVersion() };
 }
 
 function showWindow(hash = '') {
@@ -436,12 +440,28 @@ function trayInputs() {
   };
 }
 
+// One swatch image per color, made once: the menu is rebuilt often and the pixels never
+// change. keepSpace stands in a clear image for an account with no color; see colorDotBitmap.
+const swatches = new Map();
+function swatch(color, keepSpace = false) {
+  const key = color || (keepSpace ? 'clear' : null);
+  if (!key) return undefined;
+  if (!swatches.has(key)) {
+    const dot = colorDotBitmap(color, 16, { keepSpace });
+    swatches.set(key, dot ? nativeImage.createFromBitmap(dot.buffer, { width: dot.width, height: dot.height }) : undefined);
+  }
+  return swatches.get(key);
+}
+
 /**
  * The tray menu: `core/tray.js` decides what it says, this turns each row into a menu
  * item and attaches what it does.
  */
 function buildTrayMenu(inputs = trayInputs()) {
   const rows = trayModel(inputs);
+  // A tool's accounts line up only if they all have an icon or none do, so once one of
+  // them has a color the rest of that tool's rows keep the space for one.
+  const coloredTools = new Set(rows.filter((r) => r.kind === 'account' && r.color).map((r) => r.provider));
 
   const open = (action) => showWindow(action.slice('open:'.length));
   const items = rows.map((row) => {
@@ -457,16 +477,20 @@ function buildTrayMenu(inputs = trayInputs()) {
           type: 'radio',
           checked: row.checked,
           enabled: row.enabled !== false,
+          icon: swatch(row.color, coloredTools.has(row.provider)),
           click: () => switchDefaultTo(row.accountId),
         };
-      case 'submenu':
+      case 'submenu': {
+        const keepSpace = row.items.some((item) => item.color);
         return {
           label: row.label,
           submenu: row.items.map((item) => ({
             label: item.label,
+            icon: swatch(item.color, keepSpace),
             click: () => openTerminal(item.bin, item.accountId),
           })),
         };
+      }
       case 'watch':
         return {
           label: row.label,
@@ -541,7 +565,9 @@ let factsInFlight = false;
 
 /** Which accounts exist, cheaply, so a change to them can be noticed. */
 function accountSignature() {
-  return registry().accounts.map((a) => `${a.id}:${a.home}`).sort().join('|');
+  // The label and color are in it because the tray's terminal list shows both, so a
+  // rename or a new color has to rebuild that list as surely as an added account does.
+  return registry().accounts.map((a) => `${a.id}:${a.home}:${a.label}:${a.color ?? ''}`).sort().join('|');
 }
 
 let refreshTrayTimer = null;
@@ -995,6 +1021,31 @@ ipcMain.handle('sb:rename', (_e, id, label) => {
   return { ok: true, account };
 });
 
+ipcMain.handle('sb:setColor', (_e, id, color) => {
+  const reg = registry();
+  const account = setAccountColor(reg, id, color);
+  saveRegistry(reg);
+  refresh();
+  return { ok: true, account };
+});
+
+/** Give every account T3 Code also knows the color T3 shows it in. Nothing else changes. */
+ipcMain.handle('sb:copyT3Colors', () => {
+  const reg = registry();
+  const colors = matchT3Colors(reg, readT3Instances());
+  let changed = 0;
+  for (const [id, color] of Object.entries(colors)) {
+    if (reg.accounts.find((a) => a.id === id)?.color === color) continue;
+    setAccountColor(reg, id, color);
+    changed++;
+  }
+  if (changed) {
+    saveRegistry(reg);
+    refresh();
+  }
+  return { ok: true, matched: Object.keys(colors).length, changed };
+});
+
 ipcMain.handle('sb:removeAccount', (_e, id) => {
   const reg = registry();
   const removed = removeAccount(reg, id);
@@ -1274,7 +1325,7 @@ function appProfilesFor(appId) {
   const reg = registry();
   const accounts = reg.accounts
     .filter((a) => a.provider === def.provider)
-    .map((a) => ({ id: a.id, label: a.label, organizationUuid: def.accountOrganization(a.home) }));
+    .map((a) => ({ id: a.id, label: a.label, color: a.color ?? null, organizationUuid: def.accountOrganization(a.home) }));
   const profiles = describeProfiles(dirs, {
     accounts,
     organizationOf: def.organizationOf,

@@ -27,6 +27,7 @@ export function terminalRows({ tools = [], accounts = [], activeHomes = {} } = {
         name: tool.name,
         accountId: null,
         accountLabel: null,
+        accountColor: null,
         home: null,
         isDefault: true,
         switchable: provider != null,
@@ -41,6 +42,7 @@ export function terminalRows({ tools = [], accounts = [], activeHomes = {} } = {
         name: tool.name,
         accountId: account.id,
         accountLabel: account.label,
+        accountColor: account.color ?? null,
         home: account.home,
         isDefault: samePath(account.home, activeHomes[provider.id]),
         switchable: true,
@@ -70,21 +72,24 @@ export function terminalChips(rows = []) {
         accounts: [],
         openAccountId: null,
         openLabel: null,
+        openColor: null,
       });
     }
     const chip = byTool.get(row.toolId);
-    if (row.accountId) chip.accounts.push({ id: row.accountId, label: row.accountLabel, home: row.home, isDefault: row.isDefault });
+    if (row.accountId) chip.accounts.push({ id: row.accountId, label: row.accountLabel, color: row.accountColor ?? null, home: row.home, isDefault: row.isDefault });
     // The machine default is what the button itself opens; with nothing marked (a
     // provider whose active folder is not registered) the first account stands in.
     if (row.isDefault && chip.openAccountId == null) {
       chip.openAccountId = row.accountId;
       chip.openLabel = row.accountLabel;
+      chip.openColor = row.accountColor ?? null;
     }
   }
   for (const chip of byTool.values()) {
     if (chip.openAccountId == null && chip.accounts.length) {
       chip.openAccountId = chip.accounts[0].id;
       chip.openLabel = chip.accounts[0].label;
+      chip.openColor = chip.accounts[0].color;
     }
   }
   return [...byTool.values()];

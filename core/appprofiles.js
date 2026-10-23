@@ -121,6 +121,7 @@ export function describeProfiles(dirs, { accounts = [], organizationOf = () => n
     return {
       dir,
       accountId: account?.id ?? null,
+      color: account?.color ?? null,
       label: account?.label ?? (isDefault ? 'Default' : path.basename(dir)),
       isDefault,
     };

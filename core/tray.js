@@ -274,9 +274,11 @@ export function trayModel({
       rows.push({
         kind: 'account',
         accountId: account.id,
+        provider: provider.id,
         label: note ? `${account.label}, ${note}` : account.label,
         checked: activeIds[provider.id] === account.id,
         enabled: !followsLanes,
+        color: account.color ?? null,
       });
     }
     rows.push({ kind: 'separator' });
@@ -308,11 +310,11 @@ export function trayModel({
     const items = [];
     for (const tool of openable) {
       if (!tool.accounts?.length) {
-        items.push({ kind: 'terminal', label: tool.name, bin: tool.bin, accountId: null });
+        items.push({ kind: 'terminal', label: tool.name, bin: tool.bin, accountId: null, color: null });
         continue;
       }
       for (const account of tool.accounts) {
-        items.push({ kind: 'terminal', label: `${tool.name} on ${account.label}`, bin: tool.bin, accountId: account.id });
+        items.push({ kind: 'terminal', label: `${tool.name} on ${account.label}`, bin: tool.bin, accountId: account.id, color: account.color ?? null });
       }
     }
     rows.push({ kind: 'submenu', label: 'Open a terminal', items });
@@ -486,4 +488,43 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
     dropped += removed.count;
   }
   return kept.join('\n') || 'No active accounts';
+}
+
+/**
+ * The small round swatch drawn beside an account in the tray menu, as raw BGRA pixels.
+ *
+ * A native menu cannot color its text, but it can show an icon. The pixels are drawn here
+ * rather than shipped as image files because the color is whatever the person picked, and
+ * the edge is softened over one pixel so the dot does not look jagged at 100% scaling.
+ *
+ * An item with an icon has its label pushed right to make room, and an item without one
+ * does not, so in a list where only some accounts have a color the plain ones sat a dot's
+ * width to the left of their neighbours (seen on screen, 2026-10-23). keepSpace answers
+ * for an account with no color with a clear image of the same size, which keeps every
+ * account's name in one column.
+ */
+export function colorDotBitmap(hex, size = 16, { keepSpace = false } = {}) {
+  const match = /^#([0-9a-f]{6})$/i.exec(String(hex ?? ''));
+  if (!match) return keepSpace ? { buffer: Buffer.alloc(size * size * 4), width: size, height: size } : null;
+  const n = parseInt(match[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const buffer = Buffer.alloc(size * size * 4);
+  const centre = (size - 1) / 2;
+  const radius = size * 0.32;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const distance = Math.hypot(x - centre, y - centre);
+      const coverage = Math.max(0, Math.min(1, radius + 0.5 - distance));
+      if (!coverage) continue;
+      const at = (y * size + x) * 4;
+      // Electron expects premultiplied alpha, so each channel is scaled by the coverage.
+      buffer[at] = Math.round(b * coverage);
+      buffer[at + 1] = Math.round(g * coverage);
+      buffer[at + 2] = Math.round(r * coverage);
+      buffer[at + 3] = Math.round(255 * coverage);
+    }
+  }
+  return { buffer, width: size, height: size };
 }

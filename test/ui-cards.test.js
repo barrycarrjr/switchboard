@@ -31,7 +31,7 @@ function makeDom() {
       innerHTML: '',
       textContent: '',
       title: '',
-      style: {},
+      style: { setProperty(k, v) { this[k] = v; } },
       attrs: {},
       children: [],
       handlers: {},
@@ -55,7 +55,7 @@ function makeDom() {
 
 function load(names, exports) {
   const { document } = makeDom();
-  const src = [lift('el'), lift('esc'), ...names.map(lift), `return { ${exports.join(', ')} };`].join('\n');
+  const src = [lift('el'), lift('esc'), lift('safeColor'), lift('colorDot'), lift('accountDot'), ...names.map(lift), `return { ${exports.join(', ')} };`].join('\n');
   return new Function('document', src)(document);
 }
 
@@ -497,4 +497,37 @@ test('adding an account asks for a name, makes the account, and opens its sign-i
   existing.click();
   assert.equal(slot.replaced, button, 'picking a folder instead puts the add button back');
   assert.deepEqual(calls.at(-1), ['pick']);
+});
+test('a colored account gets the top bar and a dot after its name, and nothing moves', () => {
+  const { cardShell } = load(['cardArea', 'cardShell'], ['cardShell']);
+  const plain = cardShell({ titleId: 'a', title: 'Plain' });
+  const colored = cardShell({ titleId: 'b', title: 'Work', color: '#2563EB', badge: 'CURRENT' });
+  assert.ok(colored.card.className.split(' ').includes('has-color'));
+  assert.equal(colored.card.style['--acct-color'], '#2563eb');
+  assert.ok(!plain.card.className.includes('has-color'));
+  const titleRow = (card) => card.children[0].children[0].children[0];
+  assert.deepEqual(titleRow(colored.card).children.map((c) => c.className.split(' ')[0]),
+    ['account-name', 'account-dot', 'badge', 'account-head-toggle'],
+    'the dot comes after the name, so the name starts where it always did');
+  assert.ok(!titleRow(plain.card).children.some((c) => c.className.includes('account-dot')),
+    'a card that cannot be colored and is not shows no dot at all');
+});
+
+test('where the color can be changed, an uncolored account offers an empty dot that opens the chooser', () => {
+  const { cardShell } = load(['cardArea', 'cardShell'], ['cardShell']);
+  let opened = null;
+  const { card } = cardShell({ titleId: 'a', title: 'Spare', onColor: (anchor) => { opened = anchor; } });
+  const dot = card.children[0].children[0].children[0].children.find((c) => c.className.includes('account-dot'));
+  assert.equal(dot.tag, 'button');
+  assert.ok(dot.className.includes('unset'), 'not "empty", which the page already uses for its empty-state text');
+  dot.handlers.click[0]({ stopPropagation() {} });
+  assert.equal(opened, dot, 'the chooser opens beside the dot that was clicked');
+});
+
+test('a hand-edited color is never written into the page as anything but a hex value', () => {
+  const { colorDot, safeColor } = load([], ['colorDot', 'safeColor']);
+  assert.equal(safeColor('red;background:url(x)'), null);
+  assert.equal(colorDot('"><img src=x>'), '');
+  assert.equal(colorDot(null, true), '<i class="color-dot" style="visibility:hidden"></i>', 'kept space is still blank');
+  assert.match(colorDot('#B225EB'), /background:#b225eb/);
 });

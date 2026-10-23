@@ -153,3 +153,36 @@ test('the updater writes a recovery config before launching setup', () => {
   const quit = main.indexOf('app.quit()', launch);
   assert.ok(quit > launch, 'app quits after spawning installer so files are unlocked');
 });
+
+test('an account color travels with an export and back', () => {
+  const config = fixture();
+  config.accounts[0].color = '#2563EB';
+  const parsed = parseSwitchboardConfig(JSON.stringify(config));
+  assert.equal(parsed.accounts[0].color, '#2563eb');
+  assert.equal('color' in parsed.accounts[1], false, 'an account without one gains nothing');
+});
+
+test('an import with a color that is not hex is refused, like any other bad field', () => {
+  const config = fixture();
+  config.accounts[0].color = 'url(javascript:alert(1))';
+  assert.throws(() => parseSwitchboardConfig(JSON.stringify(config)), /accounts\[0\]\.color/);
+});
+
+test('a hand-edited color that does not parse never stops an export, it is just left out', () => {
+  const config = createSwitchboardConfig({
+    registry: { accounts: [
+      { id: 'claude-work', provider: 'claude', label: 'Work', home: 'X:\\profiles\\person\\.claude-work', color: 'red' },
+      { id: 'claude-two', provider: 'claude', label: 'Two', home: 'X:\\profiles\\person\\.claude-two', color: '#B225EB' },
+    ] },
+    settings: { quotaWatch: 'off', usageSources: {}, customApps: [], appOrder: [] },
+    mcp: { servers: [] },
+  });
+  assert.equal('color' in config.accounts[0], false);
+  assert.equal(config.accounts[1].color, '#b225eb');
+});
+
+test('an imported color that is a number is refused, not read as digits', () => {
+  const config = fixture();
+  config.accounts[0].color = 123;
+  assert.throws(() => parseSwitchboardConfig(JSON.stringify(config)), /accounts\[0\]\.color/);
+});

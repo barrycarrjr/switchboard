@@ -78,6 +78,31 @@
   .account-title{display:flex;align-items:center;gap:7px;min-width:0}
   .account-name{font-size:.94rem;line-height:1.3;margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .account-name-input{font:inherit;font-size:.9rem;font-weight:600;border:1px solid var(--accent);border-radius:5px;padding:3px 6px;width:min(14em,100%)}
+  /* An account's own color, matching the one T3 Code shows it in. Both marks sit where
+     nothing else does, the card's top edge and the space after the name, so a colored
+     card and a plain one line up exactly. The bar is a shadow rather than a border for
+     the same reason: a border would push the card's contents down by its width. */
+  .account-card.has-color{box-shadow:inset 0 3px 0 var(--acct-color)}
+  .account-card.has-color.is-default{box-shadow:inset 3px 0 0 var(--accent),inset 0 3px 0 var(--acct-color)}
+  .account-dot{flex:0 0 auto;width:12px;height:12px;border-radius:50%;border:0;padding:0;background:var(--acct-color);box-shadow:0 0 0 1px rgba(0,0,0,.2)}
+  button.account-dot{cursor:pointer}
+  button.account-dot:hover,button.account-dot:focus-visible{outline:none;box-shadow:0 0 0 2px var(--card),0 0 0 4px var(--accent)}
+  .account-dot.unset{background:none;box-shadow:none;border:1.5px dashed #9aa3ad}
+  .color-dot{display:inline-block;width:9px;height:9px;border-radius:50%;flex:0 0 auto;box-shadow:0 0 0 1px rgba(0,0,0,.2)}
+  .btn em .color-dot{margin-right:5px}
+  .btn.term i.color-dot{padding:0;border-radius:50%}
+  .btn.primary .color-dot{box-shadow:0 0 0 1.5px #fff}
+  .menu button.has-dot{display:flex;align-items:flex-start;gap:8px}
+  .menu button.has-dot .color-dot{margin-top:.45em}
+  .color-picker{position:fixed;z-index:50;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 22px rgba(20,30,50,.18);padding:10px;width:226px}
+  .color-swatches{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin-bottom:9px}
+  .color-swatches button{width:18px;height:18px;border-radius:50%;border:0;padding:0;cursor:pointer;box-shadow:0 0 0 1px rgba(0,0,0,.15)}
+  .color-swatches button.on{box-shadow:0 0 0 2px var(--card),0 0 0 4px var(--ink)}
+  .color-hex{display:flex;gap:6px;align-items:center;margin-bottom:8px}
+  .color-hex input[type=text]{flex:1;min-width:0;font:inherit;font-size:.8rem;border:1px solid #c9ced6;border-radius:5px;padding:3px 6px}
+  .color-hex input[type=color]{flex:0 0 auto;width:30px;height:26px;border:1px solid #c9ced6;border-radius:5px;padding:1px;background:none;cursor:pointer}
+  .color-foot{display:flex;justify-content:space-between;gap:8px;border-top:1px solid var(--line);padding-top:6px}
+  .color-foot .btn.link{padding:2px 0;font-size:.76rem}
   .default-badge{flex:0 0 auto;background:var(--accent-soft);color:var(--accent)}
   .account-path{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:0;background:none;color:var(--muted);font:inherit;font-size:.74rem;text-align:left;padding:0;margin:2px 0 0;cursor:pointer}
   .account-path:hover{color:var(--accent);text-decoration:underline}
@@ -696,8 +721,10 @@ function renderUsageWindows(host, summary, q, onRefresh = null, now = Date.now()
  * its sign-in is. A tool that cannot report usage says so inside the usage area
  * rather than getting a card shape of its own, so the page reads as one system.
  */
-function cardShell({ titleId, title, badge = null, person = null, folder = null, actions = [], accent = false, handle = false, compact = null }) {
-  const card = el('article', 'acct account-card' + (accent ? ' is-default' : ''));
+function cardShell({ titleId, title, badge = null, person = null, folder = null, actions = [], accent = false, handle = false, compact = null, color = null, onColor = null }) {
+  const shade = safeColor(color);
+  const card = el('article', 'acct account-card' + (accent ? ' is-default' : '') + (shade ? ' has-color' : ''));
+  if (shade) card.style.setProperty('--acct-color', shade);
   card.setAttribute('aria-labelledby', titleId);
   let isCompact = false;
   const storage = typeof localStorage !== 'undefined' ? localStorage : null;
@@ -718,6 +745,8 @@ function cardShell({ titleId, title, badge = null, person = null, folder = null,
   const name = el('h3', 'account-name', esc(title));
   name.id = titleId;
   titleRow.appendChild(name);
+  const dot = accountDot(title, shade, onColor);
+  if (dot) titleRow.appendChild(dot);
   if (badge) titleRow.appendChild(el('span', 'badge default-badge', esc(badge)));
   const tog = el('button', 'account-head-toggle', isCompact ? '&#9656;' : '&#9662;');
   tog.type = 'button';
@@ -762,6 +791,123 @@ function cardShell({ titleId, title, badge = null, person = null, folder = null,
   card.appendChild(header);
   return { card, name };
 }
+
+/** A hex color the page may put in a style, or null. accounts.json can be edited by hand. */
+function safeColor(value) {
+  return /^#[0-9a-f]{6}$/i.test(String(value ?? '')) ? String(value).toLowerCase() : null;
+}
+
+/**
+ * A small round swatch as markup, for places that build their content as a string. With
+ * keepSpace an account with no color still takes the swatch's width, so a list where only
+ * some accounts are colored keeps every name in one column.
+ */
+function colorDot(color, keepSpace = false) {
+  const shade = safeColor(color);
+  if (shade) return `<i class="color-dot" style="background:${shade}"></i>`;
+  return keepSpace ? '<i class="color-dot" style="visibility:hidden"></i>' : '';
+}
+
+/**
+ * The dot after an account's name. It is a button wherever the color can be changed, and
+ * a dashed ring when there is no color yet, which is the only way to find out the
+ * account can have one. Where it cannot be changed and there is none, there is no dot.
+ */
+function accountDot(title, color, onColor) {
+  if (!color && !onColor) return null;
+  const dot = el(onColor ? 'button' : 'span', 'account-dot' + (color ? '' : ' unset'));
+  if (color) dot.style.setProperty('--acct-color', color);
+  if (onColor) {
+    dot.type = 'button';
+    dot.title = color ? `Shown in ${color}. Click to change it` : 'Pick a color for this account';
+    dot.setAttribute('aria-label', `Color for ${title}`);
+    dot.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      onColor(dot);
+    });
+  }
+  return dot;
+}
+
+const COLOR_CHOICES = ['#2563eb', '#0ea5e9', '#16a34a', '#eab308', '#f97316', '#dc2626', '#db2777', '#9333ea'];
+
+/**
+ * The chooser that opens from an account's dot: a row of ready colors, a hex box for an
+ * exact match with another app, the system color dialog for anything else, and a way to
+ * take the color off again. It hangs off the page rather than the card, because a card
+ * clips anything that spills past its rounded corners.
+ */
+function openColorPicker(anchor, account, { t3Color = null, onSaved = null } = {}) {
+  closeColorPicker();
+  const current = safeColor(account.color);
+  const picker = el('div', 'color-picker');
+  picker.setAttribute('role', 'dialog');
+  picker.setAttribute('aria-label', `Color for ${account.label}`);
+  const save = async (value) => {
+    closeColorPicker();
+    try {
+      await sb.setColor(account.id, value);
+      if (onSaved) onSaved();
+    } catch (e) {
+      toast('Could not set the color: ' + (e.message || e));
+    }
+  };
+  const swatches = el('div', 'color-swatches');
+  for (const choice of COLOR_CHOICES) {
+    const b = el('button', choice === current ? 'on' : '');
+    b.type = 'button';
+    b.style.background = choice;
+    b.title = choice;
+    b.setAttribute('aria-label', choice);
+    b.addEventListener('click', () => save(choice));
+    swatches.appendChild(b);
+  }
+  picker.appendChild(swatches);
+  const hexRow = el('div', 'color-hex');
+  const hex = el('input');
+  hex.type = 'text';
+  hex.value = current ?? '';
+  hex.placeholder = '#2563eb';
+  hex.setAttribute('aria-label', 'Hex color, then Enter');
+  hex.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter') return;
+    // Checked here as well as in core, so a typo keeps the chooser open to fix it.
+    if (/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.test(hex.value.trim())) save(hex.value.trim());
+    else toast('Type a hex color such as #2563eb.');
+  });
+  const wheel = el('input');
+  wheel.type = 'color';
+  wheel.value = current ?? COLOR_CHOICES[0];
+  wheel.title = 'More colors';
+  wheel.setAttribute('aria-label', 'More colors');
+  wheel.addEventListener('change', () => save(wheel.value));
+  hexRow.append(hex, wheel);
+  picker.appendChild(hexRow);
+  const foot = el('div', 'color-foot');
+  foot.appendChild(cardButton('Clear color', () => save(null), { link: true, disabled: !current }));
+  const t3 = safeColor(t3Color);
+  if (t3 && t3 !== current) {
+    foot.appendChild(cardButton("Use T3's color", () => save(t3), { link: true, title: `T3 Code shows this account in ${t3}` }));
+  }
+  picker.appendChild(foot);
+  picker.addEventListener('click', (ev) => ev.stopPropagation());
+  document.body.appendChild(picker);
+  const r = anchor.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r.left - 10, window.innerWidth - picker.offsetWidth - 8));
+  const below = r.bottom + 6;
+  const top = below + picker.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - picker.offsetHeight - 6) : below;
+  picker.style.left = `${left}px`;
+  picker.style.top = `${top}px`;
+  hex.focus();
+}
+function closeColorPicker() {
+  for (const p of document.querySelectorAll('.color-picker')) p.remove();
+}
+document.addEventListener('click', closeColorPicker);
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeColorPicker(); });
+
+// What T3 Code colors each account, from the last state read; see openColorPicker.
+let t3Colors = {};
 
 function cardButton(label, onClick, { primary = false, ghost = false, link = false, title = null, disabled = false } = {}) {
   const button = el('button', 'btn' + (primary ? ' primary' : '') + (ghost ? ' ghost' : '') + (link ? ' link' : ''), esc(label));
@@ -1111,6 +1257,8 @@ function accountCard(p, account) {
     folder: a.home,
     actions,
     accent: isDefault,
+    color: a.color,
+    onColor: (anchor) => openColorPicker(anchor, a, { t3Color: t3Colors[a.id] }),
   });
 
   function startRename() {
@@ -1528,10 +1676,32 @@ function shelfSection(absent, open, accounts = []) {
   return section;
 }
 
+/**
+ * Offered on a tool's heading only while T3 Code has a color for one of its accounts that
+ * Switchboard does not show yet, so it disappears once the two apps agree.
+ */
+function copyT3ColorsLink(accounts) {
+  const differs = accounts.filter((a) => safeColor(t3Colors[a.id]) && safeColor(t3Colors[a.id]) !== safeColor(a.color));
+  if (!differs.length) return null;
+  const link = el('button', 'linkbtn', 'Copy colors from T3 Code');
+  link.type = 'button';
+  link.title = `T3 Code colors ${differs.map((a) => a.label).join(', ')} differently. Matched by config folder.`;
+  link.addEventListener('click', async () => {
+    try {
+      const r = await sb.copyT3Colors();
+      toast(r.changed ? `Copied ${r.changed} color${r.changed === 1 ? '' : 's'} from T3 Code.` : 'Already the same as T3 Code.');
+    } catch (e) {
+      toast('Could not copy the colors: ' + (e.message || e));
+    }
+  });
+  return link;
+}
+
 async function renderAccounts() {
   const seq = beginRender('accounts');
   const state = await sb.state();
   state.candidates = await sb.candidates();
+  t3Colors = state.t3Colors ?? {};
   const realPanel = $('#tab-accounts');
   const panel = el('div');
 
@@ -1564,6 +1734,8 @@ async function renderAccounts() {
     const found = (state.candidates || []).filter((x) => x.provider === p.id);
     const active = mine.find((a) => a.id === p.activeAccountId);
     const section = toolSection(p.id, p.name, accountsSectionSummary(mine.length, found.length, active, p.followsLanes === true));
+    const t3Link = copyT3ColorsLink(mine);
+    if (t3Link) section.querySelector('.provider-summary').append(' · ', t3Link);
 
     if (mine.length) {
       const accountGrid = el('div', 'account-grid');
@@ -1812,7 +1984,7 @@ function dragHandle() {
  * there. The same card as an account, because a lane IS an account, seen from the
  * failover order rather than from the machine default.
  */
-function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove = null, reorderable = false, compact = null } = {}) {
+function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove = null, reorderable = false, compact = null, onColor = null } = {}) {
   const billing = lane.billing === 'metered' ? 'Metered (API)' : 'Subscription';
   const actions = [];
   if (lane.billing === 'metered' && onSetBudget) {
@@ -1826,6 +1998,8 @@ function laneCard(lane, account, { budget = null, onSetBudget = null, onRemove =
     actions,
     handle: reorderable,
     compact,
+    color: account?.color ?? null,
+    onColor,
   });
   // A lane that cannot be chosen is tinted like a signed-out account, so a problem
   // looks the same wherever it appears.
@@ -1871,6 +2045,7 @@ async function renderLanes() {
     return;
   }
   if (!isCurrentRender('lanes', seq)) return;
+  t3Colors = state.t3Colors ?? {};
   const panel = el('div');
 
   // Reordering takes two lanes, so a single lane gets neither the grip nor the hint.
@@ -1915,7 +2090,13 @@ async function renderLanes() {
   const laneAccounts = state.laneAccounts || state.accounts;
   for (const lane of data.lanes) {
     const account = laneAccounts.find((a) => a.id === lane.accountId);
+    // A lane is an account, so its color is that account's. Only a registered account can
+    // be given one: a lane can point at an account Switchboard found but does not keep.
+    const registered = account && state.accounts.some((a) => a.id === account.id);
     const card = laneCard(lane, account, {
+      onColor: registered
+        ? (anchor) => openColorPicker(anchor, account, { t3Color: t3Colors[account.id], onSaved: renderLanes })
+        : null,
       reorderable,
       compact: isLanesCompact,
       budget: data.spendPolicies[lane.id]?.budget ?? null,
@@ -2027,7 +2208,7 @@ function appLaunchPlan(a) {
     // the folder is noise: an app's data folder shown under an account name reads as
     // that account's own config folder, which is a different folder entirely. The
     // button's tooltip still carries the full path for anyone who wants it.
-    for (const p of profiles) items.push({ kind: 'open', label: p.label, sub: p.accountId ? null : p.dir, dir: p.dir });
+    for (const p of profiles) items.push({ kind: 'open', label: p.label, color: p.color ?? null, sub: p.accountId ? null : p.dir, dir: p.dir });
   }
   if (a.supported) {
     items.push({ kind: 'add', label: 'Add another account…' });
@@ -2037,7 +2218,7 @@ function appLaunchPlan(a) {
       if (p.added) items.push({ kind: 'forget', label: `Stop offering ${p.label}`, sub: p.dir, dir: p.dir });
     }
   }
-  return { openLabel: open?.label ?? null, openDir: open?.dir ?? null, items };
+  return { openLabel: open?.label ?? null, openColor: open?.color ?? null, openDir: open?.dir ?? null, items };
 }
 
 /** Launch, and say so when the app refuses rather than leaving a click with no result. */
@@ -2098,11 +2279,12 @@ async function renderApps() {
     row.appendChild(apm);
     if (a.installed) {
       const plan = appLaunchPlan(a);
-      const launch = el('button', 'btn primary', plan.openLabel ? `Launch<em>${esc(plan.openLabel)}</em>` : 'Launch');
+      const launch = el('button', 'btn primary', plan.openLabel ? `Launch<em>${colorDot(plan.openColor)}${esc(plan.openLabel)}</em>` : 'Launch');
       if (plan.openLabel) launch.title = `Opens ${a.name} on ${plan.openLabel}\n${plan.openDir}`;
       launch.addEventListener('click', () => openApp(a, plan.openDir));
       const appMenu = plan.items.map((item) => ({
         label: item.label,
+        color: item.color,
         sub: item.sub,
         onClick: async () => {
           if (item.kind === 'open') return openApp(a, item.dir);
@@ -2436,7 +2618,7 @@ async function fillTerminals(host, seq) {
   }
   const wrap = el('div', 'chips');
   for (const c of chips) {
-    const on = c.openLabel ? `<em>${esc(c.openLabel)}</em>` : '';
+    const on = c.openLabel ? `<em>${colorDot(c.openColor)}${esc(c.openLabel)}</em>` : '';
     const open = el('button', 'btn term', `<i>&gt;_</i>${esc(c.name)}${on}`);
     const home = c.accounts.find((a) => a.id === c.openAccountId)?.home;
     open.title = c.openAccountId
@@ -2447,6 +2629,7 @@ async function fillTerminals(host, seq) {
     if (c.accounts.length > 1) {
       attachMenu(wrap, c.accounts.map((a) => ({
         label: a.label,
+        color: a.color,
         sub: a.home,
         onClick: () => sb.openTerminal(c.bin, a.id),
       })), open);
@@ -2516,10 +2699,15 @@ async function openPicker() {
  */
 function attachMenu(row, items, primary) {
   const menu = el('div', 'menu');
+  // Once any entry is an account with a color, every entry keeps a swatch's width, so
+  // the names stay in one column whether or not each has a color of its own.
+  const withDots = items.some((item) => safeColor(item.color));
   for (const item of items) {
     // An optional second line carries the detail the label leaves out, a config folder
     // being the case that needs it.
-    const b = el('button', item.danger ? 'danger' : '', item.sub ? `${esc(item.label)}<span>${esc(item.sub)}</span>` : esc(item.label));
+    const body = item.sub ? `${esc(item.label)}<span>${esc(item.sub)}</span>` : esc(item.label);
+    const cls = [item.danger ? 'danger' : '', withDots ? 'has-dot' : ''].filter(Boolean).join(' ');
+    const b = el('button', cls, withDots ? `${colorDot(item.color, true)}<div>${body}</div>` : body);
     b.addEventListener('click', (ev) => { ev.stopPropagation(); closeMenus(); item.onClick(); });
     menu.appendChild(b);
   }
