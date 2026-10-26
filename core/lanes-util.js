@@ -183,6 +183,64 @@ export function expiringWeek(snapshot, now, options) {
   return week.resetsAt - now <= SPEND_DOWN_HORIZON_MS ? week.resetsAt : null;
 }
 
+const MINUTE_MS = 60 * 1000;
+
+/**
+ * When this account's weekly window turns over, for ranking accounts against each other:
+ * the sooner it turns over, the sooner its unused quota is lost, so the sooner it should
+ * be spent. Null when a current reading cannot say.
+ *
+ * Rounded to the minute. The vendor states the turnover to the millisecond, and two
+ * readings of one and the same turnover differ in the last digits (seen on this machine:
+ * 59:59.613 and 59:59.618 for two accounts whose weeks end together). Ranked raw, accounts
+ * like that would swap places from one reading to the next and drag the machine default
+ * with them. Rounded, they compare equal, and lane order settles it the same way every time.
+ *
+ * A week that has not started, or has turned over since the reading was taken, is a
+ * whole week from its next turnover, which is later than any week already under way, so
+ * it is given that. The vendor reports an unstarted week as nothing used and no turnover
+ * at all, and a reading taken just before the turnover still names the moment that has
+ * now passed. Read as "turnover unknown" instead, the account whose week had only just
+ * begun was held on to as though its turnover might be the soonest, when it is the latest.
+ *
+ * An account that has hit a limit right now gets no turnover at all. It cannot take work
+ * until a window turns over, so it waits behind every account that can, rather than
+ * heading a list it would only be skipped in. Nor does one that has used some of its week
+ * but whose reading states no turnover; `turnoverRank` says where that one goes.
+ */
+export function weekTurnover(snapshot, now, { evenIfSpent = false } = {}) {
+  if (!readable(snapshot) || (!evenIfSpent && isSpent(snapshot) === true)) return null;
+  const week = snapshot.windows?.find((w) => w.key === 'week');
+  if (week?.usedPercent == null) return null;
+  const startsAfresh = week.resetsAt ? week.resetsAt <= now : week.usedPercent === 0;
+  const at = startsAfresh ? now + WINDOW_LIFETIME_MS.week : week.resetsAt;
+  if (!at) return null;
+  return Math.round(at / MINUTE_MS) * MINUTE_MS;
+}
+
+/**
+ * Where an account goes when accounts are ranked by turnover: its `weekTurnover`, or, for
+ * a week under way whose reading states no turnover, just ahead of a week that has only
+ * begun. Such a week must turn over within seven days, so it is certain to lose its
+ * remainder before a fresh one does, but nothing says how it compares with a turnover that
+ * is stated, so it goes after those. Null when the account cannot be ranked at all.
+ *
+ * Kept apart from `weekTurnover` because nothing may be claimed from it: a notification
+ * that says one reset comes "sooner" than another uses `weekTurnover`, which has no value
+ * for a turnover nobody stated.
+ *
+ * `evenIfSpent` ranks a reading that says the account is out of quota, for a caller that
+ * knows the limit has since lifted (see selectLaneAsNeeded) and will check before using it.
+ */
+export function turnoverRank(snapshot, now, { evenIfSpent = false } = {}) {
+  const at = weekTurnover(snapshot, now, { evenIfSpent });
+  if (at != null) return at;
+  if (!readable(snapshot) || (!evenIfSpent && isSpent(snapshot) === true)) return null;
+  const week = snapshot.windows?.find((w) => w.key === 'week');
+  if (week?.usedPercent == null || week.resetsAt || week.usedPercent === 0) return null;
+  return Math.round((now + WINDOW_LIFETIME_MS.week) / MINUTE_MS) * MINUTE_MS - MINUTE_MS;
+}
+
 /** The gating windows a snapshot actually reported, as [key, percent] pairs. */
 function gatingWindows(snapshot) {
   return GATING

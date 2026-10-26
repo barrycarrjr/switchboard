@@ -1,4 +1,5 @@
-import { defaultFollowsLanes } from './lanes.js';
+import { PROVIDERS } from './accounts.js';
+import { accountUseOrder, defaultFollowsLanes, ranksByReset, tooFullForDefault } from './lanes.js';
 import { pct, readable, spentEvidence } from './lanes-util.js';
 
 /**
@@ -239,6 +240,16 @@ export function trayWarnings({ accounts = [], overrideBlocking = false, stranded
   return warnings;
 }
 
+/**
+ * The tray keeps one yes, no or unknown per account; the lane rules read a sign-in state.
+ * An account with no answer is left out, which they read as unknown.
+ */
+export function loginStatesFrom(signedIn = {}) {
+  return Object.fromEntries(Object.entries(signedIn ?? {})
+    .filter(([, value]) => value === true || value === false)
+    .map(([id, value]) => [id, { signedIn: value }]));
+}
+
 export function trayModel({
   providers = [],
   accounts = [],
@@ -248,6 +259,11 @@ export function trayModel({
   terminals = [],
   watchMode = 'off',
   lanes = [],
+  // What the tray already holds about each account (usage, signed in or not) and each
+  // lane (cooldowns), to list accounts in the order they would be used.
+  quotas = {},
+  signedIn = {},
+  cooldowns = {},
   overrideBlocking = false,
   strandedProviders = [],
   update = null,
@@ -262,15 +278,26 @@ export function trayModel({
   if (warnings.length) rows.push(...warnings, { kind: 'separator' });
 
   for (const provider of providers) {
-    const mine = accounts.filter((a) => a.provider === provider.id);
-    if (!mine.length) continue; // a tool with no accounts is the window's business
-    // When the watch keeps this tool on its lane order, a row picked here would be
-    // switched straight back, so the rows still show which account is in use but no
-    // longer offer to change it, and the heading says why. See defaultFollowsLanes.
+    // When the watch picks this tool's account, a row picked here would be switched
+    // straight back, so the rows still show which account is in use but no longer offer
+    // to change it, and the heading says how it is picked. The rows are listed in the
+    // order they would be used, so the heading and the list agree. See defaultFollowsLanes.
     const followsLanes = defaultFollowsLanes({ quotaWatch: watchMode, lanes }, provider.id);
-    rows.push({ kind: 'heading', label: followsLanes ? `${provider.name}, set by lane order` : provider.name });
+    const mine = followsLanes
+      ? accountUseOrder(accounts, lanes, provider.id, { now, quotas, loginStates: loginStatesFrom(signedIn), cooldowns }, activeIds[provider.id] ?? null)
+      : accounts.filter((a) => a.provider === provider.id);
+    if (!mine.length) continue; // a tool with no accounts is the window's business
+    // A tool with no usage reading is never moved between subscription accounts (see
+    // followsLanesNote), so its heading does not claim the lane order sets it.
+    const how = !PROVIDERS[provider.id]?.quota ? 'no usage reading'
+      : ranksByReset({ quotaWatch: watchMode, lanes }, provider.id, accounts) ? 'soonest weekly reset first' : 'set by lane order';
+    rows.push({ kind: 'heading', label: followsLanes ? `${provider.name}, ${how}` : provider.name });
     for (const account of mine) {
-      const note = notes[account.id];
+      // An account too close to a limit to take the default is listed after those that
+      // can, whatever its reset, so it says why. Without this the list read as out of
+      // order beside a heading that says how the order is decided.
+      const tooFull = followsLanes && tooFullForDefault(quotas[account.id], activeIds[provider.id] === account.id);
+      const note = notes[account.id] ?? (tooFull ? 'nearly out' : null);
       rows.push({
         kind: 'account',
         accountId: account.id,

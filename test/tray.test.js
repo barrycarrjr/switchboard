@@ -63,10 +63,64 @@ test('a tool whose default follows its lanes shows its accounts without offering
   const claude = kinds(rows, 'account').filter((r) => r.accountId.startsWith('claude'));
   assert.deepEqual(claude.map((r) => r.enabled), [false, false]);
   assert.deepEqual(claude.filter((r) => r.checked).map((r) => r.accountId), ['claude-account-2'], 'the one in use is still ticked');
-  assert.ok(kinds(rows, 'heading').some((r) => r.label === 'Claude Code, set by lane order'), 'and the heading says why');
+  assert.ok(kinds(rows, 'heading').some((r) => r.label === 'Claude Code, soonest weekly reset first'), 'and the heading says how it is picked');
   const codex = kinds(rows, 'account').find((r) => r.accountId === 'codex-default');
   assert.equal(codex.enabled, true, 'a tool with no lanes is untouched');
   assert.ok(kinds(rows, 'heading').some((r) => r.label === 'Codex'));
+});
+
+// Asked for on 2026-10-26: the heading said how accounts were picked while the rows sat in
+// the order they were registered, so the list looked like the rule was not being followed.
+test('a tool whose account is picked by reset lists its accounts in the order they would be used', () => {
+  const quotas = {
+    'claude-default': { windows: [{ key: 'session', usedPercent: 21 }, { key: 'week', usedPercent: 6, resetsAt: NOW + 6 * DAY }] },
+    'claude-account-2': { windows: [{ key: 'session', usedPercent: 1 }, { key: 'week', usedPercent: 84, resetsAt: NOW + 3 * HOUR }] },
+  };
+  const signedIn = { 'claude-default': true, 'claude-account-2': true };
+  const order = (over) => kinds(model({ lanes: LANES, quotas, signedIn, ...over }), 'account').map((r) => r.accountId);
+  assert.deepEqual(order({ watchMode: 'auto' }), ['claude-account-2', 'claude-default', 'codex-default']);
+  assert.deepEqual(order({ watchMode: 'notify' }), ['claude-default', 'claude-account-2', 'codex-default'],
+    'when a person is choosing, the list stays as registered');
+  assert.deepEqual(order({ watchMode: 'auto', signedIn: { ...signedIn, 'claude-account-2': false } }), ['claude-default', 'claude-account-2', 'codex-default'],
+    'an account that cannot run is not listed first, whatever its reading says');
+  assert.deepEqual(order({ watchMode: 'auto', cooldowns: { 'lane-2': NOW + HOUR } }), ['claude-default', 'claude-account-2', 'codex-default'],
+    'nor is one whose lane is cooling down');
+  // Lanes set in the opposite order to registration, so a list that fell back to the
+  // registry would be caught.
+  const reversed = [LANES[1], LANES[0]];
+  assert.deepEqual(order({ watchMode: 'auto', lanes: reversed, quotas: {}, signedIn: {} }), ['claude-account-2', 'claude-default', 'codex-default'],
+    'before anything has been read, the lane order is all there is to go on');
+});
+
+// Found in review: the account that resets soonest drops down the list once it is too
+// full to take the default, which looked out of order under "soonest weekly reset first".
+test('an account listed lower for being near its limit says so', () => {
+  const quotas = {
+    'claude-default': { windows: [{ key: 'session', usedPercent: 21 }, { key: 'week', usedPercent: 6, resetsAt: NOW + 6 * DAY }] },
+    'claude-account-2': { windows: [{ key: 'session', usedPercent: 93 }, { key: 'week', usedPercent: 40, resetsAt: NOW + 3 * HOUR }] },
+  };
+  const rows = kinds(model({ lanes: LANES, quotas, signedIn: { 'claude-default': true, 'claude-account-2': true }, activeIds: { claude: 'claude-default', codex: 'codex-default' } }), 'account');
+  assert.deepEqual(rows.map((r) => r.label).slice(0, 2), ['Main Account', 'Secondary, nearly out']);
+  assert.equal(kinds(model({ lanes: LANES, quotas, watchMode: 'notify' }), 'account').find((r) => r.accountId === 'claude-account-2').label, 'Secondary',
+    'only where the watch is picking: a person choosing sees the list as it always was');
+});
+
+// Gemini CLI has no usage reading, so nothing ranks its accounts by reset and the watch
+// leaves its default where it is; saying either beside its rows would be false.
+test('a tool whose lanes are not ranked by reset is headed "set by lane order", and one with no usage reading "no usage reading"', () => {
+  const providers = [{ id: 'gemini', name: 'Gemini CLI' }, { id: 'claude', name: 'Claude Code' }];
+  const accounts = [
+    { id: 'g1', provider: 'gemini', label: 'Work' }, { id: 'g2', provider: 'gemini', label: 'Home' },
+    { id: 'c1', provider: 'claude', label: 'Only' },
+  ];
+  const lanes = [
+    { id: 'lg1', harness: 'gemini', accountId: 'g1', billing: 'subscription' },
+    { id: 'lg2', harness: 'gemini', accountId: 'g2', billing: 'subscription' },
+    { id: 'lc1', harness: 'claude', accountId: 'c1', billing: 'subscription' },
+  ];
+  const headings = kinds(trayModel({ providers, accounts, lanes, watchMode: 'auto', now: NOW }), 'heading').map((r) => r.label);
+  assert.ok(headings.includes('Gemini CLI, no usage reading'), JSON.stringify(headings));
+  assert.ok(headings.includes('Claude Code, set by lane order'), 'one account has nothing to rank against');
 });
 
 test('the rows stay choices when the watch only tells you, does nothing, or there are no lanes', () => {

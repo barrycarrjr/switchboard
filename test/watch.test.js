@@ -197,6 +197,11 @@ const envSaying = (home) => (name) => (name === 'CLAUDE_CONFIG_DIR' ? home : nul
 
 const signedIn = (...ids) => Object.fromEntries(ids.map((id) => [id, { signedIn: true }]));
 
+// Tests that walk the same states on both settings. On "Tell me" they guard the rules
+// it always had, which have to stay exactly as they were; on "Switch automatically" they
+// show the ranking reaching the same answer, or the honest new one.
+const BOTH = [['notify', 'suggest'], ['auto', 'switch']];
+
 const planBase = {
   registry: { accounts: [acct('a'), acct('b')] },
   loginStates: signedIn('a', 'b'),
@@ -357,17 +362,19 @@ test('both pin-blocked renderers say low or empty from the decision, not a fixed
 });
 
 test('a lane switch respects the cooldown on the last one', () => {
-  const decisions = planDefaultSwitches({
-    ...planBase,
-    envReader: envSaying('/x/b'),
-    settings: {
-      quotaWatch: 'auto',
-      lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')],
-      lastAutoSwitchAt: planBase.now - (SWITCH_COOLDOWN_MS - 1),
-    },
-    snapshots: { a: snap(5, 10), b: snap(5, 10) },
-  });
-  assert.deepEqual(decisions, []);
+  for (const [quotaWatch] of BOTH) {
+    const decisions = planDefaultSwitches({
+      ...planBase,
+      envReader: envSaying('/x/b'),
+      settings: {
+        quotaWatch,
+        lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')],
+        lastAutoSwitchAt: planBase.now - (SWITCH_COOLDOWN_MS - 1),
+      },
+      snapshots: { a: snap(5, 10), b: snap(5, 10) },
+    });
+    assert.deepEqual(decisions, [], quotaWatch);
+  }
 });
 
 // A lastAutoSwitchAt AHEAD of now was written by a wrong clock; reading its negative
@@ -482,13 +489,15 @@ test('a default running low hands over to the next lane with room', () => {
 });
 
 test('a spent default still moves even when the only other lane is short on room', () => {
-  const [decision] = planDefaultSwitches({
-    ...planBase,
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: { a: snap(100, 20), b: snap(93, 10) },
-  });
-  assert.equal(decision.kind, 'switch');
-  assert.equal(decision.to, 'b');
+  for (const [quotaWatch, kind] of BOTH) {
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: { a: snap(100, 20), b: snap(93, 10) },
+    });
+    assert.equal(decision.kind, kind, quotaWatch);
+    assert.equal(decision.to, 'b', quotaWatch);
+  }
 });
 
 // Spend-down. A weekly window is use-it-or-lose-it: quota unspent at the turnover is
@@ -499,6 +508,7 @@ test('a spent default still moves even when the only other lane is short on room
 // the default stays where the last switch put it, as after every other switch.
 
 const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 
 test('an account whose week expires soon takes the default from a healthy one', () => {
   const d = decideDefaultSwitch({ ...base, mode: 'auto', snapshots: {
@@ -646,46 +656,60 @@ test('a running-low default prefers the expiring target over the roomiest one', 
 });
 
 test('an expiring lane jumps the lane order', () => {
-  const [decision, ...rest] = planDefaultSwitches({
-    ...planBase,
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: {
-      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
-      b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
-    },
-  });
-  assert.equal(rest.length, 0);
-  assert.equal(decision.kind, 'switch');
-  assert.equal(decision.to, 'b');
-  assert.match(decision.reason, /expires soon/);
+  const expected = {
+    notify: 'b has unused quota that expires soon; spending it down before a',
+    auto: "b's weekly quota resets sooner than a's, so it is used first",
+  };
+  for (const [quotaWatch, kind] of BOTH) {
+    const [decision, ...rest] = planDefaultSwitches({
+      ...planBase,
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
+      },
+    });
+    assert.equal(rest.length, 0, quotaWatch);
+    assert.equal(decision.kind, kind, quotaWatch);
+    assert.equal(decision.to, 'b', quotaWatch);
+    assert.equal(decision.reason, expected[quotaWatch], quotaWatch);
+  }
 });
 
-test('the detour undoes itself: after the reset, lane priority takes the default back', () => {
-  const [decision] = planDefaultSwitches({
-    ...planBase,
-    envReader: envSaying('/x/b'),
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: {
-      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
-      b: snap(0, 0, { weekReset: planBase.now + 7 * 24 * HOUR }),
-    },
-  });
-  assert.equal(decision.kind, 'switch');
-  assert.equal(decision.to, 'a');
-  assert.match(decision.reason, /first ready account in your lane order/);
+test('the detour undoes itself: after the reset, the default goes back to the lane that is now due', () => {
+  const expected = {
+    notify: 'a is the first ready account in your lane order',
+    auto: "a's weekly quota resets sooner than b's, so it is used first",
+  };
+  for (const [quotaWatch, kind] of BOTH) {
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      envReader: envSaying('/x/b'),
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        b: snap(0, 0, { weekReset: planBase.now + 7 * 24 * HOUR }),
+      },
+    });
+    assert.equal(decision.kind, kind, quotaWatch);
+    assert.equal(decision.to, 'a', quotaWatch);
+    assert.equal(decision.reason, expected[quotaWatch], quotaWatch);
+  }
 });
 
 test('an expiring lane already holding the default is left alone', () => {
-  const decisions = planDefaultSwitches({
-    ...planBase,
-    envReader: envSaying('/x/b'),
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: {
-      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
-      b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
-    },
-  });
-  assert.deepEqual(decisions, []);
+  for (const [quotaWatch] of BOTH) {
+    const decisions = planDefaultSwitches({
+      ...planBase,
+      envReader: envSaying('/x/b'),
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
+      },
+    });
+    assert.deepEqual(decisions, [], quotaWatch);
+  }
 });
 
 // A lane parked on the default by an earlier spend-down keeps counting as expiring while
@@ -693,102 +717,123 @@ test('an expiring lane already holding the default is left alone', () => {
 // drop out of the expiring list mid-window and the top lane would take the default back
 // early, which is the round trip the detour exists to avoid.
 test('a spend-down lane holding the default keeps it while it drifts into the band', () => {
-  const decisions = planDefaultSwitches({
-    ...planBase,
-    envReader: envSaying('/x/b'),
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: {
-      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
-      b: snap(88, 67, { weekReset: planBase.now + 6 * HOUR }),
-    },
-  });
-  assert.deepEqual(decisions, []);
+  for (const [quotaWatch] of BOTH) {
+    const decisions = planDefaultSwitches({
+      ...planBase,
+      envReader: envSaying('/x/b'),
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        b: snap(88, 67, { weekReset: planBase.now + 6 * HOUR }),
+      },
+    });
+    assert.deepEqual(decisions, [], quotaWatch);
+  }
 });
 
 // The default sits ON the expiring-but-unavailable lane in these two, so falling
 // through to the ordinary order produces a visible switch to the top lane. With the
 // default elsewhere, "fell through" and "selected nothing" would both read as [].
+const fellThrough = {
+  notify: 'a is the first ready account in your lane order',
+  auto: 'a is the first ready account by soonest weekly reset',
+};
+
 test('an expiring lane that is signed out falls through to the ordinary order', () => {
-  const [decision] = planDefaultSwitches({
-    ...planBase,
-    envReader: envSaying('/x/b'),
-    loginStates: { a: { signedIn: true }, b: { signedIn: false } },
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: {
-      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
-      b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
-    },
-  });
-  assert.equal(decision.kind, 'switch');
-  assert.equal(decision.to, 'a');
-  assert.match(decision.reason, /first ready account in your lane order/);
+  for (const [quotaWatch, kind] of BOTH) {
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      envReader: envSaying('/x/b'),
+      loginStates: { a: { signedIn: true }, b: { signedIn: false } },
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
+      },
+    });
+    assert.equal(decision.kind, kind, quotaWatch);
+    assert.equal(decision.to, 'a', quotaWatch);
+    assert.equal(decision.reason, fellThrough[quotaWatch], `${quotaWatch}: nothing claims b reset later, it simply cannot run`);
+  }
 });
 
 test('an expiring lane on cooldown falls through to the ordinary order', () => {
-  const [decision] = planDefaultSwitches({
-    ...planBase,
-    envReader: envSaying('/x/b'),
-    settings: {
-      quotaWatch: 'auto',
-      lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')],
-      cooldowns: { 'l-b': planBase.now + 2 * HOUR },
-      lastAutoSwitchAt: 0,
-    },
-    snapshots: {
-      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
-      b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
-    },
-  });
-  assert.equal(decision.kind, 'switch');
-  assert.equal(decision.to, 'a');
-  assert.match(decision.reason, /first ready account in your lane order/);
+  for (const [quotaWatch, kind] of BOTH) {
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      envReader: envSaying('/x/b'),
+      settings: {
+        quotaWatch,
+        lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')],
+        cooldowns: { 'l-b': planBase.now + 2 * HOUR },
+        lastAutoSwitchAt: 0,
+      },
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
+      },
+    });
+    assert.equal(decision.kind, kind, quotaWatch);
+    assert.equal(decision.to, 'a', quotaWatch);
+    assert.equal(decision.reason, fellThrough[quotaWatch], quotaWatch);
+  }
 });
 
 test('the soonest-expiring lane heads the queue when several qualify', () => {
-  const [decision] = planDefaultSwitches({
-    ...planBase,
-    registry: { accounts: [acct('a'), acct('b'), acct('c')] },
-    loginStates: signedIn('a', 'b', 'c'),
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
-    snapshots: {
-      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
-      b: snap(5, 40, { weekReset: planBase.now + 20 * HOUR }),
-      c: snap(5, 10, { weekReset: planBase.now + 2 * HOUR }),
-    },
-  });
-  assert.equal(decision.kind, 'switch');
-  assert.equal(decision.to, 'c');
-  assert.match(decision.reason, /expires soon/);
+  const expected = {
+    notify: 'c has unused quota that expires soon; spending it down before a',
+    auto: "c's weekly quota resets sooner than a's, so it is used first",
+  };
+  for (const [quotaWatch, kind] of BOTH) {
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      registry: { accounts: [acct('a'), acct('b'), acct('c')] },
+      loginStates: signedIn('a', 'b', 'c'),
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        b: snap(5, 40, { weekReset: planBase.now + 20 * HOUR }),
+        c: snap(5, 10, { weekReset: planBase.now + 2 * HOUR }),
+      },
+    });
+    assert.equal(decision.kind, kind, quotaWatch);
+    assert.equal(decision.to, 'c', quotaWatch);
+    assert.equal(decision.reason, expected[quotaWatch], quotaWatch);
+  }
 });
 
 // Anti-flap: the failed read is the absence of a reading, not a reading. Acting on it
 // made every blip a round trip, out on the error and back on the recovery, once per
 // cooldown for as long as the endpoint stayed flaky.
 test('a default whose meter merely failed to read is not moved', () => {
-  const decisions = planDefaultSwitches({
-    ...planBase,
-    envReader: envSaying('/x/b'),
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: {
-      a: snap(5, 10),
-      b: { error: 'unavailable' },
-    },
-  });
-  assert.deepEqual(decisions, []);
+  for (const [quotaWatch] of BOTH) {
+    const decisions = planDefaultSwitches({
+      ...planBase,
+      envReader: envSaying('/x/b'),
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: {
+        a: snap(5, 10),
+        b: { error: 'unavailable' },
+      },
+    });
+    assert.deepEqual(decisions, [], quotaWatch);
+  }
 });
 
 // The other absence channel: the sign-in state can fail to read (the credentials file
 // is briefly unparseable during the CLI's own token refresh). That is a blip, not a
 // state, and moving the default on it made the same round trip as a quota blip.
 test('a default whose sign-in state failed to read is not moved either', () => {
-  const decisions = planDefaultSwitches({
-    ...planBase,
-    envReader: envSaying('/x/b'),
-    loginStates: { a: { signedIn: true }, b: { signedIn: null } },
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: { a: snap(5, 10), b: snap(6, 11) },
-  });
-  assert.deepEqual(decisions, []);
+  for (const [quotaWatch] of BOTH) {
+    const decisions = planDefaultSwitches({
+      ...planBase,
+      envReader: envSaying('/x/b'),
+      loginStates: { a: { signedIn: true }, b: { signedIn: null } },
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: { a: snap(5, 10), b: snap(6, 11) },
+    });
+    assert.deepEqual(decisions, [], quotaWatch);
+  }
 });
 
 // A stale reading may rule an account out, never in: it describes a moment every run
@@ -836,37 +881,42 @@ test('a signed-out default still hands over; that is a reading, not the lack of 
 // an alarm; for a switch that exists only to burn expiring quota it is not, because
 // nothing is wrong with the default and nothing was going to stop working.
 test('a pin blocks a lane spend-down silently, not with a false alarm', () => {
-  const decisions = planDefaultSwitches({
-    ...planBase,
-    pinPresent: true,
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: {
-      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
-      b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
-    },
-  });
-  assert.deepEqual(decisions, []);
+  for (const [quotaWatch] of BOTH) {
+    const decisions = planDefaultSwitches({
+      ...planBase,
+      pinPresent: true,
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
+      },
+    });
+    assert.deepEqual(decisions, [], quotaWatch);
+  }
 });
 
 test('a pin still alarms when the default is genuinely running low', () => {
-  const [decision] = planDefaultSwitches({
-    ...planBase,
-    pinPresent: true,
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
-    snapshots: {
-      a: snap(92, 40),
-      b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
-    },
-  });
-  assert.equal(decision.kind, 'pin-blocked');
-  assert.equal(decision.spent, false);
+  for (const [quotaWatch] of BOTH) {
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      pinPresent: true,
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+      snapshots: {
+        a: snap(92, 40),
+        b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
+      },
+    });
+    assert.equal(decision.kind, 'pin-blocked', quotaWatch);
+    assert.equal(decision.spent, false, quotaWatch);
+  }
 });
 
 // The alarm asks whether the pin blocked something that was going to happen anyway,
 // which is not the same question as whether this switch is a spend-down. With the
 // default on neither the top lane nor the expiring one, a lane-priority switch was
 // independently wanted and blocked, and reading the switch as a spend-down silenced
-// that alarm for the whole expiring day.
+// that alarm for the whole expiring day. That is "Tell me", where lane order is the
+// priority; on "Switch automatically" the next test holds instead.
 test('a pin still alarms when lane priority wanted a switch of its own', () => {
   const withExpiring = (weekReset) => planDefaultSwitches({
     ...planBase,
@@ -874,7 +924,7 @@ test('a pin still alarms when lane priority wanted a switch of its own', () => {
     loginStates: signedIn('a', 'b', 'c'),
     envReader: envSaying('/x/c'),
     pinPresent: true,
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
+    settings: { quotaWatch: 'notify', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
     snapshots: { a: snap(5, 10), b: snap(12, 67, { weekReset }), c: snap(6, 20) },
   });
   // Without the expiring lane this state alarms; adding one must not change that.
@@ -882,54 +932,77 @@ test('a pin still alarms when lane priority wanted a switch of its own', () => {
   assert.equal(withExpiring(planBase.now + 6 * HOUR)[0]?.kind, 'pin-blocked');
 });
 
-test('a pin alarms for a signed-out default even while a lane is expiring', () => {
-  const [decision] = planDefaultSwitches({
+// On "Switch automatically" the alarm keeps its meaning: plain lane order wanted the switch
+// too. The default here is the top lane, so a sooner reset is the only thing it is held
+// back from, and that is not worth an alarm.
+test('on "Switch automatically" a pin holding the top lane back from a sooner reset is not an alarm', () => {
+  const lanes = [laneFor('l-c', 'c'), laneFor('l-a', 'a'), laneFor('l-b', 'b')];
+  const plan = (c) => planDefaultSwitches({
     ...planBase,
     registry: { accounts: [acct('a'), acct('b'), acct('c')] },
-    loginStates: { ...signedIn('a', 'b'), c: { signedIn: false } },
+    loginStates: signedIn('a', 'b', 'c'),
     envReader: envSaying('/x/c'),
     pinPresent: true,
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
-    snapshots: { a: snap(5, 10), b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }), c: { error: 'no-credentials' } },
+    settings: { quotaWatch: 'auto', lanes, lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(5, 10, { weekReset: planBase.now + 2 * DAY }), b: snap(12, 67, { weekReset: planBase.now + 3 * DAY }), c },
   });
-  assert.equal(decision.kind, 'pin-blocked');
+  assert.deepEqual(plan(snap(6, 20, { weekReset: planBase.now + 4 * DAY })), [], 'healthy, and held back from a sooner reset');
+  assert.equal(plan(snap(93, 20, { weekReset: planBase.now + 4 * DAY }))[0]?.kind, 'pin-blocked', 'running low');
+});
+
+test('a pin alarms for a signed-out default even while a lane is expiring', () => {
+  for (const [quotaWatch] of BOTH) {
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      registry: { accounts: [acct('a'), acct('b'), acct('c')] },
+      loginStates: { ...signedIn('a', 'b'), c: { signedIn: false } },
+      envReader: envSaying('/x/c'),
+      pinPresent: true,
+      settings: { quotaWatch, lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
+      snapshots: { a: snap(5, 10), b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }), c: { error: 'no-credentials' } },
+    });
+    assert.equal(decision.kind, 'pin-blocked', quotaWatch);
+  }
 });
 
 // The top lane happening to be the expiring one is not a spend-down: lane order wanted
-// that switch anyway, so it keeps its ordinary reason (and, under a pin, its alarm).
+// that switch anyway, so it keeps its ordinary reason (and, under a pin, its alarm). On
+// "Switch automatically" the same switch is made for its reset and says so, above.
 test('a switch lane order wanted anyway is not called a spend-down', () => {
   const [decision] = planDefaultSwitches({
     ...planBase,
     envReader: envSaying('/x/b'),
-    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    settings: { quotaWatch: 'notify', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
     snapshots: {
       a: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
       b: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
     },
   });
-  assert.equal(decision.kind, 'switch');
+  assert.equal(decision.kind, 'suggest');
   assert.equal(decision.to, 'a');
   assert.match(decision.reason, /first ready account in your lane order/);
 });
 
 test('a metered lane has nothing that expires', () => {
   const metered = { ...laneFor('l-b', 'b'), billing: 'metered' };
-  const decisions = planDefaultSwitches({
-    ...planBase,
-    settings: {
-      quotaWatch: 'auto',
-      lanes: [laneFor('l-a', 'a'), metered],
-      spendPolicies: { 'l-b': { budget: 25 } },
-      lastAutoSwitchAt: 0,
-    },
-    // Even a metered account that somehow reports subscription-style windows must not
-    // be treated as forfeiting anything at the week's turnover.
-    snapshots: {
-      a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
-      b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
-    },
-  });
-  assert.deepEqual(decisions, []);
+  for (const [quotaWatch] of BOTH) {
+    const decisions = planDefaultSwitches({
+      ...planBase,
+      settings: {
+        quotaWatch,
+        lanes: [laneFor('l-a', 'a'), metered],
+        spendPolicies: { 'l-b': { budget: 25 } },
+        lastAutoSwitchAt: 0,
+      },
+      // Even a metered account that somehow reports subscription-style windows must not
+      // be treated as forfeiting anything at the week's turnover.
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        b: snap(12, 67, { weekReset: planBase.now + 6 * HOUR }),
+      },
+    });
+    assert.deepEqual(decisions, [], quotaWatch);
+  }
 });
 
 test('a metered lane is judged by its spend policy, not by a usage meter it does not have', () => {
@@ -948,6 +1021,445 @@ test('a metered lane is judged by its spend policy, not by a usage meter it does
   assert.equal(decision.to, 'b');
 });
 
+// ---- "Switch automatically" ranks every account by its weekly reset ----
+//
+// Asked for on 2026-10-26: the default had moved to the account whose week ended that
+// afternoon, but the others still sat in lane order, Monday's reset ahead of Thursday's.
+// Unused weekly quota is lost at the turnover, so the soonest is spent first, and lane
+// order only settles ties.
+
+test('once the soonest account resets, the next soonest takes over, not the top lane', () => {
+  const registry = { accounts: [acct('main'), acct('second'), acct('third')] };
+  const lanes = [laneFor('l-main', 'main'), laneFor('l-second', 'second'), laneFor('l-third', 'third')];
+  const plan = (snapshots) => planDefaultSwitches({
+    ...planBase,
+    registry,
+    loginStates: signedIn('main', 'second', 'third'),
+    envReader: envSaying('/x/second'),
+    settings: { quotaWatch: 'auto', lanes, lastAutoSwitchAt: 0 },
+    snapshots,
+  });
+
+  // The afternoon it was asked about: second ends today, third on Thursday, main on Monday.
+  assert.deepEqual(plan({
+    main: snap(21, 6, { weekReset: planBase.now + 6 * DAY }),
+    second: snap(1, 84, { weekReset: planBase.now + 2 * HOUR }),
+    third: snap(0, 42, { weekReset: planBase.now + 3 * DAY }),
+  }), [], 'the account about to lose its quota keeps the default');
+
+  // Its week has turned over, so its turnover is a week away again.
+  const [decision] = plan({
+    main: snap(21, 6, { weekReset: planBase.now + 6 * DAY }),
+    second: snap(0, 0, { weekReset: planBase.now + 7 * DAY }),
+    third: snap(0, 42, { weekReset: planBase.now + 3 * DAY }),
+  });
+  assert.equal(decision.kind, 'switch');
+  assert.equal(decision.to, 'third', 'Thursday before Monday, whatever the lane order says');
+  assert.equal(decision.reason, "third's weekly quota resets sooner than second's, so it is used first");
+});
+
+// Found in review. The tray serves a reading for five minutes (thirty while the vendor is
+// refusing it), so the first passes after a week turns over can still hold the reading
+// taken just before, whose reset has now passed, and a week nothing has been used of
+// comes back with no reset at all. Both are a fresh week, the latest of all, and the
+// default goes straight to the next soonest, not by way of the top lane and not held.
+test('once the default\'s week turns over it goes straight to the next soonest, whatever the reading looks like', () => {
+  const registry = { accounts: [acct('main'), acct('second'), acct('third')] };
+  const lanes = [laneFor('l-main', 'main'), laneFor('l-second', 'second'), laneFor('l-third', 'third')];
+  const turnover = planBase.now;
+  const plan = (now, second) => planDefaultSwitches({
+    ...planBase,
+    now,
+    registry,
+    loginStates: signedIn('main', 'second', 'third'),
+    envReader: envSaying('/x/second'),
+    settings: { quotaWatch: 'auto', lanes, lastAutoSwitchAt: 0 },
+    snapshots: {
+      main: snap(21, 6, { weekReset: turnover + 6 * DAY }),
+      second,
+      third: snap(0, 42, { weekReset: turnover + 3 * DAY }),
+    },
+  });
+  for (const [what, second] of [
+    ['the reading taken just before the turnover', snap(1, 84, { weekReset: turnover })],
+    ['an unstarted week, which states no reset', snap(0, 0)],
+    ['a fresh reading of the new week', snap(0, 0, { weekReset: turnover + 7 * DAY })],
+  ]) {
+    const [decision] = plan(turnover + 60_000, second);
+    assert.equal(decision?.to, 'third', `${what}: one move, to the next soonest`);
+  }
+});
+
+/**
+ * The watch the way it runs: every pass after the cooldown, the default following each
+ * switch. `readings(pass)` gives that pass's snapshots. Returns where it switched to.
+ */
+function walkPasses({ registry, lanes, startOn, passes, readings, loginStates, settings = {} }) {
+  let defaultHome = `/x/${startOn}`;
+  let lastAutoSwitchAt = 0;
+  const switches = [];
+  for (let pass = 0; pass < passes; pass++) {
+    const now = planBase.now + pass * (SWITCH_COOLDOWN_MS + 60_000);
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      now,
+      registry,
+      loginStates,
+      envReader: envSaying(defaultHome),
+      settings: { quotaWatch: 'auto', lanes, lastAutoSwitchAt, ...settings },
+      snapshots: readings(pass),
+    });
+    if (decision?.kind === 'switch') {
+      switches.push(decision.to);
+      defaultHome = `/x/${decision.to}`;
+      lastAutoSwitchAt = now;
+    }
+  }
+  return switches;
+}
+
+// A turnover once read is carried over to later fallback readings until it passes (see
+// inheritResetTimes), so a reading does not lose its reset for a pass in practice. What
+// does happen is a default whose live reading keeps failing after its week turned over:
+// the fallback shows usage and no reset. That week has just begun, and an earlier rule
+// that held such a default in place kept it on the account whose week was the latest.
+test('a default whose reading states no reset is passed over for an account whose reset is stated', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('a'), acct('b'), acct('c')] },
+    loginStates: signedIn('a', 'b', 'c'),
+    envReader: envSaying('/x/c'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(5, 30), b: snap(5, 30, { weekReset: planBase.now + 3 * DAY }), c: snap(5, 71) },
+  });
+  assert.equal(decision?.to, 'b');
+  assert.equal(decision?.reason, 'b is the first ready account by soonest weekly reset');
+});
+
+// Found in review: a week under way must turn over within seven days, so it is spent
+// before one that has only begun, even with no reset stated.
+test('a week under way with no stated reset is spent before a week that has only begun', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/a'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(0, 0), b: snap(5, 40) },
+  });
+  assert.equal(decision?.to, 'b');
+  assert.equal(decision?.reason, 'b is the first ready account by soonest weekly reset', 'b is not first in the lane order, so the ranking is named');
+});
+
+test('with no reset known for any account, lane order decides exactly as it always did', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('a'), acct('b'), acct('c')] },
+    loginStates: signedIn('a', 'b', 'c'),
+    envReader: envSaying('/x/c'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(5, 30), b: snap(5, 30), c: snap(5, 30) },
+  });
+  assert.equal(decision.to, 'a');
+  assert.equal(decision.reason, 'a is the first ready account in your lane order');
+});
+
+// Found in review: a metered default has no reset, and was treated as a reading that had
+// lost one, so recovering subscriptions were reached by way of the top lane.
+test('a default parked on a metered lane goes straight to the soonest subscription once one recovers', () => {
+  const metered = { ...laneFor('l-m', 'm'), billing: 'metered' };
+  const switches = walkPasses({
+    registry: { accounts: [acct('a'), acct('m'), acct('b')] },
+    lanes: [laneFor('l-a', 'a'), metered, laneFor('l-b', 'b')],
+    loginStates: signedIn('a', 'm', 'b'),
+    settings: { spendPolicies: { 'l-m': { budget: 25 } } },
+    startOn: 'm',
+    passes: 4,
+    readings: () => ({
+      a: snap(5, 30, { weekReset: planBase.now + 5 * DAY }),
+      b: snap(5, 30, { weekReset: planBase.now + 2 * DAY }),
+    }),
+  });
+  assert.deepEqual(switches, ['b']);
+});
+
+// Found in review: the notification said the target "resets soonest" whenever the order
+// differed from lane order, including for a default that was signed out and reset first.
+test('a default that had to go is not told the target resets sooner than it does', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('a'), acct('b'), acct('c')] },
+    loginStates: { ...signedIn('a', 'b'), c: { signedIn: false } },
+    envReader: envSaying('/x/c'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
+    snapshots: {
+      a: snap(5, 30, { weekReset: planBase.now + 6 * DAY }),
+      b: snap(5, 30, { weekReset: planBase.now + 2 * DAY }),
+      c: snap(5, 30, { weekReset: planBase.now + 1 * DAY }),
+    },
+  });
+  assert.equal(decision.to, 'b');
+  assert.equal(decision.reason, 'b is the first ready account by soonest weekly reset');
+});
+
+// Found in review: a signed-out account with a readable reading took its tool's first
+// place, was skipped there, and the default went to the metered lane in the next place.
+test('a signed-out account with the soonest reset never hands the default to a metered lane', () => {
+  const metered = { ...laneFor('l-m', 'm'), billing: 'metered' };
+  const decisions = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('a'), acct('m'), acct('b')] },
+    loginStates: { ...signedIn('a', 'm'), b: { signedIn: false } },
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), metered, laneFor('l-b', 'b')], spendPolicies: { 'l-m': { budget: 20 } }, lastAutoSwitchAt: 0 },
+    snapshots: {
+      a: snap(10, 30, { weekReset: planBase.now + 4 * DAY }),
+      b: snap(10, 30, { weekReset: planBase.now + 30 * HOUR }),
+    },
+  });
+  assert.deepEqual(decisions, [], 'a keeps the default: it is the only subscription that can run');
+});
+
+test('a reset days away still outranks lane order, but only on "Switch automatically"', () => {
+  const state = {
+    ...planBase,
+    snapshots: {
+      a: snap(19, 30, { weekReset: planBase.now + 4 * DAY }),
+      b: snap(12, 40, { weekReset: planBase.now + 2 * DAY }),
+    },
+  };
+  const lanes = [laneFor('l-a', 'a'), laneFor('l-b', 'b')];
+  const [auto] = planDefaultSwitches({ ...state, settings: { quotaWatch: 'auto', lanes, lastAutoSwitchAt: 0 } });
+  assert.equal(auto?.to, 'b');
+  assert.deepEqual(planDefaultSwitches({ ...state, settings: { quotaWatch: 'notify', lanes, lastAutoSwitchAt: 0 } }), [],
+    'on "Tell me" a person is choosing, so only a reset within the day moves anything');
+});
+
+test('two accounts whose weeks end together are settled by lane order', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    envReader: envSaying('/x/b'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: {
+      a: snap(5, 30, { weekReset: planBase.now + 3 * DAY }),
+      b: snap(5, 30, { weekReset: planBase.now + 3 * DAY }),
+    },
+  });
+  assert.equal(decision.to, 'a');
+  assert.equal(decision.reason, "a's weekly quota resets at the same time as b's, and a comes first in your lane order");
+});
+
+// Found in review: a tie that a reset decided was put down to lane order alone, which is
+// false when a ready account sits higher in the lane order with a later reset.
+test('a tie is described as a tie, not as being first in the lane order', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('x'), acct('a'), acct('b')] },
+    loginStates: signedIn('x', 'a', 'b'),
+    envReader: envSaying('/x/b'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-x', 'x'), laneFor('l-a', 'a'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: {
+      x: snap(5, 30, { weekReset: planBase.now + 6 * DAY }),
+      a: snap(5, 30, { weekReset: planBase.now + 3 * DAY }),
+      b: snap(5, 30, { weekReset: planBase.now + 3 * DAY }),
+    },
+  });
+  assert.equal(decision.to, 'a');
+  assert.doesNotMatch(decision.reason, /first ready account in your lane order/, 'x is first in the lane order, and has room');
+});
+
+// Two readings of one turnover differ in their last digits, so ranking raw would let each
+// pass find the other account "sooner" and trade the default every cooldown.
+test('resets a few milliseconds apart do not trade the default back and forth', () => {
+  const lanes = [laneFor('l-a', 'a'), laneFor('l-b', 'b')];
+  const turnover = Math.round((planBase.now + 3 * DAY) / HOUR) * HOUR;
+  let defaultHome = '/x/b';
+  let lastAutoSwitchAt = 0;
+  const switches = [];
+  for (let pass = 0; pass < 8; pass++) {
+    const now = planBase.now + pass * (SWITCH_COOLDOWN_MS + 60_000);
+    const [early, late] = pass % 2 ? [turnover - 387, turnover - 382] : [turnover - 382, turnover - 387];
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      now,
+      envReader: envSaying(defaultHome),
+      settings: { quotaWatch: 'auto', lanes, lastAutoSwitchAt },
+      snapshots: { a: snap(5, 30, { weekReset: early }), b: snap(5, 30, { weekReset: late }) },
+    });
+    if (decision?.kind === 'switch') {
+      switches.push(decision.to);
+      defaultHome = `/x/${decision.to}`;
+      lastAutoSwitchAt = now;
+    }
+  }
+  assert.deepEqual(switches, ['a'], 'one move to the top lane, then it stays');
+});
+
+test('a spent default with nowhere roomy to go still takes the soonest reset among those that run', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('a'), acct('b'), acct('c')] },
+    loginStates: signedIn('a', 'b', 'c'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b'), laneFor('l-c', 'c')], lastAutoSwitchAt: 0 },
+    snapshots: {
+      a: snap(100, 40, { weekReset: planBase.now + 3 * DAY }),
+      b: snap(89, 40, { weekReset: planBase.now + 5 * DAY }),
+      c: snap(89, 40, { weekReset: planBase.now + 1 * DAY }),
+    },
+  });
+  assert.equal(decision.to, 'c', 'both are inside the band, so the ranking of all that run decides');
+});
+
+test('on "Switch automatically" the reason names accounts by their labels too', () => {
+  const registry = { accounts: [
+    { id: 'a', provider: 'claude', label: 'Main Account', home: '/x/a' },
+    { id: 'b', provider: 'claude', label: 'Secondary', home: '/x/b' },
+  ] };
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry,
+    settings: { quotaWatch: 'auto', lanes: [laneFor('lane-1789146805336', 'a'), laneFor('lane-1789146805999', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(5, 30, { weekReset: planBase.now + 4 * DAY }), b: snap(5, 30, { weekReset: planBase.now + 2 * DAY }) },
+  });
+  assert.equal(decision.reason, "Secondary's weekly quota resets sooner than Main Account's, so it is used first");
+});
+
+// Found in review: a metered lane is never ranked, so a pick made through one is lane
+// order, whatever the account's own subscription reading says about its reset.
+test('a switch onto a metered lane is never put down to a reset', () => {
+  const metered = { ...laneFor('l-m', 'm'), billing: 'metered' };
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('a'), acct('m')] },
+    loginStates: signedIn('a', 'm'),
+    settings: { quotaWatch: 'auto', lanes: [metered, laneFor('l-a', 'a')], spendPolicies: { 'l-m': { budget: 25 } }, lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(10, 30, { weekReset: planBase.now + 4 * DAY }), m: snap(10, 97, { weekReset: planBase.now + DAY }) },
+  });
+  assert.equal(decision.to, 'm');
+  assert.equal(decision.reason, 'm is the first ready account in your lane order');
+});
+
+// Found in review: ranked only among the lanes with room, a lane that dropped out of the
+// band took its place with it, so a metered lane behind it moved ahead of every
+// subscription and the default went back and forth onto pay-per-use every cooldown.
+test('a metered lane never takes the default past a subscription that could', () => {
+  const metered = { ...laneFor('l-am', 'a'), billing: 'metered' };
+  const switches = walkPasses({
+    registry: { accounts: [acct('a'), acct('b')] },
+    lanes: [laneFor('l-a', 'a'), metered, laneFor('l-b', 'b')],
+    loginStates: signedIn('a', 'b'),
+    settings: { spendPolicies: { 'l-am': { budget: 20 } } },
+    startOn: 'a',
+    passes: 6,
+    readings: () => ({
+      a: snap(88, 30, { weekReset: planBase.now + 5 * DAY }),
+      b: snap(10, 30, { weekReset: planBase.now + 2 * DAY }),
+    }),
+  });
+  assert.deepEqual(switches, ['b'], 'one move to the sooner subscription, and it stays there');
+});
+
+// Found in review: ranked on "can run" rather than "can take the default", an account
+// inside the dead band took the first place, was passed over for the default, and the
+// metered lane in the next place got it while the default itself had room.
+test('only an account that could take the default is ranked for it', () => {
+  const metered = { ...laneFor('l-m', 'm'), billing: 'metered' };
+  const decisions = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('a'), acct('m'), acct('b')] },
+    loginStates: signedIn('a', 'm', 'b'),
+    envReader: envSaying('/x/b'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), metered, laneFor('l-b', 'b')], spendPolicies: { 'l-m': { budget: 20 } }, lastAutoSwitchAt: 0 },
+    snapshots: {
+      a: snap(88, 30, { weekReset: planBase.now + 1 * DAY }),
+      b: snap(10, 30, { weekReset: planBase.now + 3 * DAY }),
+    },
+  });
+  assert.deepEqual(decisions, [], 'a is inside the band, so b keeps the first place and the default');
+});
+
+test('a default running low says so, and claims a reset only for a pick the reset decided', () => {
+  const metered = { ...laneFor('l-m', 'm'), billing: 'metered' };
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('a'), acct('m')] },
+    loginStates: signedIn('a', 'm'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), metered], spendPolicies: { 'l-m': { budget: 20 } }, lastAutoSwitchAt: 0 },
+    snapshots: { a: snap(93, 30, { weekReset: planBase.now + 4 * DAY }), m: snap(5, 5, { weekReset: planBase.now + DAY }) },
+  });
+  assert.equal(decision.to, 'm');
+  assert.equal(decision.reason, 'a is close to its limit; m is the first ready account in your lane order');
+});
+
+test('a default running low says so first, even when the next account was picked for its reset', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('a'), acct('b'), acct('c')] },
+    loginStates: signedIn('a', 'b', 'c'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-a', 'a'), laneFor('l-c', 'c'), laneFor('l-b', 'b')], lastAutoSwitchAt: 0 },
+    snapshots: {
+      a: snap(92, 30, { weekReset: planBase.now + 4 * DAY }),
+      b: snap(5, 30, { weekReset: planBase.now + 2 * DAY }),
+      c: snap(5, 30, { weekReset: planBase.now + 5 * DAY }),
+    },
+  });
+  assert.equal(decision.to, 'b');
+  assert.equal(decision.reason, 'a is close to its limit; b is next, as its weekly quota resets soonest of the accounts with room');
+});
+
+// Found in review: a metered lane with room was counted as an account the ranking had
+// passed over, so the move to the only other subscription claimed it reset soonest, which
+// read as resetting sooner than the account being left.
+test('a metered lane with room is not an account the ranking chose against', () => {
+  const metered = { ...laneFor('l-k', 'k'), billing: 'metered' };
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('work'), acct('personal'), acct('k')] },
+    loginStates: signedIn('work', 'personal', 'k'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-w', 'work'), laneFor('l-p', 'personal'), metered], spendPolicies: { 'l-k': { budget: 20 } }, lastAutoSwitchAt: 0 },
+    envReader: envSaying('/x/work'),
+    snapshots: {
+      work: snap(91, 30, { weekReset: planBase.now + 8 * 3600_000 }),
+      personal: snap(5, 10, { weekReset: planBase.now + 6 * DAY }),
+    },
+  });
+  assert.equal(decision.to, 'personal');
+  assert.equal(decision.reason, 'work is close to its limit; personal is the next account with room');
+});
+
+// Found in review: a tool with one subscription account has nothing to rank, and the tray
+// and the Accounts page say its lane order decides, so the notification must not credit a
+// reset for the switch back from its metered lane.
+test('a tool with nothing to rank is never told a reset decided its switch', () => {
+  const metered = { ...laneFor('l-k', 'k'), billing: 'metered' };
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('c'), acct('k')] },
+    loginStates: signedIn('c', 'k'),
+    envReader: envSaying('/x/k'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-c', 'c'), metered], spendPolicies: { 'l-k': { budget: 20 } }, lastAutoSwitchAt: 0 },
+    snapshots: { c: snap(10, 30, { weekReset: planBase.now + 3 * DAY }) },
+  });
+  assert.equal(decision.to, 'c');
+  assert.equal(decision.reason, 'c is the first ready account in your lane order');
+});
+
+// Found in review: the account holding the default is usually the one resetting soonest,
+// which is why it holds it, so when it runs low the one taking over resets later. Saying
+// the new one "resets soonest" read as a comparison with the account being left.
+test('a soonest-resetting default that runs low is not told the next account resets sooner', () => {
+  const [decision] = planDefaultSwitches({
+    ...planBase,
+    registry: { accounts: [acct('work'), acct('personal')] },
+    loginStates: signedIn('work', 'personal'),
+    envReader: envSaying('/x/work'),
+    settings: { quotaWatch: 'auto', lanes: [laneFor('l-work', 'work'), laneFor('l-personal', 'personal')], lastAutoSwitchAt: 0 },
+    snapshots: {
+      work: snap(91, 30, { weekReset: planBase.now + 8 * HOUR }),
+      personal: snap(5, 10, { weekReset: planBase.now + 6 * DAY }),
+    },
+  });
+  assert.equal(decision.to, 'personal');
+  assert.equal(decision.reason, 'work is close to its limit; personal is the next account with room');
+});
+
 // ---- A choice made by hand, and what the watch says about it ----
 
 // The premise behind withholding "Switch to this": with lanes and the watch switching
@@ -956,14 +1468,19 @@ test('a metered lane is judged by its spend policy, not by a usage meter it does
 test('an account picked by hand while the default follows the lanes is switched straight back', () => {
   const lanes = [laneFor('l-a', 'a'), laneFor('l-b', 'b')];
   assert.equal(defaultFollowsLanes({ quotaWatch: 'auto', lanes }, 'claude'), true);
-  const [decision] = planDefaultSwitches({
-    ...planBase,
-    envReader: envSaying('/x/b'), // the hand-picked account
-    settings: { quotaWatch: 'auto', lanes, lastAutoSwitchAt: 0 },
-    snapshots: { a: snap(3, 0), b: snap(8, 82) },
-  });
-  assert.equal(decision.kind, 'switch');
-  assert.equal(decision.to, 'a');
+  for (const [what, snapshots] of [
+    ['no reset known for either', { a: snap(3, 20), b: snap(8, 82) }],
+    ['the first in the order resets sooner', { a: snap(3, 20, { weekReset: planBase.now + 2 * DAY }), b: snap(8, 82, { weekReset: planBase.now + 5 * DAY }) }],
+  ]) {
+    const [decision] = planDefaultSwitches({
+      ...planBase,
+      envReader: envSaying('/x/b'), // the hand-picked account
+      settings: { quotaWatch: 'auto', lanes, lastAutoSwitchAt: 0 },
+      snapshots,
+    });
+    assert.equal(decision?.kind, 'switch', what);
+    assert.equal(decision?.to, 'a', what);
+  }
 });
 
 test('the reason names accounts the way the rest of the app does, never a lane id', () => {

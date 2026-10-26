@@ -122,7 +122,7 @@ function stdinSeenBy(output) {
  * Every account is given a current usage reading in the shared cache, so each lane reads
  * as having room and nothing here asks a vendor anything.
  */
-function makeWorld({ firstLane = 'dead' } = {}) {
+function makeWorld({ firstLane = 'dead', quotaWatch = 'off', weekResets = {}, thirdClaude = false } = {}) {
   const tmp = tempDir('sb-anyorder-');
   const appData = path.join(tmp, 'appdata');
   const dataDir = path.join(appData, 'Switchboard');
@@ -131,12 +131,15 @@ function makeWorld({ firstLane = 'dead' } = {}) {
     'acct-dead': path.join(tmp, `home-${firstLane}`),
     'acct-codex': path.join(tmp, 'home-codex'),
     'acct-live': path.join(tmp, 'home-live'),
+    // A third Claude account at the end, for a fallback with more than one place to go.
+    ...(thirdClaude ? { 'acct-mid': path.join(tmp, 'home-mid') } : {}),
   };
   const binDir = path.join(tmp, 'bin');
 
   for (const dir of [dataDir, ...Object.values(homes)]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(homes['acct-dead'], '.credentials.json'), signedInCredential());
   fs.writeFileSync(path.join(homes['acct-live'], '.credentials.json'), signedInCredential());
+  if (thirdClaude) fs.writeFileSync(path.join(homes['acct-mid'], '.credentials.json'), signedInCredential());
   fs.writeFileSync(path.join(homes['acct-codex'], 'auth.json'), JSON.stringify({ tokens: { id_token: 'test' } }));
   writeFakeHarnesses(binDir);
 
@@ -144,6 +147,7 @@ function makeWorld({ firstLane = 'dead' } = {}) {
     { id: 'acct-dead', provider: 'claude', label: 'Dead Account', home: homes['acct-dead'] },
     { id: 'acct-codex', provider: 'codex', label: 'Codex Account', home: homes['acct-codex'] },
     { id: 'acct-live', provider: 'claude', label: 'Live Account', home: homes['acct-live'] },
+    ...(thirdClaude ? [{ id: 'acct-mid', provider: 'claude', label: 'Mid Account', home: homes['acct-mid'] }] : []),
   ];
   fs.writeFileSync(path.join(dataDir, 'accounts.json'), JSON.stringify({ accounts }, null, 2));
 
@@ -152,18 +156,20 @@ function makeWorld({ firstLane = 'dead' } = {}) {
       { id: 'lane-dead', harness: 'claude', provider: 'anthropic', accountId: 'acct-dead', billing: 'subscription', capabilities: ['chat'] },
       { id: 'lane-codex', harness: 'codex', provider: 'openai', accountId: 'acct-codex', billing: 'subscription', capabilities: ['chat'] },
       { id: 'lane-live', harness: 'claude', provider: 'anthropic', accountId: 'acct-live', billing: 'subscription', capabilities: ['chat'] },
+      ...(thirdClaude ? [{ id: 'lane-mid', harness: 'claude', provider: 'anthropic', accountId: 'acct-mid', billing: 'subscription', capabilities: ['chat'] }] : []),
     ],
     spendPolicies: {},
     cooldowns: {},
-    quotaWatch: 'off'
+    quotaWatch
   }, null, 2));
 
   const cache = {};
   for (const account of accounts) {
+    const week = { key: 'week', usedPercent: 5, ...(weekResets[account.id] ? { resetsAt: weekResets[account.id] } : {}) };
     cache[account.id] = {
       key: sharedQuotaKey(account.provider, account.home),
       at: Date.now(),
-      result: { source: 'token', windows: [{ key: 'session', usedPercent: 5 }, { key: 'week', usedPercent: 5 }] },
+      result: { source: 'token', windows: [{ key: 'session', usedPercent: 5 }, week] },
     };
   }
   fs.writeFileSync(path.join(dataDir, 'quota-cache.json'), JSON.stringify(cache, null, 2));
@@ -468,6 +474,58 @@ test('dry-run names the first lane the caller can drive, not the first lane', ()
     assert.equal('harnesses' in anything, false, 'nothing was narrowed, so nothing is claimed');
   } finally {
     fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('on "Switch automatically", dry-run and run both take the account whose week ends first', () => {
+  const day = 24 * 60 * 60 * 1000;
+  // The live account is the lower Claude lane but its week ends days sooner. Codex, in
+  // between, ends sooner still, and must keep its place: ranking only ever reorders the
+  // accounts of one tool, so the first place stays Claude's.
+  const weekResets = { 'acct-dead': Date.now() + 5 * day, 'acct-codex': Date.now() + 1 * day, 'acct-live': Date.now() + 2 * day };
+  const automatic = makeWorld({ firstLane: 'spent', quotaWatch: 'auto', weekResets });
+  const byHand = makeWorld({ firstLane: 'spent', quotaWatch: 'notify', weekResets });
+  try {
+    assert.equal(JSON.parse(runCli(automatic, ['dry-run', '--json']).stdout).laneId, 'lane-live',
+      'the sooner Claude account, and not the Codex lane whose week ends soonest of all');
+    assert.equal(JSON.parse(runCli(byHand, ['dry-run', '--json']).stdout).laneId, 'lane-dead',
+      'on "Tell me" the order as set decides');
+
+    const ran = runCli(automatic, ['run', '--yes', '--spec', writeSpec(automatic, { claude: ['-p'] })]);
+    const output = `${ran.stdout ?? ''}${ran.stderr ?? ''}`;
+    assert.match(output, /Running via lane lane-live/, `run starts where dry-run said. Output:\n${output}`);
+    assert.doesNotMatch(output, /Running via lane lane-dead/, `the later reset is never reached. Output:\n${output}`);
+
+    const listed = runCli(automatic, ['lanes']).stdout ?? '';
+    assert.match(listed, /taken soonest weekly reset first/, 'the list says it is not the order a run takes');
+    assert.doesNotMatch(runCli(byHand, ['lanes']).stdout ?? '', /soonest weekly reset/);
+  } finally {
+    fs.rmSync(automatic.tmp, { recursive: true, force: true });
+    fs.rmSync(byHand.tmp, { recursive: true, force: true });
+  }
+});
+
+// The fallback after a limit takes the same order as the first pick. Nothing else covered
+// that: the first pick in the test above never fails.
+test('on "Switch automatically" a run that hits a limit falls back to the next soonest reset, not the next lane down', () => {
+  const day = 24 * 60 * 60 * 1000;
+  // The spent account resets soonest so it is tried first; of the two left, the last lane
+  // resets sooner than the one above it.
+  const weekResets = { 'acct-dead': Date.now() + 1 * day, 'acct-live': Date.now() + 5 * day, 'acct-mid': Date.now() + 2 * day };
+  const automatic = makeWorld({ firstLane: 'spent', quotaWatch: 'auto', weekResets, thirdClaude: true });
+  const byHand = makeWorld({ firstLane: 'spent', quotaWatch: 'notify', weekResets, thirdClaude: true });
+  try {
+    const ranked = runCli(automatic, ['run', '--yes', '--spec', writeSpec(automatic, { claude: ['-p'] })]);
+    const rankedOut = `${ranked.stdout ?? ''}${ranked.stderr ?? ''}`;
+    assert.match(rankedOut, /Running via lane lane-dead[\s\S]*Provider limit error[\s\S]*Running via lane lane-mid/, `Output:\n${rankedOut}`);
+    assert.doesNotMatch(rankedOut, /Running via lane lane-live/, `the later reset is never reached. Output:\n${rankedOut}`);
+
+    const asSet = runCli(byHand, ['run', '--yes', '--spec', writeSpec(byHand, { claude: ['-p'] })]);
+    const asSetOut = `${asSet.stdout ?? ''}${asSet.stderr ?? ''}`;
+    assert.match(asSetOut, /Running via lane lane-dead[\s\S]*Running via lane lane-live/, `on "Tell me" the next lane down. Output:\n${asSetOut}`);
+  } finally {
+    fs.rmSync(automatic.tmp, { recursive: true, force: true });
+    fs.rmSync(byHand.tmp, { recursive: true, force: true });
   }
 });
 

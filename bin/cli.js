@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { loadRegistry, saveRegistry, addAccount, createAccount, envValueForHome, removeAccount, setAccountColor, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, PROVIDERS, accountScopedEnv, configuredClaudeCredentialOverrides } from '../core/accounts.js';
 import { detectAll, detectInstalled, TOOLS, toolExecutable } from '../core/providers.js';
 import { runChecks, accountLoginState } from '../core/doctor.js';
-import { sharedProviderQuota } from '../core/quota-cache.js';
+import { lastSharedQuota, sharedProviderQuota } from '../core/quota-cache.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, setLaneToken, removeLaneToken, BILLING_KINDS, resolveAllAccounts } from '../core/lane-admin.js';
@@ -12,7 +12,7 @@ import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTo
 import { readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
-import { selectLaneAsNeeded, narrowPool, lanesCallerCannotDrive, selectionFailure, defaultFollowsLanes, switchedAgainstLanesNote } from '../core/lanes.js';
+import { selectLaneAsNeeded, narrowPool, lanesCallerCannotDrive, selectionFailure, defaultFollowsLanes, switchedAgainstLanesNote, ordersBySoonestReset, ranksByReset } from '../core/lanes.js';
 import { readHandoff, writeHandoff, removeHandoff, handoffOrigin, generateHandoffPrompt, generateHandoffNote, DERIVED_NEXT_ACTIONS } from '../core/handoff.js';
 import { CARRYABLE_HARNESSES, callerManagesSession, namedSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest, transcriptSupport } from '../core/transcripts.js';
 import { parseRunArgs, loadRunSpec, resolveSpecArgv, drivableHarnesses, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs, parseNotifyArgs } from '../core/runargs.js';
@@ -54,10 +54,20 @@ async function laneSelection(settings, registry, overrides = {}) {
     return { login, quota };
   };
 
+  // What ranking by reset looks at: the sign-in, and the last reading the shared cache
+  // holds at any age, never the vendor. Only the turnover time matters for ranking, and it
+  // stays true until it passes. See selectLaneAsNeeded.
+  const peekAccount = (accountId) => {
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) return {};
+    return { login: accountLoginState(account), quota: lastSharedQuota(account.id) ?? undefined };
+  };
+
   return {
     pool: lanes,
     context: { now, loginStates: {}, quotas: {}, spendPolicies, cooldowns, requirements: overrides },
     readAccount,
+    peekAccount,
   };
 }
 
@@ -241,7 +251,7 @@ async function main() {
         }
       }
 
-      const { pool, context, readAccount } = await laneSelection(settings, registry, { provider: parsed.provider });
+      const { pool, context, readAccount, peekAccount } = await laneSelection(settings, registry, { provider: parsed.provider });
 
       if (parsed.account) {
         context.requirements.accountId = parsed.account; // Not natively in selectLane, but conceptually overrides
@@ -267,7 +277,11 @@ async function main() {
       // this machine.
       const narrowedTo = harnesses ? { harnesses } : {};
 
-      const selected = filteredPool.length ? await selectLaneAsNeeded(filteredPool, context, readAccount) : null;
+      // Taken in the order the tray shows: soonest weekly reset first on "Switch
+      // automatically", as set otherwise. See ordersBySoonestReset.
+      const selected = filteredPool.length
+        ? await selectLaneAsNeeded(filteredPool, context, readAccount, { bySoonestReset: ordersBySoonestReset(settings), peekAccount })
+        : null;
 
       if (!selected) {
         const reason = selectionFailure(pool, filteredPool);
@@ -350,11 +364,14 @@ async function main() {
       };
       let currentPool = narrowPool(settings.lanes, narrowing);
 
-      const { context, readAccount } = await laneSelection(settings, registry, {
+      const { context, readAccount, peekAccount } = await laneSelection(settings, registry, {
         provider: parsed.provider,
       });
 
-      let selected = currentPool.length ? await selectLaneAsNeeded(currentPool, context, readAccount) : null;
+      // The same order dry-run answers with, so a caller that asked first gets what it was told.
+      let selected = currentPool.length
+        ? await selectLaneAsNeeded(currentPool, context, readAccount, { bySoonestReset: ordersBySoonestReset(settings), peekAccount })
+        : null;
 
       if (!selected) {
         say(selectionFailure(settings.lanes, currentPool));
@@ -618,11 +635,12 @@ async function main() {
           const previousLane = selected.lane;
           currentPool = currentPool.filter(l => l.id !== selected.lane.id);
           
-          const next = await laneSelection(loadSettings(), registry, {
+          const nextSettings = loadSettings();
+          const next = await laneSelection(nextSettings, registry, {
             provider: parsed.provider,
           });
 
-          selected = await selectLaneAsNeeded(currentPool, next.context, next.readAccount);
+          selected = await selectLaneAsNeeded(currentPool, next.context, next.readAccount, { bySoonestReset: ordersBySoonestReset(nextSettings), peekAccount: next.peekAccount });
           
           if (!selected) {
             say(`[switchboard] No more available lanes to fall back to.`);
@@ -826,7 +844,8 @@ async function main() {
       if (!account) { out('No matching account. See: switchboard accounts'); process.exitCode = 1; return; }
       setActive(registry, account.id);
       out(`New terminals and apps will use ${PROVIDERS[account.provider].name} account "${account.label}". Running processes are unchanged.`);
-      if (defaultFollowsLanes(loadSettings(), account.provider)) out(switchedAgainstLanesNote(PROVIDERS[account.provider].name));
+      const current = loadSettings();
+      if (defaultFollowsLanes(current, account.provider)) out(switchedAgainstLanesNote(PROVIDERS[account.provider].name, ranksByReset(current, account.provider, registry.accounts), Boolean(PROVIDERS[account.provider].quota)));
       return;
     }
     // The color the window and tray show an account in. Here as well as in the window so a
@@ -917,7 +936,12 @@ async function main() {
           out('Account ids come from: switchboard accounts');
           return;
         }
-        out('Lanes in priority order; the first healthy one gets the work.');
+        // The list is the order as set, which is not the order a run takes on "Switch
+        // automatically", so the heading says which one applies rather than correcting
+        // itself on the line after.
+        out(ordersBySoonestReset(settings)
+          ? 'Lanes in the order as set. The watch is set to switch automatically, so the subscription accounts of a tool whose usage Switchboard reads are taken soonest weekly reset first; this order decides everything else, including which tool comes first.'
+          : 'Lanes in priority order; the first healthy one gets the work.');
         settings.lanes.forEach((lane, i) => {
           const account = allAccounts.find((a) => a.id === lane.accountId);
           const budget = settings.spendPolicies?.[lane.id]?.budget ?? null;
@@ -999,7 +1023,7 @@ async function main() {
       }
 
       out('switchboard lanes <list|add|remove|order|budget>');
-      out('  lanes [--json]                        the pool, in priority order');
+      out('  lanes [--json]                        the pool, in the order as set');
       out(`  lanes add <accountId> [--metered] [--budget <n>]   append a lane (billing: ${BILLING_KINDS.join('|')})`);
       out('  lanes remove <laneId>                 take a lane out of the pool');
       out('  lanes order <laneId>...               reorder; ids left out keep their order at the end');
@@ -1206,7 +1230,7 @@ async function main() {
       const mode = parsed.mode ?? loadSettings().quotaWatch;
       if (mode !== 'notify' && mode !== 'auto') {
         out('The quota watch is off. Run one pass with: switchboard watch --once --mode notify');
-        out('  notify reports what it would do; auto switches the machine default.');
+        out('  notify reports what "Tell me" would suggest; auto switches the machine default as "Switch automatically" does.');
         process.exitCode = 1;
         return;
       }

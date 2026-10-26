@@ -85,7 +85,8 @@ function load(names, exports, extras = {}) {
   const src = [
     'let usageTimer = null;',
     'let drawnSignIns = null;',
-    'function setDrawn(value) { drawnSignIns = value; }',
+    'let drawnOrder = null;',
+    'function setDrawn(value, order = null) { drawnSignIns = value; drawnOrder = order; }',
     lift('el'),
     lift('esc'),
     ...names.map(lift),
@@ -156,7 +157,7 @@ test('each tick checks the sign-in lines as well as the usage figures', () => {
       isCurrentRender: () => true,
       $: () => ({ classList: { contains: () => true } }),
       refreshVisibleUsage: () => {},
-      refreshSignInsIfChanged: (seq) => checked.push(seq),
+      refreshAccountsIfChanged: (seq) => checked.push(seq),
     },
   );
   watchAccountUsage(7);
@@ -207,8 +208,8 @@ function loadSignIns({ fresh, current = true, focused = null }) {
   const redraws = [];
   const panel = { contains: (node) => node === 'inside' };
   const api = load(
-    ['signInSignature', 'refreshSignInsIfChanged'],
-    ['signInSignature', 'refreshSignInsIfChanged', 'setDrawn'],
+    ['signInSignature', 'listOrderSignature', 'refreshAccountsIfChanged'],
+    ['signInSignature', 'listOrderSignature', 'refreshAccountsIfChanged', 'setDrawn'],
     {
       sb: { state: async () => { if (fresh instanceof Error) throw fresh; return fresh; } },
       isCurrentRender: () => current,
@@ -223,20 +224,33 @@ function loadSignIns({ fresh, current = true, focused = null }) {
 const signedIn = { id: 'claude-default', login: { signedIn: true, level: 'ok', detail: 'Signed in, login valid until 10/13/2026' } };
 const signedOut = { id: 'claude-default', login: { signedIn: false, level: 'warn', detail: 'Not signed in' } };
 
-function withDrawn(api, accounts) {
-  api.setDrawn(api.signInSignature(accounts));
+function withDrawn(api, accounts, providers = undefined) {
+  api.setDrawn(api.signInSignature(accounts), api.listOrderSignature(providers));
   return api;
 }
 
+// The tray menu re-sorts on every pass, and a page drawn once kept the order it was drawn
+// in beside a heading saying how the order is decided.
+test('the panel is redrawn when the order accounts would be used in has changed', async () => {
+  const before = { claude: { id: 'claude', accountOrder: ['second', 'third', 'main'] } };
+  const after = { claude: { id: 'claude', accountOrder: ['third', 'main', 'second'] } };
+  const moved = withDrawn(loadSignIns({ fresh: { accounts: [signedIn], providers: after } }), [signedIn], before);
+  assert.equal(await moved.refreshAccountsIfChanged(1), true);
+  assert.deepEqual(moved.redraws, ['redraw']);
+
+  const same = withDrawn(loadSignIns({ fresh: { accounts: [signedIn], providers: before } }), [signedIn], before);
+  assert.equal(await same.refreshAccountsIfChanged(1), false, 'the same order is not a change');
+});
+
 test('the panel is redrawn when a sign-in has changed since it was drawn', async () => {
   const api = withDrawn(loadSignIns({ fresh: { accounts: [signedOut] } }), [signedIn]);
-  assert.equal(await api.refreshSignInsIfChanged(1), true);
+  assert.equal(await api.refreshAccountsIfChanged(1), true);
   assert.deepEqual(api.redraws, ['redraw']);
 });
 
 test('nothing is redrawn while every sign-in still reads the same', async () => {
   const api = withDrawn(loadSignIns({ fresh: { accounts: [{ ...signedIn, label: 'renamed elsewhere' }] } }), [signedIn]);
-  assert.equal(await api.refreshSignInsIfChanged(1), false);
+  assert.equal(await api.refreshAccountsIfChanged(1), false);
   assert.deepEqual(api.redraws, []);
 });
 
@@ -248,13 +262,13 @@ test('the order accounts arrive in is not a change', () => {
 
 test('a superseded render, a failed reading, or someone typing on the page never triggers a redraw', async () => {
   const stale = withDrawn(loadSignIns({ fresh: { accounts: [signedOut] }, current: false }), [signedIn]);
-  assert.equal(await stale.refreshSignInsIfChanged(1), false, 'a newer render already owns the panel');
+  assert.equal(await stale.refreshAccountsIfChanged(1), false, 'a newer render already owns the panel');
 
   const broken = withDrawn(loadSignIns({ fresh: new Error('ipc gone') }), [signedIn]);
-  assert.equal(await broken.refreshSignInsIfChanged(1), false, 'a failed read is not a sign-out');
+  assert.equal(await broken.refreshAccountsIfChanged(1), false, 'a failed read is not a sign-out');
 
   const typing = withDrawn(loadSignIns({ fresh: { accounts: [signedOut] }, focused: 'inside' }), [signedIn]);
-  assert.equal(await typing.refreshSignInsIfChanged(1), false, 'a redraw would wipe what they typed');
+  assert.equal(await typing.refreshAccountsIfChanged(1), false, 'a redraw would wipe what they typed');
 
   for (const api of [stale, broken, typing]) assert.deepEqual(api.redraws, []);
 });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { laneStatus, selectLane, selectLaneAsNeeded, narrowPool, lanesCallerCannotDrive, laneAnswersTo, selectionFailure, worthSwitchingTo, defaultFollowsLanes, followsLanesNote, switchedAgainstLanesNote, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
-import { expiringWeek, hasHeadroom, isRunningOut, spentEvidence, tightestWindow, SPEND_DOWN_HORIZON_MS, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
+import { laneStatus, selectLane, selectLaneAsNeeded, narrowPool, lanesCallerCannotDrive, laneAnswersTo, selectionFailure, worthSwitchingTo, defaultFollowsLanes, followsLanesNote, switchedAgainstLanesNote, ordersBySoonestReset, ranksByReset, soonestResetOrder, accountUseOrder, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
+import { expiringWeek, hasHeadroom, isRunningOut, spentEvidence, tightestWindow, weekTurnover, SPEND_DOWN_HORIZON_MS, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
 
 function makeLane(id, accountId, billing = 'subscription') {
   return {
@@ -737,18 +737,355 @@ test('the default follows the lanes only for a tool that has some', () => {
 const DASHES = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
 
 test('where the switch is withheld, the words say how to choose by hand', () => {
-  const note = followsLanesNote('Claude Code');
-  assert.match(note, /^New Claude Code sessions follow your lane order/);
-  assert.match(note, /Reorder the lanes/);
-  assert.match(note, /"Tell me" or "Do nothing"/, 'names the tray settings that give the choice back');
-  assert.doesNotMatch(note, DASHES, 'no dashes in user-facing words');
+  const ranked = followsLanesNote('Claude Code');
+  assert.match(ranked, /new Claude Code sessions use the first ready account in your lanes, taking subscription accounts soonest weekly reset first/);
+  assert.match(ranked, /lane order decides everything else/, 'says what the lane order still does');
+  assert.doesNotMatch(ranked, /Reorder the lanes to change which account/, 'reordering no longer picks between subscriptions, so it is not offered as the way to');
+  const asSet = followsLanesNote('Codex', false);
+  assert.match(asSet, /^New Codex sessions follow your lane order/, 'a tool with nothing to rank keeps the words it always had');
+  assert.match(asSet, /Reorder the lanes/);
+  for (const note of [ranked, asSet]) {
+    assert.match(note, /"Tell me" or "Do nothing"/, 'names the tray settings that give the choice back');
+    assert.doesNotMatch(note, DASHES, 'no dashes in user-facing words');
+  }
 });
 
 test('a switch made from a terminal anyway says what a running watch will do', () => {
-  const note = switchedAgainstLanesNote('Claude Code');
-  assert.match(note, /if the tray app or "switchboard watch" is running/, 'it cannot know that a watch is running, so it does not claim one');
-  assert.match(note, /first ready account in your lane order/);
-  assert.doesNotMatch(note, DASHES);
+  const ranked = switchedAgainstLanesNote('Claude Code');
+  const asSet = switchedAgainstLanesNote('Codex', false);
+  for (const note of [ranked, asSet]) {
+    assert.match(note, /if the tray app or "switchboard watch" is running/, 'it cannot know that a watch is running, so it does not claim one');
+    assert.doesNotMatch(note, DASHES);
+  }
+  assert.match(ranked, /taking subscription accounts soonest weekly reset first/);
+  assert.match(asSet, /first ready account in your lane order/);
+});
+
+// Found in review: Gemini CLI and Qwen Code report no usage, so the watch leaves their
+// default where it is, yet the words told the user to reorder the lanes to change it and
+// warned that a running watch would move a terminal switch back.
+test('a tool with no usage reading is not told the lane order moves its default', () => {
+  const page = followsLanesNote('Gemini CLI', false, false);
+  const terminal = switchedAgainstLanesNote('Gemini CLI', false, false);
+  for (const note of [page, terminal]) {
+    assert.match(note, /reads no usage for Gemini CLI/);
+    assert.doesNotMatch(note, /Reorder the lanes|lane order|back to/, 'reordering changes nothing for it, and nothing moves it back');
+    assert.doesNotMatch(note, DASHES);
+  }
+  assert.match(page, /"Tell me" or "Do nothing"/, 'still names the way to choose by hand');
+  assert.match(terminal, /never moves new Gemini CLI sessions between subscription accounts/);
+});
+
+test('only a tool with readable usage and more than one subscription account is ranked by reset', () => {
+  const lane = (id, harness, accountId, billing = 'subscription') => ({ ...makeLane(id, accountId, billing), harness });
+  const auto = (lanes) => ({ quotaWatch: 'auto', lanes });
+  assert.equal(ranksByReset(auto([lane('1', 'claude', 'a'), lane('2', 'claude', 'b')]), 'claude'), true);
+  assert.equal(ranksByReset({ quotaWatch: 'notify', lanes: [lane('1', 'claude', 'a'), lane('2', 'claude', 'b')] }, 'claude'), false, 'only on "Switch automatically"');
+  assert.equal(ranksByReset(auto([lane('1', 'claude', 'a'), lane('2', 'claude', 'a')]), 'claude'), false, 'one account has nothing to rank against');
+  assert.equal(ranksByReset(auto([lane('1', 'claude', 'a'), lane('2', 'claude', 'b', 'metered')]), 'claude'), false, 'a metered lane is never ranked');
+  assert.equal(ranksByReset(auto([lane('1', 'gemini', 'g1'), lane('2', 'gemini', 'g2')]), 'gemini'), false, 'Gemini CLI has no usage reading to rank on');
+  assert.equal(defaultFollowsLanes(auto([lane('1', 'gemini', 'g1'), lane('2', 'gemini', 'g2')]), 'gemini'), true, 'its default still follows its lanes, as it always did');
+});
+
+// ---- Soonest weekly reset first ----
+//
+// On 2026-10-26 the watch had moved the default onto the account whose week ended that
+// afternoon, and left the other two in lane order: the one resetting the following Monday
+// ahead of the one resetting Thursday. Weekly quota is lost at the turnover, so on "Switch
+// automatically" every account of a tool is now ranked by it, not only one on its last day.
+
+const weekEnding = (resetsAt, used = 20) => ({
+  windows: [
+    { key: 'session', usedPercent: 5, resetsAt: NOW + 3 * HOUR },
+    { key: 'week', usedPercent: used, resetsAt },
+  ],
+});
+
+/** What the ranking reads: these readings, every account in them signed in, plus `extra`. */
+const ranking = (quotas, extra = {}) => ({
+  now: NOW,
+  quotas,
+  loginStates: Object.fromEntries(Object.keys(quotas).map((id) => [id, { signedIn: true }])),
+  ...extra,
+});
+const ids = (lanes) => lanes.map((l) => l.id);
+const codexLane = (id, accountId, billing = 'subscription') => ({ ...makeLane(id, accountId, billing), harness: 'codex', provider: 'openai' });
+
+test('only "Switch automatically" ranks by reset; a person choosing keeps the order they set', () => {
+  assert.equal(ordersBySoonestReset({ quotaWatch: 'auto' }), true);
+  assert.equal(ordersBySoonestReset({ quotaWatch: 'notify' }), false);
+  assert.equal(ordersBySoonestReset({ quotaWatch: 'off' }), false);
+  assert.equal(ordersBySoonestReset({}), false);
+  assert.equal(ordersBySoonestReset(null), false);
+});
+
+test('accounts of one tool are taken soonest weekly reset first, however far off the reset is', () => {
+  // Lane order as set on the machine where this was asked for, with the readings of the day.
+  const lanes = [makeLane('l-main', 'main'), makeLane('l-second', 'second'), makeLane('l-third', 'third')];
+  const quotas = {
+    main: weekEnding(NOW + 6 * DAY, 6),
+    second: weekEnding(NOW + 2 * HOUR, 84),
+    third: weekEnding(NOW + 3 * DAY, 42),
+  };
+  assert.deepEqual(ids(soonestResetOrder(lanes, ranking(quotas))), ['l-second', 'l-third', 'l-main']);
+});
+
+test('each tool keeps the places its lanes were given, so the order still says which tool comes first', () => {
+  const lanes = [makeLane('c1', 'a'), codexLane('x1', 'x'), makeLane('c2', 'b'), codexLane('x2', 'y')];
+  const quotas = {
+    a: weekEnding(NOW + 5 * DAY), b: weekEnding(NOW + 1 * DAY),
+    x: weekEnding(NOW + 4 * DAY), y: weekEnding(NOW + 2 * DAY),
+  };
+  assert.deepEqual(ids(soonestResetOrder(lanes, ranking(quotas))), ['c2', 'x2', 'c1', 'x1'],
+    'Claude still in the first and third places and Codex in the second and fourth, each soonest first');
+});
+
+test('a metered lane never moves, because pay-per-use quota does not expire', () => {
+  const lanes = [makeLane('l1', 'a'), makeLane('m', 'm', 'metered'), makeLane('l2', 'b')];
+  const quotas = { a: weekEnding(NOW + 5 * DAY), m: weekEnding(NOW + 1000), b: weekEnding(NOW + 1 * DAY) };
+  assert.deepEqual(ids(soonestResetOrder(lanes, ranking(quotas))), ['l2', 'm', 'l1']);
+});
+
+test('an account whose usage cannot be read follows the rest, and a week under way with no stated reset follows the stated ones', () => {
+  const lanes = [makeLane('l1', 'unread'), makeLane('l2', 'stale'), makeLane('l3', 'known'), makeLane('l4', 'none')];
+  const quotas = {
+    unread: { error: 'fetch failed' },
+    stale: { ...weekEnding(NOW + 1000), stale: true },
+    known: weekEnding(NOW + 6 * DAY),
+    // A reading with a week but no stated turnover, as a fallback reading can be.
+    none: { windows: [{ key: 'session', usedPercent: 5 }, { key: 'week', usedPercent: 5, resetsAt: null }] },
+  };
+  assert.deepEqual(ids(soonestResetOrder(lanes, ranking(quotas))), ['l3', 'l4', 'l1', 'l2']);
+});
+
+test('an account that has hit a limit waits behind every account that can still run', () => {
+  const lanes = [makeLane('l1', 'a'), makeLane('l2', 'spent')];
+  const quotas = { a: weekEnding(NOW + 5 * DAY), spent: weekEnding(NOW + 1 * DAY, 100) };
+  assert.deepEqual(ids(soonestResetOrder(lanes, ranking(quotas))), ['l1', 'l2']);
+});
+
+// Found in review: a signed-out account still has a usage reading (a session log, or a
+// Claude Desktop sample with the reset carried over), so ranked on that alone it took its
+// tool's first place, was skipped there, and work went to the metered lane in the next
+// place while an account of the same tool had room.
+test('an account that cannot take work never takes its tool\'s first place, whatever its reading says', () => {
+  const lanes = [codexLane('x', 'x'), codexLane('m', 'm', 'metered'), codexLane('y', 'y')];
+  const quotas = { x: weekEnding(NOW + 5 * DAY), m: weekEnding(NOW + DAY), y: weekEnding(NOW + DAY) };
+  for (const [why, extra] of [
+    ['signed out', { loginStates: { x: { signedIn: true }, m: { signedIn: true }, y: { signedIn: false } } }],
+    ['sign-in unreadable', { loginStates: { x: { signedIn: true }, m: { signedIn: true } } }],
+    ['on cooldown', { cooldowns: { y: NOW + HOUR } }],
+  ]) {
+    const order = soonestResetOrder(lanes, ranking(quotas, extra));
+    assert.deepEqual(ids(order), ['x', 'm', 'y'], why);
+    assert.equal(selectLane(order, { ...ranking(quotas, extra), spendPolicies: { m: { budget: 20 } } }).lane.id, 'x',
+      `${why}: the subscription with room is used, not the metered lane`);
+  }
+});
+
+test('the same holds across tools: a tool that cannot run does not hand its place to another', () => {
+  const lanes = [codexLane('x', 'x'), makeLane('a', 'a'), codexLane('y', 'y')];
+  const quotas = { x: weekEnding(NOW + 5 * DAY), a: weekEnding(NOW + 2 * DAY), y: weekEnding(NOW + DAY) };
+  const context = ranking(quotas, { loginStates: { x: { signedIn: true }, a: { signedIn: true }, y: { signedIn: false } } });
+  assert.equal(selectLane(soonestResetOrder(lanes, context), context).lane.id, 'x', 'Codex comes first in the order set, and has an account that can run');
+});
+
+test('a stricter test of who may be ranked leaves the places ahead of a metered lane to those who pass it', () => {
+  const lanes = [makeLane('l1', 'a'), makeLane('m', 'm', 'metered'), makeLane('l2', 'b')];
+  const quotas = { a: weekEnding(NOW + 5 * DAY), b: weekEnding(NOW + DAY) };
+  assert.deepEqual(ids(soonestResetOrder(lanes, ranking(quotas), { canRank: (l) => l.accountId === 'a' })), ['l1', 'm', 'l2'],
+    'b may not be ranked, so a keeps the first place rather than handing it, and the metered lane after it, the lead');
+});
+
+// A week that has not started (nothing used, no turnover stated) or has turned over since
+// the reading was taken is a whole week from its next turnover, later than any week under
+// way. Read as "unknown", the account whose week had only just begun was held on to.
+test('a week that has just begun ranks after every week already under way', () => {
+  const lanes = [makeLane('l1', 'fresh'), makeLane('l2', 'passed'), makeLane('l3', 'late')];
+  const quotas = {
+    fresh: { windows: [{ key: 'session', usedPercent: 0 }, { key: 'week', usedPercent: 0, resetsAt: null }] },
+    passed: weekEnding(NOW - HOUR, 84),
+    late: weekEnding(NOW + 6 * DAY),
+  };
+  assert.deepEqual(ids(soonestResetOrder(lanes, ranking(quotas))), ['l3', 'l1', 'l2'], 'and two of them settle by lane order');
+});
+
+test('resets a few milliseconds apart are the same reset, and the order set decides between them', () => {
+  // Two readings of one turnover, as the vendor states it: the last digits differ.
+  const hour = Math.round(NOW / HOUR) * HOUR + 6 * DAY;
+  const lanes = [makeLane('l1', 'a'), makeLane('l2', 'b')];
+  for (const [ra, rb] of [[hour - 382, hour - 387], [hour - 387, hour - 382]]) {
+    assert.deepEqual(ids(soonestResetOrder(lanes, ranking({ a: weekEnding(ra), b: weekEnding(rb) }))), ['l1', 'l2'], `${ra} against ${rb}`);
+  }
+});
+
+test('the reset used for ranking is rounded to the minute and only comes from a current reading', () => {
+  const minute = Math.ceil(NOW / 60_000) * 60_000 + DAY;
+  assert.equal(weekTurnover(weekEnding(minute - 387), NOW), minute, 'a hair under the minute is that minute');
+  assert.equal(weekTurnover(weekEnding(minute + 29_000), NOW), minute);
+  assert.equal(weekTurnover(weekEnding(minute + 31_000), NOW), minute + 60_000);
+  const weekOn = Math.round((NOW + 7 * DAY) / 60_000) * 60_000;
+  assert.equal(weekTurnover(weekEnding(NOW - 1000), NOW), weekOn, 'a turnover already past means a new week, a whole week from its next one');
+  assert.equal(weekTurnover({ windows: [{ key: 'week', usedPercent: 0, resetsAt: null }] }, NOW), weekOn, 'so does a week nothing has been used of');
+  assert.equal(weekTurnover({ windows: [{ key: 'week', usedPercent: 12, resetsAt: null }] }, NOW), null, 'a week under way with no turnover stated says nothing about where it falls');
+  assert.equal(weekTurnover({ ...weekEnding(NOW + DAY), stale: true }, NOW), null);
+  assert.equal(weekTurnover({ windows: [{ key: 'week', usedPercent: null, resetsAt: NOW + DAY }] }, NOW), null, 'a meter that was not read proves nothing unused');
+  assert.equal(weekTurnover(weekEnding(NOW + DAY, 100), NOW), null);
+  assert.equal(weekTurnover(undefined, NOW), null);
+});
+
+test('the accounts of a tool are listed in the order they would be used', () => {
+  // Registered in one order, lanes set in another, so a list that fell back to the
+  // registry would be caught.
+  const accounts = [
+    { id: 'main', provider: 'claude', label: 'Main' },
+    { id: 'second', provider: 'claude', label: 'Second' },
+    { id: 'third', provider: 'claude', label: 'Third' },
+    { id: 'spare', provider: 'claude', label: 'No lane' },
+    { id: 'cx', provider: 'codex', label: 'Codex' },
+  ];
+  const lanes = [makeLane('l-third', 'third'), makeLane('l-main', 'main'), makeLane('l-second', 'second'), codexLane('l-cx', 'cx')];
+  const quotas = { main: weekEnding(NOW + 6 * DAY), second: weekEnding(NOW + DAY), third: weekEnding(NOW + 3 * DAY) };
+  assert.deepEqual(accountUseOrder(accounts, lanes, 'claude', ranking(quotas)).map((a) => a.id), ['second', 'third', 'main', 'spare'],
+    'an account no lane uses comes last, and another tool\'s accounts are not listed');
+  assert.deepEqual(accountUseOrder(accounts, lanes, 'claude', { now: NOW }).map((a) => a.id), ['third', 'main', 'second', 'spare'],
+    'with nothing read yet, the lane order is all there is to go on');
+});
+
+test('ranking by reset reads a tool only once the walk reaches it', async () => {
+  const facts = {
+    a: { login: { signedIn: true }, quota: weekEnding(NOW + 5 * DAY) },
+    b: { login: { signedIn: true }, quota: weekEnding(NOW + 1 * DAY) },
+    x: { login: { signedIn: true }, quota: weekEnding(NOW + 2 * DAY) },
+    y: { login: { signedIn: true }, quota: weekEnding(NOW + 3 * DAY) },
+  };
+
+  const first = recordingReader(facts);
+  const pickedCodex = await selectLaneAsNeeded([codexLane('lx', 'x'), makeLane('la', 'a'), makeLane('lb', 'b')], { now: NOW }, first.read, { bySoonestReset: true });
+  assert.equal(pickedCodex.lane.id, 'lx');
+  assert.deepEqual(first.asked, ['x'], 'the only Codex account answers, so Claude is never read');
+
+  const second = recordingReader(facts);
+  const pickedClaude = await selectLaneAsNeeded([makeLane('la', 'a'), makeLane('lb', 'b'), codexLane('lx', 'x'), codexLane('ly', 'y')], { now: NOW }, second.read, { bySoonestReset: true });
+  assert.equal(pickedClaude.lane.id, 'lb');
+  assert.deepEqual([...second.asked].sort(), ['a', 'b'], 'Claude answers, so neither Codex account is read');
+});
+
+test('without ranking by reset, the walk is exactly as it was', async () => {
+  const facts = {
+    a: { login: { signedIn: true }, quota: weekEnding(NOW + 5 * DAY) },
+    b: { login: { signedIn: true }, quota: weekEnding(NOW + 1 * DAY) },
+  };
+  const { read, asked } = recordingReader(facts);
+  const selected = await selectLaneAsNeeded([makeLane('la', 'a'), makeLane('lb', 'b')], { now: NOW }, read);
+  assert.equal(selected.lane.id, 'la');
+  assert.deepEqual(asked, ['a']);
+});
+
+test('ranked by reset, reading as needed always gives the answer that reading everything first gives', async () => {
+  const states = {
+    SOON: { login: { signedIn: true }, quota: weekEnding(NOW + 1 * DAY) },
+    LATE: { login: { signedIn: true }, quota: weekEnding(NOW + 5 * DAY) },
+    NO_RESET: { login: { signedIn: true }, quota: weekEnding(null) },
+    SPENT: { login: { signedIn: true }, quota: weekEnding(NOW + 1 * DAY, 100) },
+    OUT_WITH_READING: { login: { signedIn: false }, quota: weekEnding(NOW + 1 * HOUR) },
+    UNREADABLE,
+  };
+  const names = Object.keys(states);
+  // Two tools, a metered lane between them, and an account with two lanes.
+  const pool = [makeLane('l1', 'a1'), codexLane('l3', 'a3'), makeLane('lm', 'm', 'metered'), makeLane('l2', 'a2'), codexLane('l4', 'a4'), makeLane('l5', 'a1')];
+  for (const s1 of names) for (const s2 of names) for (const s3 of names) for (const s4 of names) for (const cooled of [false, true]) {
+    const facts = { a1: states[s1], a2: states[s2], a3: states[s3], a4: states[s4], m: { login: { signedIn: true } } };
+    const context = { now: NOW, cooldowns: cooled ? { l2: NOW + HOUR } : {}, spendPolicies: { lm: { budget: 20 } } };
+    const everything = { ...context, loginStates: {}, quotas: {} };
+    for (const [id, f] of Object.entries(facts)) {
+      if (f.login !== undefined) everything.loginStates[id] = f.login;
+      if (f.quota !== undefined) everything.quotas[id] = f.quota;
+    }
+    const expected = selectLane(soonestResetOrder(pool, everything), everything);
+    const actual = await selectLaneAsNeeded(pool, context, recordingReader(facts).read, { bySoonestReset: true });
+    const label = `${s1}/${s2}/${s3}/${s4}${cooled ? ' with l2 cooling down' : ''}`;
+    assert.equal(actual?.lane.id ?? null, expected?.lane.id ?? null, label);
+    assert.equal(actual?.status.status ?? null, expected?.status.status ?? null, label);
+  }
+});
+
+// Found in review: a tool with one account and two lanes on it, one cooling down, was
+// ranked before its account was read, so a metered lane between them won.
+test('a tool with one account is still read before its places are settled', async () => {
+  const facts = { cx: { login: { signedIn: true }, quota: weekEnding(NOW + 2 * DAY) }, m: { login: { signedIn: true } } };
+  const pool = [codexLane('x1', 'cx'), makeLane('m', 'm', 'metered'), codexLane('x2', 'cx')];
+  const context = { now: NOW, cooldowns: { x1: NOW + HOUR }, spendPolicies: { m: { budget: 10 } } };
+  const selected = await selectLaneAsNeeded(pool, context, recordingReader(facts).read, { bySoonestReset: true });
+  assert.equal(selected.lane.id, 'x2', 'the account has room on its other lane, so nothing metered is billed');
+});
+
+// Found in review: ranking read every account of a tool live, so an account whose usage
+// call was failing was asked, and waited on, by every dry-run.
+test('ranking looks at what is already known, and reads in full only the lanes the walk reaches', async () => {
+  const facts = {
+    a: { login: { signedIn: true }, quota: weekEnding(NOW + 5 * DAY) },
+    b: { login: { signedIn: true }, quota: weekEnding(NOW + 1 * DAY) },
+    failing: { login: { signedIn: true }, quota: { error: 'fetch failed' } },
+  };
+  const full = recordingReader(facts);
+  const peeked = [];
+  // What the real look returns: the last good reading. A failure is never cached, so the
+  // failing account's look is whatever it last read successfully, here a later reset.
+  const cached = { ...facts, failing: { login: { signedIn: true }, quota: weekEnding(NOW + 6 * DAY) } };
+  const peekAccount = (id) => { peeked.push(id); return cached[id]; };
+  const pool = [makeLane('la', 'a'), makeLane('lf', 'failing'), makeLane('lb', 'b')];
+  const selected = await selectLaneAsNeeded(pool, { now: NOW }, full.read, { bySoonestReset: true, peekAccount });
+  assert.equal(selected.lane.id, 'lb');
+  assert.deepEqual([...peeked].sort(), ['a', 'b', 'failing'], 'every account of the tool is looked at, cheaply');
+  assert.deepEqual(full.asked, ['b'], 'only the lane chosen is read in full; the failing account is never asked');
+});
+
+// Found in review: the look can be minutes or hours old. When the full reading says the
+// account it ranked first cannot run after all, the walk used to step to the next place,
+// a metered lane here, while another account of the same tool had room.
+test('when the full reading contradicts the look, the rest of the tool is ranked again before moving on', async () => {
+  const facts = {
+    a: { login: { signedIn: true }, quota: weekEnding(NOW + 5 * DAY) },
+    b: { login: { signedIn: true }, quota: weekEnding(NOW + DAY, 100) },
+    m: { login: { signedIn: true } },
+  };
+  const cached = { ...facts, b: { login: { signedIn: true }, quota: weekEnding(NOW + DAY, 80) } };
+  const pool = [makeLane('la', 'a'), makeLane('lm', 'm', 'metered'), makeLane('lb', 'b')];
+  const full = recordingReader(facts);
+  const selected = await selectLaneAsNeeded(pool, { now: NOW, spendPolicies: { lm: { budget: 20 } } }, full.read, { bySoonestReset: true, peekAccount: (id) => cached[id] });
+  assert.equal(selected.lane.id, 'la', 'a has room, so the metered lane is not billed');
+  assert.deepEqual(full.asked, ['b', 'a']);
+});
+
+// Found in review: a look that says an account is out until a time that has passed was
+// ranked as unknown, so with no tray running to refresh it the account was passed over by
+// every run until the others ran out, though its limit had long lifted.
+test('a look whose limit has since lifted is ranked on its week, and the full reading settles it', async () => {
+  const sessionWasOut = { windows: [
+    { key: 'session', usedPercent: 100, resetsAt: NOW - 2 * HOUR },
+    { key: 'week', usedPercent: 40, resetsAt: NOW + 2 * DAY },
+  ] };
+  const facts = {
+    main: { login: { signedIn: true }, quota: weekEnding(NOW + 2 * DAY, 40) },
+    second: { login: { signedIn: true }, quota: weekEnding(NOW + 6 * DAY) },
+  };
+  const cached = { ...facts, main: { login: { signedIn: true }, quota: sessionWasOut } };
+  const full = recordingReader(facts);
+  const selected = await selectLaneAsNeeded([makeLane('l-main', 'main'), makeLane('l-second', 'second')], { now: NOW }, full.read, { bySoonestReset: true, peekAccount: (id) => cached[id] });
+  assert.equal(selected.lane.id, 'l-main');
+  assert.deepEqual(full.asked, ['main']);
+
+  const stillOut = { ...facts, main: { login: { signedIn: true }, quota: { windows: [{ key: 'session', usedPercent: 100, resetsAt: NOW + HOUR }, { key: 'week', usedPercent: 40, resetsAt: NOW + 2 * DAY }] } } };
+  const again = recordingReader(facts);
+  const meanwhile = await selectLaneAsNeeded([makeLane('l-main', 'main'), makeLane('l-second', 'second')], { now: NOW }, again.read, { bySoonestReset: true, peekAccount: (id) => stillOut[id] });
+  assert.equal(meanwhile.lane.id, 'l-second', 'a limit still in force keeps it out of the ranking');
+});
+
+test('only registered accounts count towards ranking a tool', () => {
+  const lanes = [makeLane('1', 'a'), makeLane('2', 'gone')];
+  assert.equal(ranksByReset({ quotaWatch: 'auto', lanes }, 'claude'), true, 'without the registry, every lane counts');
+  assert.equal(ranksByReset({ quotaWatch: 'auto', lanes }, 'claude', [{ id: 'a', provider: 'claude' }]), false, 'a lane on an account that is gone can never be picked');
 });
 
 // Headroom: how full a window may get before an account stops being somewhere to send new

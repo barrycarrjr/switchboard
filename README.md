@@ -31,13 +31,18 @@ For deep-dives into architecture, guides, and full command references, see the *
   launched tools inherit it. Running processes are untouched. `switchboard run` does not
   read that default at all: it pins each command it launches to the account of the lane
   it picked, so a switch never disturbs a run already under way.
-- With the watch set to "Switch automatically", a tool that has lanes follows its lane
-  order instead of a choice made by hand, because the watch would switch a hand-picked
-  account straight back at its next check. So for that tool the Accounts page and the
-  tray show which account is in use but do not offer to switch it, and say where the
-  choice is made. Reorder the lanes to change it, or set the watch to "Tell me" or "Do
-  nothing" to choose by hand again. `switchboard use` still switches from a terminal,
-  since it cannot tell whether a watch is running, and says what one would do.
+- With the watch set to "Switch automatically", a tool that has lanes has its account
+  picked by the watch instead of by hand (for Claude Code and Codex, the ready account
+  whose weekly quota resets soonest), because the watch would switch a hand-picked account
+  straight back at its next check. So for
+  that tool the Accounts page and the tray list its accounts in the order they will be
+  used, show which one is in use, and do not offer to switch it. Set the watch to "Tell
+  me" or "Do nothing" to choose by hand again. Gemini CLI and Qwen Code report no usage,
+  so the watch never moves their default between subscription accounts (only onto a
+  ready pay-per-use lane, when the account in use is signed out or has no subscription
+  lane of its own); the switch is still not offered for them on this setting, so
+  use "Tell me" or "Do nothing" for those too. `switchboard use` still switches from a
+  terminal, since it cannot tell whether a watch is running, and says what one would do.
 - Adding an account asks only for a name. Switchboard makes a fresh folder for it
   (`~/.claude-work` for a Claude Code account called Work, `~/work/.gemini` for Gemini CLI,
   never reusing a folder that already exists) and opens the vendor's sign-in pointed at
@@ -107,7 +112,7 @@ For deep-dives into architecture, guides, and full command references, see the *
   hover never starts a provider request: it consumes readings already made by the
   Accounts page or an enabled quota watch, using a compact layout when that is what lets
   all of them fit in Windows' tooltip limit. Each provider is a heading, with its accounts
-  indented beneath it in the same current-account-first order as the Accounts page. Normal
+  indented beneath it, the account in use first. Normal
   reads are shared for five minutes. The icon already identifies Switchboard, so the hover
   spends none of the limit repeating the app name. A rate-limited response backs automatic
   checks off for thirty minutes. A rejected
@@ -138,8 +143,9 @@ For deep-dives into architecture, guides, and full command references, see the *
   command that reports an available update without installing it, so the row reports the
   result of the last update Switchboard ran, and says it does not know once that result is
   more than two days old.
-- Execution lanes are the failover pool. `switchboard run` picks the first healthy lane,
-  launches the vendor's own CLI pinned to that account, and, when a run stops on a
+- Execution lanes are the failover pool. `switchboard run` picks the first healthy lane
+  (on "Switch automatically", the accounts of each tool are taken soonest weekly reset
+  first), launches the vendor's own CLI pinned to that account, and, when a run stops on a
   provider limit or cannot sign in at all, drops that lane and starts the command again in
   the next one. Between
   two Claude accounts the conversation goes with it: the session is copied into the
@@ -266,7 +272,8 @@ account, which one new terminals will use, whether it is signed in, and how much
 allowance is left with the reset times. `switchboard status --json` prints the same thing
 for scripts.
 
-`switchboard lanes` is the failover pool: `lanes` lists it in priority order, `lanes add
+`switchboard lanes` is the failover pool: `lanes` lists it in the order as set (and says
+when "Switch automatically" ranks each tool's accounts by reset instead), `lanes add
 <accountId>` appends one, `lanes order <id>...` reorders it, `lanes remove <id>` takes one
 out, and `lanes budget <id> <amount>` sets what a metered lane may spend. A metered lane
 with no budget is deliberately unselectable rather than unlimited, and the listing says so
@@ -301,7 +308,9 @@ tokens first if the machine is being retired.
 `switchboard watch` is the quota watch without the tray. `--once` takes a single pass, for
 Task Scheduler or cron; without it, it stays running and takes a pass every five minutes,
 or every `--interval <minutes>` if you would rather set the gap yourself. `--mode notify`
-reports what it would do and `--mode auto` switches the machine default, overriding the
+reports what "Tell me" would suggest (lane order, with the last-day exception below) and
+`--mode auto` switches the machine default as "Switch automatically" does (soonest weekly
+reset first), so the two can pick different accounts. Either overrides the
 stored setting for that one command without writing it back, and `--json` prints each pass
 as one line of JSON. Readings come through the same shared cache the tray fills, so running
 both costs no extra requests for quota readings. Stored lane tokens are validated on the
@@ -324,28 +333,82 @@ leaves the default exactly where it already is. Without that gap a single mark a
 both directions, and the two usage sources do not always agree to the point: the live usage
 endpoint and the Claude Desktop fallback can read a couple of percent apart for the same
 account. A reading hovering around 90 percent then moved the default pass after pass, worst
-of all on a lane pool, where lane order pulls the default back to the top lane the moment
+of all on a lane pool, where the order pulls the default back to the first lane the moment
 that lane looks roomy again, so it left and returned all day long. Three points is wider
 than the two sources disagree by and small enough that an account which has genuinely
 recovered is preferred again well inside one window.
 
-Lane order still decides which account is preferred; usage only decides which accounts are
-in the running. One run is judged differently: a lane at 95 percent still works, so
+The order decides which account is preferred; usage only decides which accounts are in the
+running. One run is judged differently: a lane at 95 percent still works, so
 `switchboard run` will happily use it and fall over to the next lane if it does hit the
 wall. Pointing every terminal on the machine at an account with minutes left is the thing
 these limits prevent.
 
-The watch also spends quota that is about to be lost. A weekly window is use-it-or-lose-it:
-whatever is unspent when the week turns over is forfeited. So when any account's weekly
-window resets within the next day and still has room, the default moves there for that last
-day, even though the preferred account is perfectly healthy, and moves back on its own once
-the reset passes and lane order resumes. The return is the lane pool's doing: with no lanes
-configured there is no preferred account, so the default simply stays where the last switch
-put it, as it always has. Soonest turnover wins when several qualify. A metered lane never
-qualifies, because pay-per-use quota does not expire, and the usual rules still hold: only a
-signed-in account with a current reading and room on both windows is trusted with the
-default, and a default whose own meter merely failed to read is left where it is rather than
-bounced on a blip.
+On "Switch automatically", for a tool with lanes, the order is soonest weekly reset first.
+A weekly window is use-it-or-lose-it: whatever is unspent when the week turns over is
+forfeited, so the account that turns over first is spent first, and the least is lost
+across all of them. Accounts of the same tool are ranked by when their week resets, however
+far off that is, and the lane order only settles accounts that reset at the same time. Each
+tool keeps the places its lanes were given, so the lane order still decides which tool a
+run tries first, and a metered lane never moves, because pay-per-use quota does not expire.
+Only an account that can take work right now is ranked: one that is signed out, whose
+sign-in cannot be read, whose lane is cooling down, that has hit a limit, or whose usage
+cannot be read follows the ones that can run, in the order as set. Ranked on its reading
+alone, a signed-out account (which can still have a reading) took its tool's first place,
+was skipped there, and the work went to whatever came next, a metered lane included. For
+the machine default the bar is higher: only an account with room to take the default is
+ranked, so the places ahead of a metered lane go to accounts that could actually take it.
+
+A week that has not started yet (nothing used, so the vendor states no reset) or that has
+turned over since the reading was taken counts as a whole week from its next reset, the
+latest of all, so the account whose week was just used up hands over to the next soonest
+straight away. A week under way whose reading states no reset goes after those whose
+reading does, and before any week that has only begun, since it must end within seven
+days. A reset once read is carried over to later fallback readings until it passes, so a
+reading does not normally lose its reset; the case this covers is an account whose live
+usage call has kept failing since its week turned over. Resets are compared to the minute,
+because the vendor states them to the millisecond and two readings of the same reset
+differ in the last digits; compared exactly, two accounts whose weeks end together would
+trade the default every few minutes.
+
+The tray and the Accounts page list each tool's accounts in the order the default is
+picked in: those with room first, soonest reset first, then any account too close to a
+limit to take the default, which the tray marks "nearly out". A pay-per-use (metered) lane
+keeps its place in the lane order, so when every subscription is too full and the default
+moves onto one, it is listed below the accounts marked "nearly out", and the Accounts page
+says lane order picked it. Otherwise the account shown in use is
+normally the first in the list; it can sit lower while a switch waits out the ten-minute
+cooldown, and a default whose own usage or sign-in merely failed to read is left where it
+is rather than moved on the absence of a reading, as on "Tell me". A
+run uses the same ranking, but counts any account that can run at all, since a run that
+hits the wall simply moves on to the next lane. `run` and `dry-run` rank on the last reading
+the shared cache holds for each account, at any age, because a reset time stays true until
+it passes, and read in full only the lanes they actually reach, so an account whose usage
+call is failing is not asked on every run just to be ranked last. When a full reading shows
+that an account ranked first cannot run after all, the rest of its tool is ranked again
+before the run moves on, so the work does not slip past an account of the same tool that
+has room. Because both commands rank on whatever the cache holds at the moment, `dry-run`
+names the lane `run` would take with the same arguments and the same readings. They go by
+the stored setting, so on a machine that runs `switchboard watch --mode auto` without
+storing it, runs keep the order as set. A tool with only one subscription account has
+nothing to rank: it follows its lane order, and the tray and the Accounts page say "set by
+lane order" for it. Gemini CLI and Qwen Code report no usage at all, so runs take their
+lanes in the order as set, and the watch has no reading to move their default on, so it
+never moves it between subscription accounts. It moves it only onto the first ready
+pay-per-use lane, and only when the account in use is signed out or has no subscription
+lane of its own. The tray and the Accounts page say "no usage reading" for them. The app does not offer to switch
+them by hand on "Switch automatically", so choose "Tell me" or "Do nothing" to change them.
+
+On "Tell me", and on "Switch automatically" for Claude Code with no lanes configured, the
+old rule applies: the order is the lane order as set, with one exception. When an
+account's weekly window resets within the next day and still has room, the watch moves the
+default there for that last day (on "Tell me" it suggests the move instead), and back once
+the reset passes and lane order resumes. Soonest turnover wins when several qualify. With
+no lanes configured there is no preferred account, so after that last day the default
+stays where the move put it. A metered lane never qualifies, and the usual rules still
+hold: only a signed-in account with a current reading and room on both windows is trusted
+with the default, and a default whose own meter merely failed to read is left where it is
+rather than bounced on a blip.
 
 On "Tell me", the tray says each suggestion once instead of on every five-minute pass, and
 "no account has room" once for each time it ends. A suggestion is said again only after the
@@ -370,7 +433,8 @@ fields, along with structured JSON delivered to command hooks via stdin and the
 `SWITCHBOARD_EVENT` environment variable. The same settings can also be configured from the
 Notification hooks section under the About tab in the desktop app.
 
-`switchboard run` is the execution broker. It walks the lanes in order, takes the first
+`switchboard run` is the execution broker. It walks the lanes in order (soonest weekly reset
+first within each tool on "Switch automatically", as described above), takes the first
 healthy one, and launches the vendor's own CLI with an environment scoped to that
 lane's account: the account's own folder and nothing inherited from the calling shell that
 could bill somebody else. Your arguments are passed through as you wrote them, with one
@@ -391,7 +455,7 @@ holds a command line for are the tools the run may use. `--harnesses claude,code
 the same thing without a spec, which is what `dry-run` needs, since a caller usually asks
 which lane it will get before it has written one. `dry-run` reads `--spec` too, only for
 the tools it covers, so its answer is always the lane `run` would take with the same
-arguments. A narrowed `dry-run --json` answer carries a `harnesses` field listing the
+arguments and the same readings. A narrowed `dry-run --json` answer carries a `harnesses` field listing the
 tools it was narrowed to, because a version from before this existed ignores the flag
 and answers for every lane: a caller that named its tools and does not get them back
 knows the order still matters on that machine. A run says once which lanes it left out and why, so a lane that never gets
@@ -408,7 +472,11 @@ lane's account used to be read first, so an answer about the top lane could wait
 seconds on a lane it was never going to pick, long enough for an automated caller with a
 deadline to give up. Every account is still read when no lane has room, because the last
 resort, a lane whose usage could not be read, is only chosen once all of them have been
-seen. Readings come from the shared cache the tray fills on its five-minute pass, and that
+seen. On "Switch automatically" a tool's accounts are ranked the first time the walk
+reaches one of its lanes, from the last reading the shared cache holds for each (the reset
+time is all ranking needs, and it stays true until it passes), so ranking never asks the
+vendor and a tool the walk never reaches is never looked at. Readings come from the shared
+cache the tray fills on its five-minute pass, and that
 now includes its Antigravity reading, so a check that does reach Antigravity normally
 finds one there instead of starting the CLI itself.
 

@@ -27,8 +27,12 @@ switchboard color --from-t3
 
 ## `switchboard lanes`
 
-The failover pool `switchboard run` chooses from, in priority order. The first healthy lane
-gets the work, so the order is the policy.
+The failover pool `switchboard run` chooses from, in the order as set. The first healthy lane
+gets the work. With the watch set to "Switch automatically", the subscription accounts of a
+tool whose usage Switchboard reads (Claude Code, Codex) are taken soonest weekly reset first
+instead. The order as set decides everything else: which tool
+comes first, where a metered lane sits, accounts that reset at the same time, and accounts that
+cannot be ranked. `lanes` says so when that applies.
 
 ```
 switchboard lanes [--json]
@@ -38,7 +42,9 @@ switchboard lanes order <laneId>...
 switchboard lanes budget <laneId> <amount|none>
 ```
 
-- `add` appends at the lowest priority. Account ids come from `switchboard accounts`. The
+- `add` appends at the lowest priority. On "Switch automatically" that position only settles
+  ties for a Claude Code or Codex subscription lane: those are taken soonest weekly reset
+  first, so a new one whose week resets soonest is used first. Account ids come from `switchboard accounts`. The
   harness and the vendor behind it are derived from the account, not supplied: a lane on a
   Claude account is `claude / anthropic`, and `--provider` accepts either name.
 - A second lane naming the same account on the same billing is refused. Selection walks the
@@ -68,8 +74,10 @@ switchboard watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]
 - `--mode` overrides the stored `quotaWatch` setting for this command only and is never
   written back, so a scheduled task cannot quietly change what the desktop app does. With
   no `--mode` and the setting off, the command explains and exits 1.
-- `notify` prints what it would do, including the `switchboard use` command that would do
-  it. `auto` performs the switch, after re-reading the target's sign-in state: the reading
+- `notify` prints what "Tell me" would suggest, including the `switchboard use` command
+  that would do it. It follows the lane order (with the last-day exception), so it can
+  name a different account from `auto`, which picks as "Switch automatically" does,
+  soonest weekly reset first. `auto` performs the switch, after re-reading the target's sign-in state: the reading
   that chose it can be minutes old, and a sign-out in between would point every new
   terminal at an account that cannot work.
 - `--json` prints one object per pass: `{ at, mode, decisions }`.

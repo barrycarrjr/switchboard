@@ -33,9 +33,9 @@ function effectiveUpdateRepo() {
   return loadSettings().updateRepo ?? pkgMeta.updateRepo ?? null;
 }
 import { freshNotices, planDefaultSwitches } from '../core/watch.js';
-import { defaultFollowsLanes, followsLanesNote } from '../core/lanes.js';
+import { accountUseOrder, defaultFollowsLanes, followsLanesNote, ranksByReset, tooFullForDefault } from '../core/lanes.js';
 import { addLane, removeLane, reorderLanes, setLaneBudget, resolveAllAccounts } from '../core/lane-admin.js';
-import { accountNote, colorDotBitmap, trayModel, trayTooltip } from '../core/tray.js';
+import { accountNote, colorDotBitmap, loginStatesFrom, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
@@ -199,6 +199,7 @@ async function stateSnapshot(forceAuthAccountId = null) {
     // Decided in core and sent with its wording, so the page offers a switch exactly
     // when the tray and the switch itself would allow one. See defaultFollowsLanes.
     const followsLanes = defaultFollowsLanes(settings, p.id);
+    const byReset = ranksByReset(settings, p.id, reg.accounts);
     providers[p.id] = {
       id: p.id,
       name: p.name,
@@ -206,7 +207,12 @@ async function stateSnapshot(forceAuthAccountId = null) {
       installed: installed.has(p.id),
       activeAccountId: activeAccount(reg, p.id)?.id ?? null,
       followsLanes,
-      followsLanesNote: followsLanes ? followsLanesNote(p.name) : null,
+      // Whether "soonest weekly reset first" is true of this tool, so the page words it
+      // the way the tray does. See ranksByReset.
+      ranksByReset: byReset,
+      followsLanesNote: followsLanes ? followsLanesNote(p.name, byReset, Boolean(p.quota)) : null,
+      // Filled in below, once each account's sign-in has been read.
+      accountOrder: null,
       activeHome: activeHome(p.id),
       hasQuota: Boolean(p.quota),
       quotaNote: p.quotaNote ?? null,
@@ -252,6 +258,25 @@ async function stateSnapshot(forceAuthAccountId = null) {
   trayFacts.signedIn = signedIn;
   if (notesChanged || signedInChanged) {
     refreshTray();
+  }
+  // The order the page lists a tool's accounts in when the watch picks them: the order
+  // they would be used, from the same readings and sign-ins the tray menu is built from,
+  // so the two list them the same way. Null when a person is choosing.
+  const listOrderContext = { now: Date.now(), quotas: trayFacts.quotas, loginStates: loginStatesFrom(signedIn), cooldowns: settings.cooldowns };
+  for (const p of Object.values(providers)) {
+    if (!p.followsLanes) continue;
+    p.accountOrder = accountUseOrder(reg.accounts, settings.lanes, p.id, listOrderContext, p.activeAccountId).map((a) => a.id);
+    // The accounts listed lower for being too close to a limit to take the default, so
+    // the page can say why, as the tray menu does. An account the tray already has a note
+    // for (out until a time, signed out, usage unknown) is not "nearly out": the tray shows
+    // its note instead, and an account at its limit badged "nearly out" contradicted both
+    // the tray and its own card.
+    p.nearlyOutIds = p.accountOrder.filter((id) => !notes[id] && tooFullForDefault(trayFacts.quotas[id], id === p.activeAccountId));
+    // A metered lane is never ranked by reset, so when the default sits on one, lane order
+    // put it there and the page summary must not credit a weekly reset for it.
+    p.activeOnMetered = Boolean(p.activeAccountId)
+      && !(settings.lanes ?? []).some((l) => l?.harness === p.id && l.accountId === p.activeAccountId && l.billing !== 'metered')
+      && (settings.lanes ?? []).some((l) => l?.harness === p.id && l.accountId === p.activeAccountId);
   }
   // What T3 Code would color each account, so the page can offer to match it. Read each
   // time because T3 is changed in T3, and the file is a few kilobytes.
@@ -433,6 +458,7 @@ function trayInputs() {
     terminals: trayFacts.terminals,
     watchMode: settings.quotaWatch,
     lanes: settings.lanes,
+    cooldowns: settings.cooldowns,
     overrideBlocking: configuredClaudeOverrides().length > 0,
     strandedProviders: stranded,
     update: trayFacts.update,
@@ -526,8 +552,9 @@ function buildTrayMenu(inputs = trayInputs()) {
  * watch undoes within minutes is worse than a refusal that says where the choice lives.
  */
 function manualSwitchRefusal(account) {
-  if (!account || !defaultFollowsLanes(loadSettings(), account.provider)) return null;
-  return followsLanesNote(PROVIDERS[account.provider]?.name ?? account.provider);
+  const settings = loadSettings();
+  if (!account || !defaultFollowsLanes(settings, account.provider)) return null;
+  return followsLanesNote(PROVIDERS[account.provider]?.name ?? account.provider, ranksByReset(settings, account.provider, registry().accounts), Boolean(PROVIDERS[account.provider]?.quota));
 }
 
 /**

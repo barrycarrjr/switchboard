@@ -304,7 +304,7 @@ test('a lane whose account was unregistered says what is wrong instead of showin
  * copy change is exactly the kind of thing that slides back without anyone noticing.
  */
 test('the marked account is named as the current one, not as a default', () => {
-  assert.match(HTML, /badge: isDefault \? 'CURRENT' : null/, 'the badge names the current account');
+  assert.match(HTML, /if \(a\.id === p\?\.activeAccountId\) return 'CURRENT';/, 'the badge names the current account');
   assert.match(HTML, /cardButton\('Switch to this'/, 'the button says what Switchboard does');
   assert.match(HTML, /`New sessions use: \$\{active\.label\}/, 'the section header says what the mark means');
   assert.doesNotMatch(HTML, /'DEFAULT'|Make default|Default for new sessions/, 'no default wording is left on the accounts page');
@@ -355,10 +355,10 @@ const SWITCH_HELPERS = ['cardButton', 'switchBlockedReason', 'switchControl'];
 
 test('with the default following the lanes, a card says so where the switch would be', () => {
   const { switchControl } = load(SWITCH_HELPERS, ['switchControl']);
-  const note = 'New Claude Code sessions follow your lane order while the watch is set to switch automatically.';
+  const note = 'While the watch is set to switch automatically, new Claude Code sessions use the ready account whose weekly quota resets soonest.';
   const p = { id: 'claude', name: 'Claude Code', followsLanes: true, followsLanesNote: note };
   const control = switchControl(p, { id: 'b', label: 'Secondary' }, { signedIn: true });
-  assert.equal(control.innerHTML, 'Set by lane order');
+  assert.equal(control.innerHTML, 'Picked automatically');
   assert.equal(control.className, 'btn link', 'quiet, and not the primary action it replaces');
   assert.equal(control.title, note, 'hovering it says why, and how to choose by hand');
   assert.ok(!control.disabled, 'it takes you to the lanes rather than sitting there inert');
@@ -375,16 +375,87 @@ test('otherwise a card offers the switch exactly as before, refusal included', (
   assert.equal(refused.disabled, true);
 });
 
-test('the section summary says the account in use comes from the lane order when it does', () => {
+test('the section summary says how the account in use is picked when the watch picks it', () => {
   const { accountsSectionSummary } = load(['accountsSectionSummary'], ['accountsSectionSummary']);
-  assert.equal(accountsSectionSummary(2, 0, { label: 'Main Account' }, true), 'New sessions use: Main Account, set by lane order · 2 accounts');
+  assert.equal(accountsSectionSummary(2, 0, { label: 'Main Account' }, true), 'New sessions use: Main Account, picked by soonest weekly reset · 2 accounts');
+  assert.equal(accountsSectionSummary(2, 0, { label: 'Work' }, true, false), 'New sessions use: Work, set by lane order · 2 accounts',
+    'a tool with nothing ranked by reset keeps the words it always had');
   assert.equal(accountsSectionSummary(2, 0, { label: 'Main Account' }), 'New sessions use: Main Account · 2 accounts');
+});
+
+// Found in review: the page listed an account that resets sooner below one that resets
+// later, beside "picked by soonest weekly reset", and said nothing about why.
+test('an account passed over for being near its limit is badged, and the one in use stays CURRENT', () => {
+  const { accountBadge } = load(['accountBadge'], ['accountBadge']);
+  const p = { activeAccountId: 'main', nearlyOutIds: ['third'] };
+  assert.equal(accountBadge(p, { id: 'main' }), 'CURRENT');
+  assert.equal(accountBadge(p, { id: 'third' }), 'NEARLY OUT');
+  assert.equal(accountBadge(p, { id: 'second' }), null);
+  assert.equal(accountBadge({ activeAccountId: 'main' }, { id: 'third' }), null, 'nothing is marked where the watch is not picking');
+  assert.match(HTML, /badge: accountBadge\(p, a\),/, 'and the card uses it');
+});
+
+test('a tool whose lanes are not ranked by reset says the lane order sets it, as before', () => {
+  const { switchControl } = load(SWITCH_HELPERS, ['switchControl']);
+  const p = { id: 'gemini', name: 'Gemini CLI', followsLanes: true, ranksByReset: false, followsLanesNote: 'New Gemini CLI sessions follow your lane order.' };
+  assert.equal(switchControl(p, { id: 'b', label: 'Work' }, { signedIn: true }).innerHTML, 'Set by lane order');
+});
+
+test('a tool with no usage reading does not claim its lanes set the account', () => {
+  const { switchControl } = load(SWITCH_HELPERS, ['switchControl']);
+  const p = { id: 'gemini', name: 'Gemini CLI', hasQuota: false, followsLanes: true, ranksByReset: false, followsLanesNote: 'Switchboard reads no usage for Gemini CLI.' };
+  assert.equal(switchControl(p, { id: 'b', label: 'Work' }, { signedIn: true }).innerHTML, 'No usage reading');
+});
+
+// The wiring that keeps the page in step with the tray, pinned at source because
+// renderAccounts needs the whole app to run. Without the first, the panel was rebuilt on
+// every poll; without the second, the cards went back to registry order beside a summary
+// saying how the order is decided.
+test('the accounts page records the order it drew and lists cards through the shared order', () => {
+  assert.match(HTML, /drawnOrder = listOrderSignature\(state\.providers\);/);
+  assert.match(HTML, /const mine = accountsInListOrder\(state\.accounts\.filter\(\(a\) => a\.provider === p\.id\), p\);/);
+  const main = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /p\.accountOrder = accountUseOrder\(reg\.accounts, settings\.lanes, p\.id, listOrderContext, p\.activeAccountId\)/);
+  assert.match(main, /loginStates: loginStatesFrom\(signedIn\), cooldowns: settings\.cooldowns/, 'from the same sign-ins and cooldowns the tray menu is built from');
+  assert.match(main, /cooldowns: settings\.cooldowns,\s+overrideBlocking/, 'and the tray is given the cooldowns too');
+  assert.match(main, /const byReset = ranksByReset\(settings, p\.id, reg\.accounts\);/);
+  assert.match(main, /followsLanesNote\(p\.name, byReset, Boolean\(p\.quota\)\)/);
+  assert.match(main, /!notes\[id\] && tooFullForDefault\(/, 'an account the tray has a note for is not badged nearly out');
+});
+
+// run, dry-run and the fallback all rank from what is already cached, and none of them may
+// quietly go back to reading every account of a tool from the vendor.
+test('every lane selection on the command line ranks from the cached look', () => {
+  const cli = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.js'), 'utf8');
+  assert.equal((cli.match(/bySoonestReset: ordersBySoonestReset\(\w+\), peekAccount/g) ?? []).length, 3, 'dry-run, run and the fallback');
+  assert.match(cli, /quota: lastSharedQuota\(account\.id\) \?\? undefined/);
+});
+
+// Asked for on 2026-10-26: the summary said the account was picked automatically while
+// the cards beside it sat in the order they were registered.
+test('when the watch picks the account, cards are listed in the order the accounts would be used', () => {
+  const { accountsInListOrder } = load(['accountsInListOrder'], ['accountsInListOrder']);
+  const accounts = [{ id: 'main' }, { id: 'second' }, { id: 'third' }];
+  const ids = (list) => list.map((a) => a.id);
+  assert.deepEqual(ids(accountsInListOrder(accounts, { activeAccountId: 'second', accountOrder: ['second', 'third', 'main'] })), ['second', 'third', 'main']);
+  assert.deepEqual(ids(accountsInListOrder(accounts, { activeAccountId: 'main', accountOrder: ['second', 'third', 'main'] })), ['second', 'third', 'main'],
+    'the order is the one they would be used in, even in the minutes before the watch moves the default');
+  assert.deepEqual(ids(accountsInListOrder(accounts, { activeAccountId: 'third', accountOrder: null })), ['third', 'main', 'second'],
+    'when a person is choosing, the account in use comes first as it always has');
+  assert.deepEqual(ids(accounts), ['main', 'second', 'third'], 'and the list it was given is left alone');
 });
 
 test('the lanes page says what the watch setting adds to the order', () => {
   const { lanesWatchNote } = load(['lanesWatchNote'], ['lanesWatchNote']);
   assert.match(lanesWatchNote('auto'), /new terminals follow this order too/);
   assert.match(lanesWatchNote('auto'), /does not offer to switch it by hand/);
+  assert.doesNotMatch(lanesWatchNote('auto'), /weekly reset/, 'with no tool ranked, nothing is claimed about resets');
+  const ranked = lanesWatchNote('auto', ['Claude Code', 'Codex']);
+  assert.match(ranked, /For Claude Code and Codex, runs and new terminals take the subscription accounts soonest weekly reset first/);
+  assert.match(ranked, /still decides which tool comes first and settles accounts that reset at the same time/);
+  assert.match(lanesWatchNote('auto', ['Claude Code']), /For Claude Code, runs/);
+  assert.match(lanesWatchNote('auto', [], ['Gemini CLI']), /Gemini CLI report no usage, so the watch never moves their new terminals between subscription accounts/,
+    'a tool the watch leaves alone is named, so reordering it is not mistaken for changing its default');
   assert.match(lanesWatchNote('notify'), /suggests moving/);
   assert.equal(lanesWatchNote('off'), null, 'doing nothing adds nothing');
   assert.equal(lanesWatchNote(undefined), null);

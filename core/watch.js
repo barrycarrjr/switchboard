@@ -1,8 +1,8 @@
 import { sharedProviderQuota } from './quota-cache.js';
 import { activeAccount } from './accounts.js';
 import { readUserEnv } from './env.js';
-import { laneStatus, selectLane, worthSwitchingTo } from './lanes.js';
-import { expiringWeek, hasHeadroom, isRunningOut, isSpent, latestReset, readable, tightestWindow } from './lanes-util.js';
+import { canTakeDefault, defaultOrder, laneStatus, ordersBySoonestReset, ranksByReset, selectLane, soonestResetOrder, worthSwitchingTo } from './lanes.js';
+import { expiringWeek, hasHeadroom, isRunningOut, isSpent, latestReset, readable, tightestWindow, turnoverRank, weekTurnover } from './lanes-util.js';
 
 export const SWITCH_COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -209,10 +209,10 @@ export function planDefaultSwitches({
         requirements: { harness: provider },
       };
 
-      // Lane order still decides; usage decides which lanes are in the running at all.
-      // A lane whose five-hour window is nearly gone is a fine place to send one run
-      // (it works, and a run that hits the wall falls over to the next lane), and a bad
-      // place to point every terminal on the machine. Without this, the top lane took
+      // The order decides (see below for which one); usage decides which lanes are in the
+      // running at all. A lane whose five-hour window is nearly gone is a fine place to
+      // send one run (it works, and a run that hits the wall falls over to the next lane),
+      // and a bad place to point every terminal on the machine. Without this, the top lane took
       // the default back the moment it dropped under a full 100, which is how a default
       // landed on an account with minutes left in its window and everything stopped.
       // A metered lane has a spend policy rather than a usage meter, so it is judged by
@@ -221,13 +221,22 @@ export function planDefaultSwitches({
       // The lane holding the default is judged on whether it is still keeping it, and
       // every other lane on whether it has dropped clear enough to take it, which is
       // what leaves a dead band between the two. This path is where a single mark hurt
-      // most: lane order pulls the default back to the top lane the instant that lane
-      // looks roomy again, so a top lane reading either side of 90% took the default,
+      // most: the order pulls the default back to the first lane the instant that lane
+      // looks roomy again, so a first lane reading either side of 90% took the default,
       // gave it up and took it back all day. See `HEADROOM_RETURNS_AT`.
       const roomy = providerLanes.filter((l) => (
         l.billing === 'metered'
         || hasHeadroom(snapshots[l.accountId], { holdsDefault: l.accountId === active?.id })
       ));
+
+      // On "Switch automatically" the order is soonest weekly reset first, decided apart
+      // from everything below so that "Tell me" keeps exactly the rules it always had.
+      // See planBySoonestReset.
+      if (ordersBySoonestReset(settings)) {
+        const decision = planBySoonestReset({ provider, providerLanes, roomy, context, active, accounts, snapshots, settings, pinPresent, now });
+        if (decision) decisions.push(decision);
+        continue;
+      }
 
       // A lane whose weekly window turns over soon with quota still unspent jumps the
       // queue: that quota is forfeited at the turnover, while the preferred lane keeps
@@ -332,6 +341,124 @@ export function planDefaultSwitches({
   }
 
   return decisions;
+}
+
+/**
+ * The lane decision for one tool on "Switch automatically": the default goes to the first
+ * lane with room in `defaultOrder`, soonest weekly reset first, so the account that loses
+ * its unused quota first is spent first and lane order only settles ties. Null when
+ * nothing should be said or done. `roomy` is the tool's lanes with room, the default's
+ * judged on keeping it, every other on taking it, exactly as planDefaultSwitches builds it
+ * for both settings, and `defaultOrder` ranks on the same test.
+ *
+ * Every lane is ranked in its place among all the tool's lanes, but only a lane that could
+ * take the default is ranked at all. Ranked within the lanes with room instead, a lane that
+ * had dropped out took its place with it, so a metered lane behind it moved ahead of every
+ * subscription: the default went onto pay-per-use while a subscription had room, and with
+ * the dead band judging the two accounts differently it went back and forth every cooldown.
+ *
+ * A week that has only just turned over counts as the latest of all, and a week under way
+ * whose reading states no turnover goes after those whose reading does (see
+ * `turnoverRank`). An earlier version kept a default with no stated turnover where it was,
+ * to ride out a reading that lost its turnover for a pass. A reading does not do that in
+ * practice: a turnover once read is carried over to later fallback readings until it
+ * passes (see inheritResetTimes). What does happen is a default whose live reading keeps
+ * failing after its week turned over, and holding that one kept the default on the
+ * account whose week had just begun.
+ */
+function planBySoonestReset({ provider, providerLanes, roomy, context, active, accounts, snapshots, settings, pinPresent, now }) {
+  const order = defaultOrder(providerLanes, context, active?.id ?? null);
+
+  let selected = selectLane(order.filter((l) => roomy.includes(l)), context);
+  // Nothing has room and the default is genuinely spent: take any lane that runs, because
+  // an account that still works beats one that has hit the wall.
+  if (!selected && isSpent(snapshots[active?.id]) === true) {
+    selected = selectLane(soonestResetOrder(providerLanes, context), context);
+  }
+
+  // The same three guards as the "Tell me" path, for the same reasons: only a lane we can
+  // vouch for takes the machine default, and a default whose meter or sign-in merely failed
+  // to read is not moved on the absence of a reading.
+  if (!worthSwitchingTo(selected) || !active || selected.lane.accountId === active.id) return null;
+  const activeLane = providerLanes.find((l) => l.accountId === active.id);
+  if (activeLane && ['unknown', 'quota-unknown'].includes(laneStatus(activeLane, context).status)) return null;
+
+  // A pin blocks the switch either way, and the alarm means what it means on "Tell me":
+  // plain lane order would have moved the default too, so the pin is in the way of
+  // something more than spending a sooner reset. A healthy default held back only from a
+  // sooner reset is nothing anybody needs to act on.
+  if (provider === 'claude' && pinPresent) {
+    let plainPick = selectLane(roomy, context);
+    if (!plainPick && isSpent(snapshots[active.id]) === true) plainPick = selectLane(providerLanes, context);
+    const pinBlockedARealSwitch = worthSwitchingTo(plainPick) && plainPick.lane.accountId !== active.id;
+    return pinBlockedARealSwitch ? { kind: 'pin-blocked', provider, spent: isSpent(snapshots[active.id]) === true } : null;
+  }
+  // Future stamp reads as an expired cooldown, same as decideDefaultSwitch above.
+  const sinceAuto = now - (settings.lastAutoSwitchAt ?? 0);
+  if (sinceAuto >= 0 && sinceAuto < SWITCH_COOLDOWN_MS) return null;
+
+  return { kind: 'switch', provider, to: selected.lane.accountId, from: active.id, reason: autoSwitchReason({ selected, active, order, lanes: providerLanes, context, accounts, snapshots, now, ranks: ranksByReset(settings, provider, accounts) }) };
+}
+
+/**
+ * Why the watch moved the default on "Switch automatically", for the notification. It has
+ * to say what actually happened. A reset is compared only when both sides state one (or
+ * have just begun a week, which is a week away), because "sooner than" is a claim; the
+ * ranking is named only when the lane picked was ranked by it. A metered lane is never
+ * ranked, so a pick, or a default held, through one is a matter of lane order whatever the
+ * account's subscription reading says. When the pick is not ranked, every account that
+ * could take the default ahead of it in the order is unranked too, so it really is the
+ * first one in the lane order as set. Earlier wording claimed a reset whenever the order
+ * differed from the lane order, which was false for a default that was signed out and
+ * reset sooner itself, and named lane order for a tie that a reset had decided.
+ */
+function autoSwitchReason({ selected, active, order, lanes, context, accounts, snapshots, now, ranks = true }) {
+  const target = accounts.find((a) => a.id === selected.lane.accountId)?.label ?? selected.lane.accountId;
+  // A tool with one subscription account has nothing to rank, and the tray and the
+  // Accounts page say its lane order decides; the notification says the same.
+  if (!ranks) {
+    return isRunningOut(snapshots[active.id]) === true
+      ? `${active.label} is close to its limit; ${target} is the first ready account in your lane order`
+      : `${target} is the first ready account in your lane order`;
+  }
+  const subscription = (lane) => Boolean(lane) && lane.billing !== 'metered';
+  const stated = (lane) => (subscription(lane) ? weekTurnover(snapshots[lane.accountId], now) : null);
+  const ranked = subscription(selected.lane) && turnoverRank(snapshots[selected.lane.accountId], now) != null;
+  // The lane the default holds through, when it can hold at all, its subscription first.
+  const holds = order.filter((l) => l.accountId === active.id && canTakeDefault(l, context, active.id));
+  const held = holds.find(subscription) ?? holds[0] ?? null;
+  const targetAt = stated(selected.lane);
+  const heldAt = stated(held);
+
+  if (held && targetAt != null && heldAt != null && targetAt < heldAt) {
+    return `${target}'s weekly quota resets sooner than ${active.label}'s, so it is used first`;
+  }
+  if (held && targetAt != null && heldAt != null && targetAt === heldAt) {
+    return `${target}'s weekly quota resets at the same time as ${active.label}'s, and ${target} comes first in your lane order`;
+  }
+  // Lane order is named only when the pick really is the first account in it that could
+  // take the default; otherwise the ranking put it there, and the ranking is named.
+  const firstAsSet = lanes.find((l) => canTakeDefault(l, context, active.id));
+  const byReset = firstAsSet?.accountId !== selected.lane.accountId || (ranked && targetAt != null);
+  if (isRunningOut(snapshots[active.id]) === true) {
+    // The account being left usually resets soonest of all (that is why it held the
+    // default), so a reset is claimed only against the other accounts with room, and only
+    // when there was another one for the ranking to choose between. "Resets soonest" on its
+    // own read as a comparison with the account being left, and was false. A metered lane,
+    // or an account with no week to rank on, was never weighed by the ranking, so it is no
+    // rival however much room it has.
+    const rivals = order.filter((l) => l.accountId !== active.id && l.accountId !== selected.lane.accountId
+      && subscription(l) && turnoverRank(snapshots[l.accountId], now) != null && canTakeDefault(l, context, active.id));
+    if (byReset && ranked && rivals.length) {
+      return `${active.label} is close to its limit; ${target} is next, as its weekly quota resets soonest of the accounts with room`;
+    }
+    return byReset || ranked
+      ? `${active.label} is close to its limit; ${target} is the next account with room`
+      : `${active.label} is close to its limit; ${target} is the first ready account in your lane order`;
+  }
+  return byReset
+    ? `${target} is the first ready account by soonest weekly reset`
+    : `${target} is the first ready account in your lane order`;
 }
 
 /** What makes two decisions the same piece of news, or null for a kind never repeated. */
