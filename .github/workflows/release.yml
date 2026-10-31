@@ -1,12 +1,28 @@
 name: release
 
+# A release is built whenever master receives a package.json whose version has not been
+# released yet, so bumping the version and pushing is the whole release step. A tag
+# pushed by hand still works. A tag the workflow creates through GITHUB_TOKEN would not
+# start another workflow (GitHub suppresses that to prevent loops), which is why the
+# build runs here rather than waiting for the tag.
 on:
   push:
+    branches:
+      - master
     tags:
       - "v*"
+    paths:
+      - package.json
 
 permissions:
   contents: write
+
+# One release build at a time, and a queued one waits rather than being cancelled. Pushing
+# master and then a tag by hand starts two runs for the same version; this makes the second
+# wait for the first, so it finds the release already made and builds nothing.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -14,29 +30,55 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Decide whether this push ships a release
+        id: version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "v$pkg"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          if ("${{ github.ref_type }}" -eq 'tag' -and "${{ github.ref_name }}" -ne $tag) {
+            throw "Tag ${{ github.ref_name }} does not match package.json version $pkg"
+          }
+          # The question is whether this version has been released, not whether its tag
+          # exists: a tag pushed by hand exists before its build has finished.
+          gh release view $tag -R "${{ github.repository }}" --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "$tag is already released, so there is nothing new to build."
+            "ship=false" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "package.json is at $pkg and $tag is not released yet: building it."
+            "ship=true" >> $env:GITHUB_OUTPUT
+          }
+          $global:LASTEXITCODE = 0
+
       - uses: actions/setup-node@v7
+        if: steps.version.outputs.ship == 'true'
         with:
           node-version: 22
           cache: npm
 
-      - name: Verify tag matches package version
-        shell: pwsh
-        run: |
-          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tag = "${{ github.ref_name }}".TrimStart("v")
-          if ($pkg -ne $tag) { throw "Tag v$tag does not match package.json version $pkg" }
-
-      - run: npm ci
-      - run: npm run icons
-      - run: npm test
+      - if: steps.version.outputs.ship == 'true'
+        run: npm ci
+      - if: steps.version.outputs.ship == 'true'
+        run: npm run icons
+      - if: steps.version.outputs.ship == 'true'
+        run: npm test
       # Stamp the publishing repository into the packaged app so installed copies
       # know where updates live; the committed source stays name-free. Invoked
       # directly (not via npm run) because npm splits the -c.key=value argument.
-      - run: npx electron-builder --win nsis --publish never "-c.extraMetadata.updateRepo=${{ github.repository }}"
+      - if: steps.version.outputs.ship == 'true'
+        run: npx electron-builder --win nsis --publish never "-c.extraMetadata.updateRepo=${{ github.repository }}"
 
+      # Creates the tag on the commit that was just built when it does not exist yet.
       - name: Attach installer to the release
+        if: steps.version.outputs.ship == 'true'
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: dist/Switchboard-Setup-*.exe
           fail_on_unmatched_files: true
           generate_release_notes: true

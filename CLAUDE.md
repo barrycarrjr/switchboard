@@ -102,7 +102,8 @@ say what was verified.
 ## Releasing
 
 Bump `version` in `package.json` (and keep `package-lock.json` in step), commit as
-"Bump version to X.Y.Z to ship <the thing>", then push tag `v<version>`. The release
-workflow refuses a tag that does not match `package.json`, runs `npm run icons` and
-`npm test`, builds the NSIS installer, and attaches it to the GitHub release. Never tag or
-push without being asked.
+"Bump version to X.Y.Z to ship <the thing>", then push master. Do not push a tag: the
+release workflow sees the new version, runs `npm run icons` and `npm test`, builds the NSIS
+installer, creates tag `v<version>` on that commit, and attaches the installer to the GitHub
+release. A push whose version is already released builds nothing. A tag pushed by hand
+still works and must match `package.json`. Never push without being asked.

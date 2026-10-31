@@ -221,8 +221,9 @@ hour for everything on your network together. When GitHub refuses it, for that l
 anything else, the check asks again through the GitHub CLI (`gh`) if it is signed in, and
 otherwise says when the limit lifts rather than that the check failed.
 
-Releases are built by CI from a version tag (`v<version>`); the tag must match the version
-in `package.json`.
+Releases are built by CI whenever master receives a `package.json` version that has not
+been released yet; CI creates the `v<version>` tag on that commit. Pushing a matching tag by
+hand still works, and a version that is already released is never built twice.
 
 ## Development
 
