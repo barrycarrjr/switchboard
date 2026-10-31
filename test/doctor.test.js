@@ -10,6 +10,7 @@ import {
   parseClaudeAuthStatus,
   claudeAuthStatusLaunch,
   verifiedAccountLoginState,
+  claudePlanName,
 } from '../core/doctor.js';
 
 const noFetch = async () => { throw new Error('offline'); };
@@ -582,6 +583,33 @@ test('the vendor auth probe recognizes a system-store login even without a token
   assert.equal(s.signedIn, true);
   assert.equal(s.level, 'ok');
   assert.equal(s.organizationUuid, 'org-secure');
+});
+
+test('a Max 20x account is shown as Ultra, the name Claude itself now uses', async () => {
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({
+    oauthAccount: { organizationType: 'claude_max', organizationRateLimitTier: 'default_claude_max_20x' },
+  }));
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, {
+    runImpl: async () => ({
+      stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'max' }),
+    }),
+  });
+  assert.equal(s.plan, 'Ultra');
+});
+
+test('a plan Switchboard has no new name for keeps the vendor word, capitalized', async () => {
+  // No .claude.json at all: the tier is unknown, so "max" must not be guessed into Ultra.
+  const home = tmpHome();
+  const s = await verifiedAccountLoginState({ provider: 'claude', home }, {
+    runImpl: async () => ({
+      stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'max' }),
+    }),
+  });
+  assert.equal(s.plan, 'Max');
+  assert.equal(claudePlanName('max', 'default_claude_max_5x'), 'Max');
+  assert.equal(claudePlanName('pro', null), 'Pro');
+  assert.equal(claudePlanName(null, 'default_claude_max_20x'), null);
 });
 
 test('API-key auth is not misreported as a Claude subscription login', async () => {

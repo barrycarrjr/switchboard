@@ -196,6 +196,33 @@ export function parseClaudeAuthStatus(raw) {
 }
 
 /**
+ * The plan name a person sees in Claude's own settings. Claude Code still reports the old
+ * subscription word ("max") after Anthropic renamed Max 20x to Ultra in October 2026, and
+ * only the organization's rate-limit tier tells the two Max sizes apart, so the tier
+ * decides the name. Anything unrecognized keeps the vendor's own word, capitalized.
+ */
+export function claudePlanName(subscriptionType, rateLimitTier) {
+  if (typeof subscriptionType !== 'string' || !subscriptionType) return null;
+  if (subscriptionType === 'max' && typeof rateLimitTier === 'string' && /max_20x/.test(rateLimitTier)) {
+    return 'Ultra';
+  }
+  return subscriptionType[0].toUpperCase() + subscriptionType.slice(1);
+}
+
+/**
+ * The organization's rate-limit tier from the account's own `.claude.json`. Not a secret,
+ * and absent is fine: the plan name then falls back to Claude's subscription word.
+ */
+export function readClaudeRateLimitTier(home, readFile = fs.readFileSync) {
+  try {
+    const tier = JSON.parse(readFile(path.join(home, '.claude.json'), 'utf8'))?.oauthAccount?.organizationRateLimitTier;
+    return typeof tier === 'string' && tier.length > 0 ? tier : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Ask Claude itself whether this account home is signed in. This is authoritative
  * across credential-format changes and never reads or returns the credential itself.
  */
@@ -267,7 +294,7 @@ export async function verifiedAccountLoginState(account, {
     email: status.email,
     organizationUuid: status.organizationUuid,
     organizationName: status.organizationName,
-    plan: status.plan,
+    plan: claudePlanName(status.plan, readClaudeRateLimitTier(account.home)),
   };
 }
 
