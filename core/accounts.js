@@ -160,6 +160,31 @@ export function configuredClaudeCredentialOverrides({
     .filter((name) => Boolean(user(name) || machine(name) || current.has(name.toUpperCase())));
 }
 
+/**
+ * Variables that would sign each tool in, or send its requests and its bill somewhere
+ * else, whatever account folder it is pointed at.
+ *
+ * An account's sign-in has one home: its own folder, set up through Switchboard with the
+ * vendor's own sign-in (which can take an API key where the vendor offers that). A key
+ * left in the calling shell, or set machine-wide years ago, is a second way in that nobody
+ * chose for this account, and it outranks the folder: a run on a subscription lane would
+ * quietly bill that key instead. So every account-scoped process (a run, a sign-in or
+ * sign-out, a terminal opened on an account) starts without them.
+ *
+ * Tools with one machine-wide login (Antigravity, Copilot) have no folder variable, but
+ * the same keys would override their login the same way.
+ */
+export const CREDENTIAL_ENV_VARS = {
+  claude: CLAUDE_CREDENTIAL_ENV_VARS,
+  codex: ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORGANIZATION', 'OPENAI_PROJECT'],
+  // GOOGLE_CLOUD_PROJECT stays: it picks which project a Code Assist sign-in uses, and
+  // some organizations' sign-ins cannot work without it. It signs nothing in by itself.
+  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_GENAI_USE_GCA'],
+  qwen: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'DASHSCOPE_API_KEY'],
+  antigravity: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS'],
+  copilot: ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'],
+};
+
 /** Build a child environment that resolves to exactly one registered account. */
 export function accountScopedEnv(account, baseEnv = process.env) {
   let def = null;
@@ -168,19 +193,14 @@ export function accountScopedEnv(account, baseEnv = process.env) {
   } catch {
     def = null;
   }
-  if (!def?.envVar) {
-    return { ...(baseEnv ?? {}) };
-  }
-  const rejected = new Set([def.envVar.toUpperCase()]);
-  if (account.provider === 'claude') {
-    for (const name of CLAUDE_CREDENTIAL_ENV_VARS) rejected.add(name.toUpperCase());
-  }
+  const rejected = new Set((CREDENTIAL_ENV_VARS[account?.provider] ?? []).map((name) => name.toUpperCase()));
+  if (def?.envVar) rejected.add(def.envVar.toUpperCase());
   const env = {};
   for (const [name, value] of Object.entries(baseEnv ?? {})) {
     // Windows treats environment names case-insensitively even though a JS object does not.
     if (!rejected.has(name.toUpperCase())) env[name] = value;
   }
-  env[def.envVar] = envValueForHome(def, account.home);
+  if (def?.envVar) env[def.envVar] = envValueForHome(def, account.home);
   return env;
 }
 

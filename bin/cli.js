@@ -10,13 +10,13 @@ import { loadSettings, saveSettings } from '../core/settings.js';
 import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, setLaneToken, removeLaneToken, BILLING_KINDS, resolveAllAccounts } from '../core/lane-admin.js';
 import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, probeSetupToken } from '../core/lane-tokens.js';
 import { readClaudeAccountIdentity } from '../core/quota.js';
-import { planDefaultSwitches } from '../core/watch.js';
+import { planDefaultSwitches, freshNotices } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { selectLaneAsNeeded, narrowPool, lanesCallerCannotDrive, selectionFailure, defaultFollowsLanes, switchedAgainstLanesNote, ordersBySoonestReset, ranksByReset } from '../core/lanes.js';
-import { readHandoff, writeHandoff, removeHandoff, handoffOrigin, generateHandoffPrompt, generateHandoffNote, DERIVED_NEXT_ACTIONS } from '../core/handoff.js';
-import { CARRYABLE_HARNESSES, callerManagesSession, namedSession, newSessionId, withSessionId, resumeArgs, carryTranscript, carryNote, sessionDigest, transcriptSupport } from '../core/transcripts.js';
+import { readHandoff, writeHandoff, fitHandoff, derivedHandoffData, removeHandoff, handoffOrigin, generateHandoffPrompt, generateHandoffNote } from '../core/handoff.js';
+import { CARRYABLE_HARNESSES, callerManagesSession, namedSession, sessionToCarry, resumedSession, newSessionId, withSessionId, resumeArgs, carryTranscript, syncSessionInto, carryNote, sessionDigest, transcriptSupport } from '../core/transcripts.js';
 import { parseRunArgs, loadRunSpec, resolveSpecArgv, drivableHarnesses, childStdio, childWindowsHide, parseLaneAddArgs, parseWatchArgs, parseNotifyArgs } from '../core/runargs.js';
-import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, DEFAULT_THRESHOLDS } from '../core/hooks.js';
+import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, DEFAULT_THRESHOLDS, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
 import { recordPipedInput } from '../core/piped-input.js';
 import { matchT3Colors, readT3Instances } from '../core/t3colors.js';
 import { CLIENTS as MCP_CLIENTS, activeServers, loadServers, saveServers, addServer, removeServer, resolveServerByName, registerServer, unregisterServer, disableServer, enableServer, registrationMatrix, registeredNames, clientAvailable, syncClientAccountMirrors, parseMcpAddArgs, supportsClient } from '../core/mcp.js';
@@ -118,7 +118,7 @@ function formatDecision(decision, accounts) {
  * fresh every pass: this is meant to run for days, and the desktop app or another
  * terminal can change either while it does.
  */
-async function watchPass({ mode, apply, thresholdMemory = {} }) {
+async function watchPass({ mode, apply }) {
   const reg = loadRegistry();
   const stored = loadSettings();
   // The mode override applies to this pass only and is never written back, so a
@@ -141,18 +141,6 @@ async function watchPass({ mode, apply, thresholdMemory = {} }) {
     snapshots[a.id] = await sharedProviderQuota(a, { usageSource: settings.usageSources[a.id] ?? null, now });
   }));
 
-  const { events: thresholdEvents, memory: nextThresh } = checkThresholds({
-    accounts: reg.accounts,
-    snapshots,
-    thresholds: settings.thresholds,
-    memory: thresholdMemory,
-    now,
-  });
-
-  for (const event of thresholdEvents) {
-    await dispatchNotification(settings, buildNotificationPayload(event, now));
-  }
-
   const pinPresent = configuredClaudeCredentialOverrides({
     user: readUserEnv,
     machine: readMachineEnv,
@@ -160,6 +148,27 @@ async function watchPass({ mode, apply, thresholdMemory = {} }) {
   }).length > 0;
 
   const decisions = planDefaultSwitches({ settings, registry: reg, snapshots, loginStates, pinPresent, now });
+
+  // What the hooks have already been told, by this process or any other (the tray, or an
+  // earlier `watch --once`), so an alert goes out once rather than on every run. Worked
+  // out and saved before anything is sent: sending can take seconds on the network, and
+  // a record written after it would overwrite whatever the tray saved in the meantime.
+  // "No account has room" is said once for each time it happens, as the tray says it.
+  const told = loadAlertMemory().hooks;
+  const { events: thresholdEvents, memory: nextThresh } = checkThresholds({
+    accounts: reg.accounts,
+    snapshots,
+    thresholds: settings.thresholds,
+    memory: told.thresholds,
+    now,
+  });
+  const activeIds = Object.fromEntries(Object.keys(PROVIDERS).map((id) => [id, activeAccount(reg, id)?.id ?? null]));
+  const { notices, memory: nextNotices } = freshNotices(decisions, told.notices, activeIds);
+  saveAlertMemory('hooks', { thresholds: nextThresh, notices: nextNotices });
+
+  for (const event of thresholdEvents) {
+    await dispatchNotification(settings, buildNotificationPayload(event, now));
+  }
 
   for (const decision of decisions) {
     if (decision.kind !== 'switch') continue;
@@ -195,7 +204,7 @@ async function watchPass({ mode, apply, thresholdMemory = {} }) {
   }
 
   for (const decision of decisions) {
-    if (decision.kind === 'exhausted') {
+    if (decision.kind === 'exhausted' && notices.includes(decision)) {
       await dispatchNotification(settings, buildNotificationPayload({
         kind: 'exhausted',
         event: 'quota_exhausted',
@@ -221,7 +230,7 @@ async function watchPass({ mode, apply, thresholdMemory = {} }) {
     saveSettings(mergeLaneTokenResults(loadSettings(), tokenCheck));
   }
 
-  return { decisions, thresholdEvents, thresholdMemory: nextThresh, accounts: reg.accounts };
+  return { decisions, thresholdEvents, accounts: reg.accounts };
 }
 
 async function main() {
@@ -428,6 +437,22 @@ async function main() {
         const childEnv = accountScopedEnv(account, process.env);
         say(`[switchboard] Running via lane ${lane.id} (${account.label})`);
 
+        // A conversation resumed by name follows the work: if another Claude account has
+        // gone further with it, that copy is brought here first. See syncSessionInto.
+        const resuming = lane.harness === 'claude' ? resumedSession(executionArgs) : null;
+        if (resuming && account.home) {
+          const sync = syncSessionInto({
+            toHome: account.home,
+            otherHomes: registry.accounts.filter((a) => a.provider === 'claude' && a.id !== account.id).map((a) => a.home),
+            cwd: runCwd,
+            sessionId: resuming,
+          });
+          if (sync.synced) {
+            const from = registry.accounts.find((a) => a.home === sync.from)?.label ?? 'another account';
+            say(`[switchboard] Brought the latest copy of that conversation over from ${from}.`);
+          }
+        }
+
         let spawnFile = executable;
         let spawnArgs = executionArgs;
         let spawnOptions = {
@@ -515,37 +540,45 @@ async function main() {
         return argv;
       }
 
+      const runCwd = process.cwd();
+
       // Naming the session up front is what makes carrying it possible later: on a
       // failover Switchboard has to know which transcript belongs to this run, and the
       // newest file in the folder is the wrong answer whenever two agents share a
-      // working directory. Only when Switchboard owns the command line (no spec) and the
-      // caller has not named a session themselves. `sessionId` staying null is the
-      // signal that no carry will be attempted.
-      const runCwd = process.cwd();
-      let sessionId = null;
-      if (!spec
-        && CARRYABLE_HARNESSES.includes(selected.lane.harness)
-        && !callerManagesSession(parsed.commandArgs)) {
-        sessionId = newSessionId();
-      }
+      // working directory. Done for every Claude start, spec or not, unless the command
+      // line already steers the session; then the caller's own name is used instead
+      // (sessionToCarry). Each fresh start gets a fresh name, so an account that already
+      // holds some other conversation under an earlier name is never asked to reuse it.
+      const namedForCarry = (lane, argv) => (
+        CARRYABLE_HARNESSES.includes(lane.harness) && !callerManagesSession(argv)
+          ? withSessionId(argv, newSessionId())
+          : argv
+      );
 
-      let currentArgs = parsed.commandArgs;
-      if (sessionId) currentArgs = withSessionId(currentArgs, sessionId);
-      if (spec) {
-        currentArgs = argsForLane(selected.lane);
-        if (!currentArgs) {
-          process.exitCode = 1;
-          return;
-        }
+      let currentArgs = spec ? argsForLane(selected.lane) : [...parsed.commandArgs];
+      if (!currentArgs) {
+        process.exitCode = 1;
+        return;
       }
+      currentArgs = namedForCarry(selected.lane, currentArgs);
 
       // The sentence pointing a lane at the handoff, when it travels on the lane's standard
       // input rather than its command line. Set by one hop for the lane after it.
       let handoffNote = null;
 
+      // What the last hop handed the lane it moved to: the session carried into it, or the
+      // handoff it was pointed at. A lane that then cannot sign in never started, so the
+      // lane after it is handed the same thing rather than nothing.
+      // `workFrom` is the last lane that actually ran, whose work is what is being handed on.
+      // `workArgs` is the command line that lane ran with, which names its session.
+      let handedOn = { carriedId: null, pointAt: null, workFrom: null, told: false, workArgs: null };
+
       // What marks a handoff as derived by THIS run. See handoffOrigin for why it matters.
       const runId = newSessionId();
       let tidiesHandoff = false;
+      // What this run last wrote into its handoff, kept here so the next one can build on
+      // it exactly (see derivedHandoffData), plus the session it was written from.
+      let lastDerived = null;
 
       /**
        * Put a handoff in place for the lane about to take over, from the session that just
@@ -559,35 +592,43 @@ async function main() {
        * this run has something to say, and removed when it has not, so a run is never
        * pointed at another run's work. This run's own is removed when the process ends.
        */
-      function deriveHandoff(previousLane, laneStartedAt) {
+      function deriveHandoff(previousLane, laneStartedAt, ranWith) {
         const existing = readHandoff(runCwd);
         if (existing && !handoffOrigin(existing).derived) return 'theirs';
 
         let digest = null;
+        // Not the parent of a fork: that conversation is not what this run added to.
+        const sessionId = previousLane.harness === 'claude' ? sessionToCarry(ranWith) : null;
         if (transcriptSupport(previousLane.harness)) {
           const spentHome = registry.accounts.find((a) => a.id === previousLane.accountId)?.home;
-          // `sessionId` is set only where Switchboard named the session itself. A caller
-          // with its own command line names its own, and the name is on that command line,
-          // so it is read from there. Codex has no such flag at all, so its session is
-          // recognised afterwards by the directory it recorded and the fact this run
-          // touched it: hence `since`.
-          const ranWith = spec ? spec.harnessArgs[previousLane.harness] : parsed.commandArgs;
+          // A Claude session is named on the command line the spent lane ran with, by
+          // Switchboard or by the caller, so it is read from there. Codex has no such flag
+          // at all, so its session is recognized afterwards by the directory it recorded
+          // and the fact this run touched it: hence `since`.
           digest = sessionDigest({
             harness: previousLane.harness,
             home: spentHome,
             cwd: runCwd,
-            sessionId: sessionId ?? namedSession(ranWith),
+            sessionId,
             since: laneStartedAt,
           });
         }
         if (digest) {
           try {
-            writeHandoff(runCwd, {
-              derivedByRun: runId,
+            // Built on this run's own earlier handoff when there is one: see
+            // derivedHandoffData for why it is never simply replaced.
+            const earlier = existing && handoffOrigin(existing).runId === runId ? lastDerived : null;
+            const fitted = fitHandoff(derivedHandoffData({
+              earlier,
+              runId,
               objective: digest.objective,
               state: digest.state,
-              nextActions: DERIVED_NEXT_ACTIONS,
-            });
+              sessionId,
+              harness: previousLane.harness,
+            }));
+            if (fitted.trimmed) digest.truncated = true;
+            writeHandoff(runCwd, fitted.data);
+            lastDerived = { objective: fitted.data.objective, state: fitted.data.state, before: fitted.data.before, sessionId };
             if (!tidiesHandoff) {
               tidiesHandoff = true;
               process.once('exit', () => {
@@ -651,28 +692,69 @@ async function main() {
 
           const changesTool = previousLane.harness !== selected.lane.harness || previousLane.provider !== selected.lane.provider;
 
-          let handoffPrompt = null;
-          // Whether that pointer names a handoff this run derived. Only such a one is ever
-          // added to a caller's piped prompt: see where handoffNote is set below.
-          let handoffIsOurs = false;
-          // The same pointer for a hop between two lanes of one tool, where it was never
-          // put on the command line. It travels on standard input or not at all.
-          let sameToolHandoff = null;
+          // What the spent lane actually ran with: the session it was working in is named
+          // there, by Switchboard or by the caller, and the handoff is read from it.
+          const ranWith = currentArgs;
+          // Which handoff the next lane is pointed at: 'ours' (this run derived it),
+          // 'theirs' (somebody wrote it on purpose) or null for none.
+          let pointAt = null;
+          // The session the next lane resumes, when it could be carried across.
+          let carriedId = null;
 
           // A lane that could not sign in never ran, and that changes what the hop has to
-          // do rather than only where it goes. There is no session to carry and no work to
-          // hand off, because none was ever started: no transcript was written, nothing was
-          // consumed, and the digest below would have nothing to read but somebody else's
-          // earlier work in the same directory. So this path deliberately skips all of it
-          // and simply starts the command on the next lane. The arguments are rebuilt from
-          // what the caller asked for, for the same reason the same-harness path rebuilds
-          // them: an earlier hop may have left a --resume on the command line naming a
-          // session that this lane has never held.
-          if (result.authFailed) {
-            currentArgs = sessionId ? withSessionId(parsed.commandArgs, sessionId) : parsed.commandArgs;
-            say(`[switchboard] Falling back to next available lane: ${selected.lane.id}. Nothing was carried, because the lane that failed never started.`);
+          // do rather than only where it goes. It wrote nothing of its own, so there is no
+          // new work to carry or hand off, and the digest below would have nothing to read
+          // but somebody else's earlier work in the same directory. The next lane is given
+          // whatever this one was given: the handoff it was pointed at, if any. A session
+          // carried into it is the exception, handled as an ordinary failover below: the
+          // failed lane holds an exact copy of that conversation, which can be carried on
+          // or handed off from just as well as from the lane before it.
+          const failedLaneHeldSession = result.authFailed && Boolean(handedOn.carriedId);
+          // The lane whose work is being handed on: the one that just stopped, unless it
+          // never started, in which case whichever ran before it (or none).
+          const workFrom = result.authFailed && !failedLaneHeldSession ? handedOn.workFrom : previousLane;
+          // Whether the tool changes from the one whose work is handed on. After a refused
+          // sign-in that is not the lane that just failed, which never ran; with nothing
+          // run yet, it is that lane.
+          const workTool = workFrom ?? previousLane;
+          const toolChanged = workTool.harness !== selected.lane.harness || workTool.provider !== selected.lane.provider;
+          // Whether this hop is the run's first move onto this tool. Past a refused lane of
+          // the same tool, the move was already asked about and announced when the run went
+          // to that lane, so it is not asked or said again.
+          const newTool = toolChanged && changesTool;
+          // Whether the lane that just stopped was itself pointed at the handoff it hands on.
+          const failedLaneWasTold = Boolean(handedOn.told);
+          // The command line the carried session is resumed with: what the lane whose work
+          // it is ran with, so it is always that tool's own arguments.
+          let carryBase = ranWith;
+          if (result.authFailed && !failedLaneHeldSession) {
+            // A handoff somebody wrote by hand is only ever followed by a different tool,
+            // as on a direct hop; back on the work's own tool it is not.
+            pointAt = handedOn.pointAt === 'theirs' && !toolChanged ? null : handedOn.pointAt;
+            say(`[switchboard] Falling back to next available lane: ${selected.lane.id}. Nothing new was carried, because the lane that failed never started.`);
+            // Work that already started on one tool is only ever moved to another with
+            // leave, as on any other hop. Only when nothing has run yet is there nothing to
+            // move: the request simply goes to the next lane.
+            if (newTool && workFrom && !(await confirmHop(`Move this run to ${selected.lane.id}, a different tool? (y/N): `))) {
+              process.exitCode = result.code || 1;
+              return;
+            }
+            // Back on the tool whose work this is, the conversation itself can follow, as
+            // it would have on a direct hop from that lane.
+            const sameAsWork = workFrom && workFrom.harness === selected.lane.harness && workFrom.provider === selected.lane.provider;
+            const sessionId = sameAsWork ? sessionToCarry(handedOn.workArgs ?? []) : null;
+            if (sessionId && CARRYABLE_HARNESSES.includes(selected.lane.harness)) {
+              const fromHome = registry.accounts.find((a) => a.id === workFrom.accountId)?.home;
+              const toHome = registry.accounts.find((a) => a.id === selected.lane.accountId)?.home;
+              const carry = carryTranscript({ fromHome, toHome, cwd: runCwd, sessionId });
+              if (carry.carried) {
+                carriedId = sessionId;
+                carryBase = handedOn.workArgs;
+                pointAt = null;
+                say('[switchboard] Carried the session over from the lane before it; this lane continues where that one stopped.');
+              }
+            }
           } else if (changesTool) {
-            // Cross-provider/cross-harness transition handling
             // A Claude session file means nothing to another vendor, so this hop cannot
             // carry the session itself. What it can carry is a written account of it, and
             // the spent session already wrote one: an agent narrates its work as it goes,
@@ -683,7 +765,7 @@ async function main() {
             // A handoff somebody wrote for this workspace on purpose is left exactly as it
             // is. It may be better than anything derivable, and it is not Switchboard's to
             // overwrite. One an earlier run derived is another matter: see deriveHandoff.
-            const handoff = deriveHandoff(previousLane, laneStartedAt);
+            const handoff = deriveHandoff(previousLane, laneStartedAt, ranWith);
 
             if (handoff === 'none') {
               say(`[switchboard] Warning: Cross-provider failover to ${selected.lane.harness} (${selected.lane.provider}) requires a handoff document, but none was found for this workspace.`);
@@ -695,41 +777,32 @@ async function main() {
                 return;
               }
               if (parsed.yes) say(`[switchboard] Proceeding without handoff due to --yes flag.`);
-              // If proceeding without a handoff, we just pass the original args (or none if it was interactive)
             } else {
               say(`[switchboard] Valid task handoff found for workspace.`);
               if (!(await confirmHop(`Cross-provider failover to ${selected.lane.id}. Start new session? (y/N): `))) {
                 process.exitCode = result.code || 1;
                 return;
               }
-              // Inject the single-sentence handoff prompt into the args
-              handoffPrompt = generateHandoffPrompt(process.cwd());
-              handoffIsOurs = handoff === 'ours';
-              if (!spec) currentArgs = [handoffPrompt];
+              pointAt = handoff;
             }
           } else {
             say(`[switchboard] Falling back to next available lane for harness ${selected.lane.harness}: ${selected.lane.id}`);
-            let carriedSession = false;
 
             // Same harness, so the outgoing session can come with us. Copy its
             // transcript into the incoming account's folder and resume it there: the new
             // account continues the actual conversation rather than starting over, and
-            // the spent account keeps its own copy. Every failure here falls through to
-            // the fresh start this path has always done.
+            // the spent account keeps its own copy. This works whoever named the session,
+            // so a caller with its own command line gets the same continuation as one
+            // that left it to Switchboard. Every failure falls through to a fresh start.
+            const sessionId = sessionToCarry(ranWith);
             if (sessionId && CARRYABLE_HARNESSES.includes(selected.lane.harness)) {
               const fromHome = registry.accounts.find((a) => a.id === previousLane.accountId)?.home;
               const toHome = registry.accounts.find((a) => a.id === selected.lane.accountId)?.home;
               const carry = carryTranscript({ fromHome, toHome, cwd: runCwd, sessionId });
               if (carry.carried) {
-                currentArgs = resumeArgs(parsed.commandArgs, sessionId);
-                carriedSession = true;
+                carriedId = sessionId;
                 say('[switchboard] Carried the session over; this lane continues where the last one stopped.');
               } else {
-                // Back to a plain named start. Rebuilt from the original arguments rather
-                // than left as they are, because a third lane would otherwise inherit the
-                // previous hop's --resume and ask this account to open a session it has
-                // never held. Still named, so a later failover can carry this one.
-                currentArgs = withSessionId(parsed.commandArgs, sessionId);
                 say(`[switchboard] ${carryNote(carry.reason)}.`);
               }
             }
@@ -742,44 +815,77 @@ async function main() {
             // surprise to warn anybody about.
             //
             // Only a handoff this run derived is used here. One somebody wrote on purpose is
-            // left alone and not pointed at, exactly as before, when "a handoff exists" was
-            // what stopped this branch.
-            if (!carriedSession && deriveHandoff(previousLane, laneStartedAt) === 'ours') {
-              if (!spec) currentArgs = [generateHandoffPrompt(runCwd)];
-              else sameToolHandoff = generateHandoffPrompt(runCwd);
-              say('[switchboard] This lane picks up from that handoff.');
-            }
+            // left alone and not pointed at.
+            if (!carriedId && deriveHandoff(previousLane, laneStartedAt, ranWith) === 'ours') pointAt = 'ours';
           }
 
-          // The new lane can be a different harness, so a spec is re-read for it.
+          // The next lane's command line, built from what the caller gave for that tool,
+          // never from the one the spent lane ran with: that one can hold a --resume naming
+          // a session this account never had, or a Claude-only flag another tool rejects.
           //
           // Where the pointer to the handoff goes depends on how the caller gave its
           // prompt. A caller that piped it in has it replayed to this lane, and the pointer
-          // follows it on standard input. That is the only place it is safe: on a command
-          // line built by somebody else it lands after Claude's list-valued flags, which
-          // swallow it as one more tool name ("Input must be provided either through stdin
-          // or as a prompt argument"), and Codex and Antigravity reject a stray argument
-          // outright ("unexpected argument"). A caller that piped nothing gets it appended
-          // to the command line, as it always has, because there is nowhere else to put it.
+          // follows it on standard input. That is the only safe place on a command line
+          // somebody else built: there it lands after Claude's list-valued flags, which
+          // swallow it as one more tool name, and Codex and Antigravity reject a stray
+          // argument outright. A caller that piped nothing gets it appended to the command
+          // line, because there is nowhere else to put it.
           //
           // A caller that piped its prompt is only ever pointed at a handoff THIS run
           // derived. Its prompt is the whole request, replayed in full, and a handoff
-          // somebody left in the folder on purpose was written for something else: a bot
-          // that answers every request from one repository folder would otherwise have
-          // that document's "next actions" added to every request that changed tool.
-          if (spec) {
+          // somebody left in the folder on purpose was written for something else.
+          //
+          // Without a spec, a lane pointed at a handoff is started with that one sentence
+          // alone: after a change of tool the caller's arguments belong to another tool, and
+          // on the same tool they can already hold a prompt, which a second would clash with.
+          const cmdPointer = pointAt ? generateHandoffPrompt(runCwd) : null;
+          let nextArgs;
+          let told = false;
+          handoffNote = null;
+          if (carriedId) {
+            // With a spec, the tool's own command line from it; without one, the line the
+            // lane whose session this is ran with. Never the caller's raw arguments, which
+            // after a change of tool belong to a different tool.
+            nextArgs = resumeArgs(spec ? argsForLane(selected.lane) ?? [] : carryBase, carriedId);
+          } else if (spec) {
             const replayed = Boolean(pipedInput?.replayable());
             // Worded for a tool that has the request in front of it as well: see
             // generateHandoffNote for why it cannot be the command-line sentence.
-            const pointer = sameToolHandoff || (handoffIsOurs && handoffPrompt) ? generateHandoffNote(runCwd) : null;
-            const onStdin = replayed && Boolean(pointer) && pipedInput.acceptsNote();
-            const nextArgs = argsForLane(selected.lane, replayed ? null : handoffPrompt);
-            if (!nextArgs) {
-              process.exitCode = result.code || 1;
-              return;
-            }
-            currentArgs = nextArgs;
-            handoffNote = onStdin ? pointer : null;
+            const onStdin = replayed && pointAt === 'ours' && pipedInput.acceptsNote();
+            // The command line only when the caller piped nothing at all, and only for a
+            // different tool. Input still arriving, or too big to keep, is not "nothing",
+            // and a stream of JSON messages must not get a sentence by another route. A
+            // lane of the same tool runs the same spec, which already holds the request as
+            // an argument, and a second one is refused outright by Codex.
+            const nothingPiped = !pipedInput || pipedInput.nothingArrived();
+            const onCommandLine = nothingPiped && toolChanged && Boolean(cmdPointer);
+            nextArgs = argsForLane(selected.lane, onCommandLine ? cmdPointer : null);
+            if (onStdin) handoffNote = generateHandoffNote(runCwd);
+            told = onStdin || onCommandLine;
+          } else {
+            // A caller resuming a conversation by name on the same tool keeps its own
+            // command line: it holds the request being asked now, which the handoff (whose
+            // objective is that conversation's FIRST request) does not.
+            const keepsOwnLine = !toolChanged && Boolean(resumedSession(parsed.commandArgs));
+            const pointerOnly = Boolean(cmdPointer) && !keepsOwnLine;
+            nextArgs = pointerOnly ? [cmdPointer] : [...parsed.commandArgs];
+            told = pointerOnly;
+          }
+          if (!nextArgs) {
+            process.exitCode = result.code || 1;
+            return;
+          }
+          currentArgs = carriedId ? nextArgs : namedForCarry(selected.lane, nextArgs);
+          handedOn = { carriedId, pointAt, workFrom, told, workArgs: workFrom === previousLane ? ranWith : handedOn.workArgs };
+
+          if (pointAt && told && result.authFailed && !failedLaneHeldSession) {
+            say(failedLaneWasTold
+              ? '[switchboard] It is pointed at the same handoff the failed lane was given.'
+              : '[switchboard] It is pointed at the handoff written earlier in this run.');
+          }
+          else if (pointAt === 'ours' && told && !changesTool) say('[switchboard] This lane picks up from that handoff.');
+          if (pointAt === 'ours' && !told) {
+            say('[switchboard] A handoff was written, but this caller\'s input leaves no safe place to point the next lane at it, so that lane starts from the request alone.');
           }
 
           // Said on every hop that changes tool, in these words, whichever branch above
@@ -791,8 +897,12 @@ async function main() {
           // (a handoff written from the spent session, then --yes) and a hop after a
           // refused sign-in both changed tool without ever saying so. It is said here, last,
           // so that it is only ever said about a hop that is really going to happen.
-          if (changesTool) {
-            say(`[switchboard] Cross-provider failover: ${previousLane.harness} to ${selected.lane.harness} (lane ${selected.lane.id}).`);
+          //
+          // Judged against the tool whose work it is, not a lane that never started: work
+          // carried back to its own tool past a refused lane has not lost its thread. And
+          // said once: a lane of the same tool after a refused one is no further change.
+          if (newTool) {
+            say(`[switchboard] Cross-provider failover: ${workTool.harness} to ${selected.lane.harness} (lane ${selected.lane.id}).`);
           }
         } else {
           process.exitCode = result.code;
@@ -1239,14 +1349,11 @@ async function main() {
         out(`Note: on ${process.platform} a changed default cannot outlive this command, so auto mode reports rather than switches.`);
       }
 
-      let watchThresholdMemory = {};
       const runPass = async () => {
-        const { decisions, thresholdEvents, thresholdMemory, accounts } = await watchPass({
+        const { decisions, thresholdEvents, accounts } = await watchPass({
           mode,
           apply: mode === 'auto',
-          thresholdMemory: watchThresholdMemory,
         });
-        watchThresholdMemory = thresholdMemory;
         if (parsed.json) {
           out(JSON.stringify({ at: new Date().toISOString(), mode, decisions, thresholdEvents }));
           return;
@@ -1368,7 +1475,9 @@ async function main() {
       // had to leave alone is said out loud rather than skipped in silence.
       const share = () => {
         const res = syncClientAccountMirrors(reg);
-        for (const s of res.skipped) out(`Left alone: ${s.file} (${s.reason})`);
+        // On standard error under --json, so a script parsing the answer gets only JSON.
+        const tell = args.includes('--json') ? (msg) => process.stderr.write(msg + '\n') : out;
+        for (const s of res.skipped) tell(`Left alone: ${s.file} (${s.reason})`);
         return res;
       };
       if (sub === 'sync') {
@@ -1475,7 +1584,7 @@ async function main() {
       throw new Error(`unknown mcp subcommand: ${sub}. Use list|add|remove|register|unregister|disable|enable|sync`);
     }
     default:
-      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|watch|notify|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|watch|notify|mcp|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> [folder]   leave out the folder for a brand-new account`);

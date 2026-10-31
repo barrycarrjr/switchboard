@@ -7,7 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from '../test-support/tempdir.js';
 import { sharedQuotaKey } from '../core/quota-cache.js';
-import { transcriptFile } from '../core/transcripts.js';
+import { transcriptFile, projectSlug } from '../core/transcripts.js';
 import { formatHandoff, handoffOrigin, DERIVED_NEXT_ACTIONS } from '../core/handoff.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -60,6 +60,12 @@ function writeFakeHarnesses(binDir) {
       'echo %CLAUDE_CONFIG_DIR% | findstr /C:"spent" >nul\r\n' +
       'if %errorlevel%==0 (\r\n' +
       '  findstr "^" >nul\r\n' +
+      // With FAKE_SLUG set, a spent account leaves a transcript under the session it was
+      // named with, as the real tool does, so a test can follow that session onwards.
+      '  if not "%FAKE_SLUG%"=="" if "%1"=="--session-id" (\r\n' +
+      '    mkdir "%CLAUDE_CONFIG_DIR%\\projects\\%FAKE_SLUG%" 2>nul\r\n' +
+      '    echo {"type":"user","uuid":"u1","message":{"role":"user","content":"the original task"}}>"%CLAUDE_CONFIG_DIR%\\projects\\%FAKE_SLUG%\\%2.jsonl"\r\n' +
+      '  )\r\n' +
       "  echo You've hit your weekly limit\r\n" +
       '  exit /b 1\r\n' +
       ')\r\n' +
@@ -71,8 +77,20 @@ function writeFakeHarnesses(binDir) {
     );
     // FAKE_TOOL_SKIPS_STDIN makes it a tool that never reads its input, for the test where
     // the caller leaves its pipe open: reading to the end of that would never finish.
+    // A Codex account whose folder name says "spent" reads its input and reports a limit.
     fs.writeFileSync(path.join(binDir, 'codex.cmd'),
       '@echo off\r\n' +
+      'echo %CODEX_HOME% | findstr /C:"dead" >nul\r\n' +
+      'if %errorlevel%==0 (\r\n' +
+      '  echo Failed to authenticate: your sign-in was refused\r\n' +
+      '  exit /b 1\r\n' +
+      ')\r\n' +
+      'echo %CODEX_HOME% | findstr /C:"spent" >nul\r\n' +
+      'if %errorlevel%==0 (\r\n' +
+      '  findstr "^" >nul\r\n' +
+      "  echo You've reached your usage limit\r\n" +
+      '  exit /b 1\r\n' +
+      ')\r\n' +
       'echo CODEX_LANE_RAN %*\r\n' +
       'if "%FAKE_TOOL_SKIPS_STDIN%"=="1" exit /b 0\r\n' +
       'echo STDIN_BEGIN\r\n' +
@@ -92,6 +110,10 @@ function writeFakeHarnesses(binDir) {
     '    ;;\n' +
     '  *spent*)\n' +
     '    cat >/dev/null\n' +
+    '    if [ -n "$FAKE_SLUG" ] && [ "$1" = "--session-id" ]; then\n' +
+    '      mkdir -p "$CLAUDE_CONFIG_DIR/projects/$FAKE_SLUG"\n' +
+    '      echo \'{"type":"user","uuid":"u1","message":{"role":"user","content":"the original task"}}\' > "$CLAUDE_CONFIG_DIR/projects/$FAKE_SLUG/$2.jsonl"\n' +
+    '    fi\n' +
     '    echo "You\'ve hit your weekly limit"\n' +
     '    exit 1\n' +
     '    ;;\n' +
@@ -105,7 +127,7 @@ function writeFakeHarnesses(binDir) {
   );
   fs.chmodSync(claude, 0o755);
   const codex = path.join(binDir, 'codex');
-  fs.writeFileSync(codex, '#!/bin/sh\necho "CODEX_LANE_RAN $*"\n[ "$FAKE_TOOL_SKIPS_STDIN" = "1" ] && exit 0\necho STDIN_BEGIN\ncat\necho\necho STDIN_END\nexit 0\n');
+  fs.writeFileSync(codex, '#!/bin/sh\ncase "$CODEX_HOME" in *dead*) echo "Failed to authenticate: your sign-in was refused"; exit 1;; esac\ncase "$CODEX_HOME" in *spent*) cat >/dev/null; echo "You\'ve reached your usage limit"; exit 1;; esac\necho "CODEX_LANE_RAN $*"\n[ "$FAKE_TOOL_SKIPS_STDIN" = "1" ] && exit 0\necho STDIN_BEGIN\ncat\necho\necho STDIN_END\nexit 0\n');
   fs.chmodSync(codex, 0o755);
 }
 
@@ -201,7 +223,7 @@ function writeSpec(world, harnessArgs) {
   return file;
 }
 
-function runCli(world, args, { input } = {}) {
+function runCli(world, args, { input, env = {} } = {}) {
   return spawnSync(process.execPath, [cli, ...args], {
     encoding: 'utf8',
     timeout: 60000,
@@ -210,6 +232,7 @@ function runCli(world, args, { input } = {}) {
     ...(input !== undefined ? { input } : {}),
     env: {
       ...process.env,
+      ...env,
       APPDATA: world.appData,
       PATH: world.binDir + path.delimiter + process.env.PATH,
       Path: world.binDir + path.delimiter + (process.env.Path ?? process.env.PATH)
@@ -228,7 +251,9 @@ test('a fallback passes over a lane the caller cannot drive and lands on the nex
       `expected the first lane to be tried. Output:\n${output}`);
     assert.match(output, /Running via lane lane-live/,
       `expected the run to reach the Claude lane below the Codex one. Output:\n${output}`);
-    assert.match(output, /CLAUDE_LIVE_LANE_RAN -p from-the-claude-spec/,
+    // Named up front, so a later failover can carry the conversation; the spec's own
+    // command line follows unchanged.
+    assert.match(output, /CLAUDE_LIVE_LANE_RAN --session-id [0-9a-f-]{36} -p from-the-claude-spec/,
       `expected the live lane to run the spec's command line. Output:\n${output}`);
     assert.equal(res.status, 0, `expected the run to end well. Output:\n${output}`);
 
@@ -568,6 +593,408 @@ test('a dry-run given a spec it cannot read says so instead of answering for eve
     assert.equal(answer.available, false);
     assert.match(answer.reason, /Cannot read run spec/);
     assert.notEqual(res.status, 0);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+const CALLER_SESSION = '3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0c';
+
+/** A Claude conversation as Claude Code files it, with one request and one reply. */
+function seedConversation(home, cwd, sessionId, extra = '') {
+  const file = transcriptFile(home, cwd, sessionId);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file,
+    JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'build the report' } }) + '\n' +
+    JSON.stringify({ type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'Half the report is done.' }] } }) + '\n' +
+    extra);
+  return file;
+}
+
+test('a conversation the caller named in its spec goes with the work to the next Claude account', () => {
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    const spentHome = path.join(world.tmp, 'home-spent');
+    const liveHome = path.join(world.tmp, 'home-live');
+    const source = seedConversation(spentHome, world.workspace, CALLER_SESSION);
+    const spec = writeSpec(world, { claude: ['--resume', CALLER_SESSION, '-p'] });
+
+    const res = runCli(world, ['run', '--yes', '--spec', spec], { input: 'carry on' });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Carried the session over/, `expected a carry. Output:\n${output}`);
+    assert.match(output, new RegExp(`CLAUDE_LIVE_LANE_RAN --resume ${CALLER_SESSION} -p`), `expected the live lane to resume it. Output:\n${output}`);
+    assert.equal(fs.readFileSync(transcriptFile(liveHome, world.workspace, CALLER_SESSION), 'utf8'), fs.readFileSync(source, 'utf8'));
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('a conversation resumed by name is brought from whichever account last held it', () => {
+  const world = makeWorld({ thirdClaude: true });
+  try {
+    const midHome = path.join(world.tmp, 'home-mid');
+    const liveHome = path.join(world.tmp, 'home-live');
+    seedConversation(midHome, world.workspace, CALLER_SESSION, JSON.stringify({ type: 'user', uuid: 'u2', message: { role: 'user', content: 'and the charts' } }) + '\n');
+    // The live account has an older copy: the conversation went on in the other one.
+    seedConversation(liveHome, world.workspace, CALLER_SESSION);
+    const spec = writeSpec(world, { claude: ['--resume', CALLER_SESSION, '-p'] });
+
+    const res = runCli(world, ['run', '--yes', '--spec', spec], { input: 'next' });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Brought the latest copy of that conversation over from Mid Account/, `Output:\n${output}`);
+    assert.match(fs.readFileSync(transcriptFile(liveHome, world.workspace, CALLER_SESSION), 'utf8'), /and the charts/);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('a tool taking over is never handed the Claude session flag the first lane was given', () => {
+  const world = makeWorld();
+  try {
+    const res = runCli(world, ['run', '--yes', '--', 'hello']);
+    const ranWith = /CODEX_LANE_RAN ([^\r\n]*)/.exec(res.stdout ?? '')?.[1].trim();
+    assert.equal(ranWith, 'hello', `Output:\n${res.stdout}${res.stderr}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('with nothing piped, a same-tool lane under a spec is not handed a second prompt argument, and the run says so', () => {
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    const spentHome = path.join(world.tmp, 'home-spent');
+    const liveHome = path.join(world.tmp, 'home-live');
+    seedConversation(spentHome, world.workspace, CALLER_SESSION);
+    // A different conversation under the same name, so the session cannot be carried and
+    // a handoff is written instead.
+    const theirs = transcriptFile(liveHome, world.workspace, CALLER_SESSION);
+    fs.mkdirSync(path.dirname(theirs), { recursive: true });
+    fs.writeFileSync(theirs, '{"type":"summary"}\n');
+    const spec = writeSpec(world, { claude: ['--resume', CALLER_SESSION, '-p'] });
+
+    const res = runCli(world, ['run', '--yes', '--spec', spec]);
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    // The spec already holds the request, and a second prompt argument is refused outright
+    // by Codex, so a lane of the same tool is not given one. The run says the handoff went
+    // unused rather than claiming the lane picks up from it.
+    assert.match(output, /leaves no safe place to point the next lane at it/, `Output:\n${output}`);
+    assert.doesNotMatch(output, /This lane picks up from that handoff/, `Output:\n${output}`);
+    assert.match(output, new RegExp(`CLAUDE_LIVE_LANE_RAN --resume ${CALLER_SESSION} -p\\s*\\r?\\n`), `Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('a lane that cannot sign in passes on the conversation it was handed, so the next lane still continues it', () => {
+  const world = makeWorld({ firstLane: 'spent', thirdClaude: true });
+  try {
+    const spentHome = path.join(world.tmp, 'home-spent');
+    const midHome = path.join(world.tmp, 'home-mid');
+    // The second Claude lane is refused at sign-in: its folder name says "dead".
+    const deadHome = path.join(world.tmp, 'home-dead2');
+    fs.mkdirSync(deadHome, { recursive: true });
+    fs.writeFileSync(path.join(deadHome, '.credentials.json'), signedInCredential());
+    const accountsFile = path.join(world.appData, 'Switchboard', 'accounts.json');
+    const reg = JSON.parse(fs.readFileSync(accountsFile, 'utf8'));
+    reg.accounts.find((a) => a.id === 'acct-live').home = deadHome;
+    fs.writeFileSync(accountsFile, JSON.stringify(reg, null, 2));
+    // A current reading for the moved folder, so selection reaches the lane and only the
+    // run itself finds out the sign-in is refused.
+    const cacheFile = path.join(world.appData, 'Switchboard', 'quota-cache.json');
+    const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    cache['acct-live'] = { ...cache['acct-live'], key: sharedQuotaKey('claude', deadHome), at: Date.now() };
+    fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2));
+
+    seedConversation(spentHome, world.workspace, CALLER_SESSION);
+    const spec = writeSpec(world, { claude: ['--resume', CALLER_SESSION, '-p'] });
+
+    const res = runCli(world, ['run', '--yes', '--spec', spec], { input: 'carry on' });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-mid/, `Output:\n${output}`);
+    assert.match(output, new RegExp(`CLAUDE_LIVE_LANE_RAN --resume ${CALLER_SESSION} -p`), `the third lane must resume it. Output:\n${output}`);
+    assert.ok(fs.existsSync(transcriptFile(midHome, world.workspace, CALLER_SESSION)), 'the conversation reached the third account');
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('a conversation resumed as --resume=<id> is also brought from the account that last held it', () => {
+  const world = makeWorld({ thirdClaude: true });
+  try {
+    const midHome = path.join(world.tmp, 'home-mid');
+    const liveHome = path.join(world.tmp, 'home-live');
+    seedConversation(midHome, world.workspace, CALLER_SESSION);
+    const spec = writeSpec(world, { claude: [`--resume=${CALLER_SESSION}`, '-p'] });
+
+    const res = runCli(world, ['run', '--yes', '--spec', spec], { input: 'next' });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Brought the latest copy of that conversation over from Mid Account/, `Output:\n${output}`);
+    assert.ok(fs.existsSync(transcriptFile(liveHome, world.workspace, CALLER_SESSION)));
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('a lane that cannot sign in passes on the handoff it was pointed at to the lane after it', () => {
+  const world = makeWorld({ firstLane: 'spent', thirdClaude: true });
+  try {
+    const spentHome = path.join(world.tmp, 'home-spent');
+    const deadHome = path.join(world.tmp, 'home-dead2');
+    fs.mkdirSync(deadHome, { recursive: true });
+    fs.writeFileSync(path.join(deadHome, '.credentials.json'), signedInCredential());
+    const accountsFile = path.join(world.appData, 'Switchboard', 'accounts.json');
+    const reg = JSON.parse(fs.readFileSync(accountsFile, 'utf8'));
+    reg.accounts.find((a) => a.id === 'acct-live').home = deadHome;
+    fs.writeFileSync(accountsFile, JSON.stringify(reg, null, 2));
+    // A current reading for the moved folder, so selection reaches the lane and only the
+    // run itself finds out the sign-in is refused.
+    const cacheFile = path.join(world.appData, 'Switchboard', 'quota-cache.json');
+    const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    cache['acct-live'] = { ...cache['acct-live'], key: sharedQuotaKey('claude', deadHome), at: Date.now() };
+    fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2));
+
+    seedConversation(spentHome, world.workspace, CALLER_SESSION);
+    // The refused lane holds a different conversation under that name, so the session
+    // cannot be carried into it and a handoff is written instead.
+    // The lane after it does too, so the conversation cannot travel there either and the
+    // handoff is what has to be passed on.
+    for (const home of [deadHome, path.join(world.tmp, 'home-mid')]) {
+      const theirs = transcriptFile(home, world.workspace, CALLER_SESSION);
+      fs.mkdirSync(path.dirname(theirs), { recursive: true });
+      fs.writeFileSync(theirs, `{"type":"summary","in":"${path.basename(home)}"}\n`);
+    }
+    const spec = writeSpec(world, { claude: ['--resume', CALLER_SESSION, '-p'] });
+
+    const res = runCli(world, ['run', '--yes', '--spec', spec], { input: 'finish the report' });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-mid/, `Output:\n${output}`);
+    assert.match(output, /pointed at the same handoff the failed lane was given/, `Output:\n${output}`);
+    assert.match(stdinSeenBy(res.stdout) ?? '', /finish the report[\s\S]*Its notes on how far it got/, `the third lane must get the request and the pointer. Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+/** Point the world's "live" Claude account at a folder whose sign-in the stand-in refuses. */
+function refuseLiveSignIn(world) {
+  const deadHome = path.join(world.tmp, 'home-dead2');
+  fs.mkdirSync(deadHome, { recursive: true });
+  fs.writeFileSync(path.join(deadHome, '.credentials.json'), signedInCredential());
+  const accountsFile = path.join(world.appData, 'Switchboard', 'accounts.json');
+  const reg = JSON.parse(fs.readFileSync(accountsFile, 'utf8'));
+  reg.accounts.find((a) => a.id === 'acct-live').home = deadHome;
+  fs.writeFileSync(accountsFile, JSON.stringify(reg, null, 2));
+  const cacheFile = path.join(world.appData, 'Switchboard', 'quota-cache.json');
+  const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  cache['acct-live'] = { ...cache['acct-live'], key: sharedQuotaKey('claude', deadHome), at: Date.now() };
+  fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2));
+  return deadHome;
+}
+
+test('work that already started is not moved to another tool without leave, even past a lane that could not sign in', () => {
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    refuseLiveSignIn(world);
+    // Claude (runs, then hits its limit), Claude (sign-in refused), then Codex.
+    const settingsFile = path.join(world.appData, 'Switchboard', 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    const byId = Object.fromEntries(settings.lanes.map((l) => [l.id, l]));
+    settings.lanes = [byId['lane-dead'], byId['lane-live'], byId['lane-codex']];
+    fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+    const spec = writeSpec(world, { claude: ['-p'], codex: ['exec', '-'] });
+
+    const res = runCli(world, ['run', '--spec', spec], { input: 'the request' });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-live/, `the refused lane must be reached. Output:\n${output}`);
+    assert.doesNotMatch(output, /CODEX_LANE_RAN/, `Codex must not run without leave. Output:\n${output}`);
+    assert.match(output, /Pass --yes to allow it/, `Output:\n${output}`);
+    assert.notEqual(res.status, 0);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('without a spec, a caller resuming its conversation keeps its own request when the conversation cannot be carried', () => {
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    const spentHome = path.join(world.tmp, 'home-spent');
+    const liveHome = path.join(world.tmp, 'home-live');
+    seedConversation(spentHome, world.workspace, CALLER_SESSION);
+    // A different conversation under that name in the next account: nothing to carry, so
+    // a handoff is written from the spent one.
+    const theirs = transcriptFile(liveHome, world.workspace, CALLER_SESSION);
+    fs.mkdirSync(path.dirname(theirs), { recursive: true });
+    fs.writeFileSync(theirs, '{"type":"summary"}\n');
+
+    const res = runCli(world, ['run', '--yes', '--harnesses', 'claude', '--', '--resume', CALLER_SESSION, '-p', 'NEW-REQUEST']);
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /CLAUDE_LIVE_LANE_RAN [^\r\n]*NEW-REQUEST/, `the request being asked now must reach the next lane. Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+/** Move one account to a folder with the given name, keeping its usage reading current. */
+function rehome(world, accountId, provider, dirName) {
+  const home = path.join(world.tmp, dirName);
+  fs.mkdirSync(home, { recursive: true });
+  if (provider === 'claude') fs.writeFileSync(path.join(home, '.credentials.json'), signedInCredential());
+  else fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: 'test' } }));
+  const accountsFile = path.join(world.appData, 'Switchboard', 'accounts.json');
+  const reg = JSON.parse(fs.readFileSync(accountsFile, 'utf8'));
+  reg.accounts.find((a) => a.id === accountId).home = home;
+  fs.writeFileSync(accountsFile, JSON.stringify(reg, null, 2));
+  const cacheFile = path.join(world.appData, 'Switchboard', 'quota-cache.json');
+  const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  cache[accountId] = { ...cache[accountId], key: sharedQuotaKey(provider, home), at: Date.now() };
+  fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2));
+  return home;
+}
+
+/** Put the world's lanes in the order given by id. */
+function orderLanes(world, ids) {
+  const settingsFile = path.join(world.appData, 'Switchboard', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  const byId = Object.fromEntries(settings.lanes.map((l) => [l.id, l]));
+  settings.lanes = ids.map((id) => byId[id]);
+  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+}
+
+test('a conversation carried after a change of tool is resumed with that tool\'s own arguments', () => {
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    rehome(world, 'acct-codex', 'codex', 'home-codex-spent');
+    orderLanes(world, ['lane-codex', 'lane-dead', 'lane-live']);
+    writeHandoffFor(world);
+    const res = runCli(world, ['run', '--yes', '--', 'exec', 'Rename-the-helper'], { env: { FAKE_SLUG: projectSlug(world.workspace) } });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Carried the session over/, `Output:\n${output}`);
+    const ranWith = /CLAUDE_LIVE_LANE_RAN ([^\r\n]*)/.exec(output)?.[1] ?? '';
+    assert.match(ranWith, /^--resume [0-9a-f-]{36} /, `Output:\n${output}`);
+    assert.doesNotMatch(ranWith, /exec/, `Codex's arguments must not reach Claude. Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('past a refused lane of another tool, the conversation is carried from the lane whose work it is', () => {
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    rehome(world, 'acct-codex', 'codex', 'home-codex-dead');
+    const spec = writeSpec(world, { claude: ['-p'], codex: ['exec', '-'] });
+    const res = runCli(world, ['run', '--yes', '--spec', spec], { input: '', env: { FAKE_SLUG: projectSlug(world.workspace) } });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-codex/, `the refused lane must be reached. Output:\n${output}`);
+    assert.match(output, /Carried the session over from the lane before it/, `Output:\n${output}`);
+    assert.match(output, /CLAUDE_LIVE_LANE_RAN --resume [0-9a-f-]{36} -p/, `Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('past a refused lane of another tool, the work\'s own tool is not told the tool changed', () => {
+  // Claude runs and hits its limit, Codex cannot sign in, then a second Claude account takes
+  // the work. The tool never changed for the work itself, so no change of tool is reported.
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    rehome(world, 'acct-codex', 'codex', 'home-codex-dead');
+    const spec = writeSpec(world, { claude: ['-p'], codex: ['exec', '-'] });
+    const res = runCli(world, ['run', '--yes', '--spec', spec], { input: 'the request' });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-codex/, `the refused lane must be reached. Output:\n${output}`);
+    assert.match(output, /CLAUDE_LIVE_LANE_RAN/, `Output:\n${output}`);
+    assert.match(output, /Cross-provider failover: claude to codex/, `Output:\n${output}`);
+    assert.doesNotMatch(output, /Cross-provider failover: codex to claude/, `Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('past a refused lane of another tool, a handoff somebody wrote is not handed back to the work\'s own tool', () => {
+  // A hand-written handoff is only for a change of tool. Back on Claude, the caller's own
+  // request goes to the next account, not a pointer to somebody else's notes.
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    rehome(world, 'acct-codex', 'codex', 'home-codex-dead');
+    writeHandoffFor(world);
+    const res = runCli(world, ['run', '--yes', '--', '-p', 'THE-REQUEST']);
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-codex/, `the refused lane must be reached. Output:\n${output}`);
+    const ranWith = /CLAUDE_LIVE_LANE_RAN ([^\r\n]*)/.exec(output)?.[1] ?? '';
+    assert.match(ranWith, /THE-REQUEST/, `Output:\n${output}`);
+    assert.doesNotMatch(ranWith, /continue from its Next actions/, `Output:\n${output}`);
+    assert.doesNotMatch(output, /pointed at the same handoff the failed lane was given/, `Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('a second lane of the tool a run already moved to is not announced as another change of tool', () => {
+  // Claude runs out, the first Codex account cannot sign in, a second Codex account takes
+  // the work. The move to Codex was announced (and, at a terminal, asked about) once.
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    rehome(world, 'acct-codex', 'codex', 'home-codex-dead');
+    const codex2 = path.join(world.tmp, 'home-codex2');
+    fs.mkdirSync(codex2, { recursive: true });
+    fs.writeFileSync(path.join(codex2, 'auth.json'), JSON.stringify({ tokens: { id_token: 'test' } }));
+    const dataDir = path.join(world.appData, 'Switchboard');
+    const reg = JSON.parse(fs.readFileSync(path.join(dataDir, 'accounts.json'), 'utf8'));
+    reg.accounts.push({ id: 'acct-codex2', provider: 'codex', label: 'Codex Two', home: codex2 });
+    fs.writeFileSync(path.join(dataDir, 'accounts.json'), JSON.stringify(reg, null, 2));
+    const cache = JSON.parse(fs.readFileSync(path.join(dataDir, 'quota-cache.json'), 'utf8'));
+    cache['acct-codex2'] = { ...cache['acct-codex'], key: sharedQuotaKey('codex', codex2), at: Date.now() };
+    fs.writeFileSync(path.join(dataDir, 'quota-cache.json'), JSON.stringify(cache, null, 2));
+    const settings = JSON.parse(fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8'));
+    settings.lanes.push({ id: 'lane-codex2', harness: 'codex', provider: 'openai', accountId: 'acct-codex2', billing: 'subscription', capabilities: ['chat'] });
+    fs.writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify(settings, null, 2));
+    orderLanes(world, ['lane-dead', 'lane-codex', 'lane-codex2', 'lane-live']);
+
+    const spec = writeSpec(world, { claude: ['-p'], codex: ['exec', '-'] });
+    const res = runCli(world, ['run', '--yes', '--spec', spec], { input: 'the request' });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-codex2/, `Output:\n${output}`);
+    assert.match(output, /CODEX_LANE_RAN/, `Output:\n${output}`);
+    assert.equal(output.split('Cross-provider failover: claude to codex').length, 2, `announced exactly once. Output:\n${output}`);
+  } finally {
+    fs.rmSync(world.tmp, { recursive: true, force: true });
+  }
+});
+
+test('past a refused lane that was never told about the handoff, the next lane is not said to share it', () => {
+  const world = makeWorld({ firstLane: 'spent' });
+  try {
+    const spentHome = path.join(world.tmp, 'home-spent');
+    const deadHome = refuseLiveSignIn(world);
+    seedConversation(spentHome, world.workspace, CALLER_SESSION);
+    // The refused Claude lane holds a different conversation under that name, so nothing
+    // is carried into it, and as a lane of the same tool it is given no pointer either.
+    const theirs = transcriptFile(deadHome, world.workspace, CALLER_SESSION);
+    fs.mkdirSync(path.dirname(theirs), { recursive: true });
+    fs.writeFileSync(theirs, '{"type":"summary"}\n');
+    orderLanes(world, ['lane-dead', 'lane-live', 'lane-codex']);
+    const spec = writeSpec(world, { claude: ['--resume', CALLER_SESSION, '-p'], codex: ['exec'] });
+
+    const res = runCli(world, ['run', '--yes', '--spec', spec], { input: '' });
+    const output = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+
+    assert.match(output, /Running via lane lane-live/, `Output:\n${output}`);
+    assert.match(output, /CODEX_LANE_RAN/, `Output:\n${output}`);
+    assert.doesNotMatch(output, /same handoff the failed lane was given/, `Output:\n${output}`);
+    assert.match(output, /pointed at the handoff written earlier in this run/, `Output:\n${output}`);
   } finally {
     fs.rmSync(world.tmp, { recursive: true, force: true });
   }

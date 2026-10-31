@@ -861,7 +861,10 @@ export async function fetchAntigravityQuota({
  * ------------------------------------------------------------------------- */
 
 export function readCopilotToken(home = null, env = process.env) {
-  const envToken = env.COPILOT_API_TOKEN || env.COPILOT_TOKEN || env.GITHUB_TOKEN || env.GH_TOKEN;
+  // Not GH_TOKEN, GITHUB_TOKEN or COPILOT_GITHUB_TOKEN: a Copilot run starts without them
+  // (CREDENTIAL_ENV_VARS), so a reading taken through one of them would describe an
+  // account the lane's runs never use.
+  const envToken = env.COPILOT_API_TOKEN || env.COPILOT_TOKEN;
   if (typeof envToken === 'string' && envToken.trim()) return envToken.trim();
 
   if (home) {

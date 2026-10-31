@@ -91,6 +91,14 @@ export function recordPipedInput(source, { maxBytes = MAX_RECORDED_BYTES } = {})
     },
 
     /**
+     * Whether the caller's input has ended without anything in it: a caller that piped
+     * nothing, as opposed to one whose input is still arriving or was too big to keep.
+     */
+    nothingArrived() {
+      return ended && !overflowed && bytes === 0;
+    },
+
+    /**
      * Whether a sentence may be added after the input. Only after a complete prompt in
      * plain words. Input that is still arriving would get it in the middle, and input that
      * is a stream of JSON messages (a caller driving a tool's structured input format)

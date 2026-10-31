@@ -464,7 +464,9 @@ function autoSwitchReason({ selected, active, order, lanes, context, accounts, s
 /** What makes two decisions the same piece of news, or null for a kind never repeated. */
 function noticeKey(decision) {
   if (decision.kind === 'suggest') return `suggest:${decision.from}:${decision.to}`;
-  if (decision.kind === 'exhausted') return `exhausted:${decision.resetsAt ?? ''}`;
+  // To the minute, as resets are compared everywhere else: the vendor states them to the
+  // millisecond, and two readings of one reset can differ in the last digits.
+  if (decision.kind === 'exhausted') return `exhausted:${decision.resetsAt == null ? '' : Math.round(Number(decision.resetsAt) / 60000)}`;
   return null;
 }
 

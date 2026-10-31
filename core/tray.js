@@ -460,9 +460,14 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
   const compactText = complete(compact);
   if (compactText.length <= limit) return compactText;
 
-  // Prioritize active accounts so all active providers fit within the limit
+  // Prioritize active accounts so all active providers fit within the limit. The accounts
+  // that leaves out are still counted at the end, as everywhere else here: a hover that
+  // lists one account per tool must not read as if there were no others.
+  const total = (groups) => groups.reduce((sum, group) => sum + group.count, 0);
+  const hiddenByActive = activeCompact.length ? Math.max(0, total(compact) - total(activeCompact)) : 0;
+  const withTail = (text) => (hiddenByActive > 0 ? `${text}\nand ${hiddenByActive} more` : text);
   if (activeCompact.length) {
-    const activeCompactText = complete(activeCompact);
+    const activeCompactText = withTail(complete(activeCompact));
     if (activeCompactText.length <= limit) return activeCompactText;
 
     if (hasAgQuota) {
@@ -474,7 +479,7 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
           }
           return group;
         });
-        const singleCompactText = complete(singleCompactGroups);
+        const singleCompactText = withTail(complete(singleCompactGroups));
         if (singleCompactText.length <= limit) return singleCompactText;
       }
     }
@@ -500,6 +505,7 @@ export function trayTooltip(options = {}, limit = TOOLTIP_LIMIT) {
       break;
     }
   }
+  dropped += hiddenByActive;
   // Give a whole provider group back if that is what it takes to admit there are more.
   while (dropped > 0) {
     const tail = `and ${dropped} more`;

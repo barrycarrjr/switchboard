@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readUserEnv, readMachineEnv } from './env.js';
-import { accountScopedEnv, CLAUDE_CREDENTIAL_ENV_VARS, PROVIDERS } from './accounts.js';
+import { accountScopedEnv, CLAUDE_CREDENTIAL_ENV_VARS, CREDENTIAL_ENV_VARS, PROVIDERS } from './accounts.js';
 import { toEpochMs, readClaudeAccountIdentity } from './quota.js';
 import { laneTokenIdentityMatches } from './lane-tokens.js';
 import { cliLaunch } from './cli-launch.js';
@@ -377,6 +377,36 @@ export async function runChecks({
     });
   }
 
+  // Keys for the other tools. Switchboard leaves them out of every account-scoped process
+  // (see CREDENTIAL_ENV_VARS), so an account signs in one way only. A tool that was set up
+  // through one of these alone now gets no sign-in from it, and its lanes fail as a refused
+  // sign-in; this is where that is said, rather than discovered run by run. Only for tools
+  // in use here (a registered account or a lane): GH_TOKEN or OPENAI_API_KEY set for other
+  // work is none of Switchboard's business. No removal is offered either, because the
+  // same variables serve `gh`, git and other programs this cannot see.
+  const inUse = new Set([
+    ...accounts.map((a) => a.provider),
+    ...(settings?.lanes ?? []).map((l) => l.harness),
+  ]);
+  const otherKeys = new Map();
+  for (const [provider, names] of Object.entries(CREDENTIAL_ENV_VARS)) {
+    if (provider === 'claude' || !inUse.has(provider)) continue;
+    for (const name of names) {
+      if (!otherKeys.has(name)) otherKeys.set(name, []);
+      otherKeys.get(name).push(PROVIDERS[provider]?.name ?? provider[0].toUpperCase() + provider.slice(1));
+    }
+  }
+  for (const [name, tools] of otherKeys) {
+    const scopes = scopesWith(name, env);
+    if (!scopes.length) continue;
+    checks.push({
+      id: `ignored-key-${name}`,
+      level: 'info',
+      title: `${name} is set, and ${tools.join(' and ')} runs ignore it`,
+      detail: `Set at ${scopes.join(' and ')} scope. Runs, sign-ins and account terminals for ${tools.join(', ')} start without it, so each account signs in only through its own sign-in. If one of these tools was set up through this variable alone, sign it in from Switchboard instead.`,
+    });
+  }
+
   // 2. A persistent OAuth token outranks the config-folder login, so switching folders
   //    would change nothing for CLI runs until the token is removed.
   const pinScopes = scopesWith('CLAUDE_CODE_OAUTH_TOKEN', env);
@@ -443,13 +473,28 @@ export async function runChecks({
     });
   }
 
+  // 5b. A stored lane token this machine cannot decrypt. Its key is derived from the user
+  //     name, computer name and home folder, so a renamed machine or a settings file
+  //     copied from elsewhere lands here. Nothing is down; automation just gets no token.
+  for (const [laneId, entry] of Object.entries(settings?.laneTokens ?? {})) {
+    if (!entry?.unreadable) continue;
+    const account = accounts.find((a) => a.id === entry.accountId);
+    const label = account?.label ?? entry.accountId ?? laneId;
+    checks.push({
+      id: `lane-token-unreadable-${laneId}`,
+      level: 'warn',
+      title: `Lane token for ${label} cannot be read on this machine`,
+      detail: `It was encrypted under a different user name, computer name or home folder, so automation stopped receiving it. Lane ${laneId} still runs on its folder sign-in. Mint a new one with: switchboard lane-token ${laneId}`,
+    });
+  }
+
   // 6. A live lane token minted under a different login than the lane's folder now
   //    carries. Re-signing the folder does not touch the stored token, so dry-run
   //    stops handing it out rather than billing the old account, and automation
   //    quietly reverts to folder mode. Saying so here is what turns "the fleet
   //    stopped using its token" into a one-command repair.
   for (const [laneId, entry] of Object.entries(settings?.laneTokens ?? {})) {
-    if (!entry || entry.dead) continue;
+    if (!entry || entry.dead || entry.unreadable) continue;
     const account = accounts.find((a) => a.id === entry.accountId);
     // An unregistered account already makes the lane unselectable, and leaves no
     // folder to read an identity from, so the mismatch check has nothing to add.

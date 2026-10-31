@@ -5,12 +5,27 @@ import { dataDir } from './paths.js';
 
 const MAX_HANDOFF_SIZE = 4096; // 4 KB target
 
+// Built from pieces so the source-tree scan (test/generic.test.js) does not read these
+// patterns as credentials. The prefix plus a run of key characters is enough: the length
+// floors are kept low so a key that was cut short somewhere upstream is still caught.
 const REDACT_PATTERNS = [
-  new RegExp('sk' + '-ant-api03-[a-zA-Z0-9_-]{90,}', 'g'), // Anthropic API Key
-  new RegExp('ya29' + '\\.[a-zA-Z0-9_-]+', 'g'),             // Google OAuth Token
-  new RegExp('gh[pousr]_[a-zA-Z0-9]{36,}', 'g'),       // GitHub Token
-  new RegExp('sk' + '-[a-zA-Z0-9]{48,}', 'g'),              // OpenAI API Key
+  new RegExp('sk' + '-ant-[a-z]+[0-9]*-[a-zA-Z0-9_-]{20,}', 'g'), // Anthropic: API keys, setup and OAuth tokens
+  new RegExp('ya29' + '\\.[a-zA-Z0-9_-]+', 'g'),                    // Google OAuth Token
+  new RegExp('AIza' + '[0-9A-Za-z_-]{30,}', 'g'),                   // Google API key
+  new RegExp('gh[pousr]_[a-zA-Z0-9]{20,}', 'g'),                    // GitHub Token
+  new RegExp('github' + '_pat_[a-zA-Z0-9_]{20,}', 'g'),             // GitHub fine-grained token
+  new RegExp('sk' + '-(?:proj|svcacct|admin)-[a-zA-Z0-9_-]{20,}', 'g'), // OpenAI project and service keys
+  new RegExp('sk' + '-[a-zA-Z0-9]{32,}', 'g'),                      // OpenAI API Key
 ];
+
+/**
+ * The text with every recognized key shape replaced. Exported so a transcript can be
+ * redacted before anything cuts it: a cut inside a key leaves a piece the patterns may
+ * no longer recognize.
+ */
+export function redactSecrets(text) {
+  return redact(text);
+}
 
 function redact(text) {
   if (!text) return '';
@@ -27,6 +42,46 @@ export function getHandoffPath(workspaceDir) {
   const dir = path.join(dataDir(), 'handoffs');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, `${hash}.md`);
+}
+
+/**
+ * The same handoff, trimmed until the document fits the size limit.
+ *
+ * A derived handoff's objective is the first thing the session was ever asked, and for an
+ * automated caller that is often a long prompt on its own. Refusing the whole document over
+ * that left the next lane with no handoff at all, which is the one outcome worse than a
+ * shortened one. So the objective keeps its opening, where a request says what it wants,
+ * and the state keeps its end, where the most recent work is, and each gives up text in
+ * turn until the document fits. Anything that still does not fit is left to the writer to
+ * refuse.
+ */
+export function fitHandoff(data = {}) {
+  const marker = ' [...]';
+  const fits = (d) => Buffer.byteLength(formatHandoff(d), 'utf8') <= MAX_HANDOFF_SIZE;
+  // Redacted BEFORE anything is cut. A cut that lands inside a key leaves a shorter key
+  // the patterns no longer recognize, and most of a key is as good as all of it.
+  let fitted = { ...data };
+  for (const field of ['objective', 'state']) {
+    if (fitted[field] != null) fitted[field] = redact(String(fitted[field]));
+  }
+  if (fits(fitted)) return { data: fitted, trimmed: false };
+  const floor = 200;
+  for (let round = 0; round < 60 && !fits(fitted); round += 1) {
+    const objective = String(fitted.objective ?? '');
+    const state = String(fitted.state ?? '');
+    const over = Buffer.byteLength(formatHandoff(fitted), 'utf8') - MAX_HANDOFF_SIZE;
+    // Take from whichever section is longer, at least the overflow and never past the floor.
+    if (objective.length >= state.length && objective.length > floor) {
+      const keep = Math.max(floor, objective.length - Math.max(over + marker.length, Math.ceil(objective.length / 8)));
+      fitted = { ...fitted, objective: objective.replace(/ \[\.\.\.\]$/, '').slice(0, keep) + marker };
+    } else if (state.length > floor) {
+      const keep = Math.max(floor, state.length - Math.max(over + marker.length, Math.ceil(state.length / 8)));
+      fitted = { ...fitted, state: marker.trim() + ' ' + state.replace(/^\[\.\.\.\] /, '').slice(-keep) };
+    } else {
+      break;
+    }
+  }
+  return { data: fitted, trimmed: true };
 }
 
 export function writeHandoff(workspaceDir, data) {
@@ -114,6 +169,40 @@ export function formatHandoff(data = {}) {
     section('Verification already run', data.verification),
     section('Blockers or risks', data.blockers)
   ].join('\n').trim() + '\n';
+}
+
+/**
+ * The handoff a run derives from a spent session, built on this run's own earlier one.
+ *
+ * `earlier` is what this run last derived ({ objective, state, before, sessionId }), kept in
+ * memory by the run itself rather than read back out of the file, where a request or a
+ * note that happens to contain a section heading would cut it short. `before` is the part
+ * of that state recorded ahead of its own session's work.
+ *
+ * A lane that started from that earlier handoff had the pointer to it as its first
+ * message, not the task, so its own digest has no objective worth keeping, and replacing
+ * the handoff with it would point the next tool at a file that says "read this file". The
+ * earlier handoff holds the real objective, and the work it records came first. So the
+ * objective is kept and this lane's work is added after the earlier state; fitHandoff then
+ * trims the oldest state first if the whole no longer fits.
+ *
+ * One case is not a new lane's work at all: the spent session is the very conversation the
+ * earlier handoff was written from, carried on in another account. Its digest already
+ * holds everything that session did and more, so it replaces that session's part, and only
+ * that part: whatever was recorded before it (other lanes, other tools) is kept.
+ *
+ * Answers the handoff's fields plus `before`, for the run to keep as the next `earlier`.
+ */
+export function derivedHandoffData({ earlier = null, runId, objective, state, sessionId = null, harness }) {
+  const sameConversation = Boolean(earlier && sessionId && earlier.sessionId === sessionId);
+  const before = sameConversation ? (earlier.before ?? '') : (earlier?.state ?? '');
+  return {
+    derivedByRun: runId,
+    objective: earlier?.objective ?? objective,
+    state: before ? `${before}\n\nThen, in the next lane (${harness}):\n${state}` : state,
+    nextActions: DERIVED_NEXT_ACTIONS,
+    before,
+  };
 }
 
 export function generateHandoffPrompt(workspaceDir) {

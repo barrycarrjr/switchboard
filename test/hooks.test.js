@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   DEFAULT_THRESHOLDS,
   normalizeThresholds,
@@ -7,6 +9,8 @@ import {
   buildNotificationPayload,
   checkThresholds,
   dispatchNotification,
+  loadAlertMemory,
+  saveAlertMemory,
 } from '../core/hooks.js';
 import { parseNotifyArgs } from '../core/runargs.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
@@ -146,7 +150,8 @@ test('checkThresholds fires on crossing and suppresses duplicate alerts within s
 
   assert.equal(secondEvents.length, 0);
 
-  // Third pass: usage dropped below threshold (e.g. after turnover or correction), clearing memory
+  // Third pass: a reading below the mark in the same period (two usage sources disagreeing)
+  // is not a new period, so what was said is still remembered.
   const snapshots3 = {
     acc1: {
       windows: [
@@ -164,7 +169,17 @@ test('checkThresholds fires on crossing and suppresses duplicate alerts within s
   });
 
   assert.equal(thirdEvents.length, 0);
-  assert.equal(mem3['acc1:session'], undefined);
+  assert.ok(mem3['acc1:session'], 'a dip inside the period does not forget the alert');
+
+  // Back over the mark in that same period: not said again.
+  const { events: againEvents } = checkThresholds({
+    accounts,
+    snapshots: { acc1: { windows: [{ key: 'session', label: 'Session (5h)', usedPercent: 83, resetsAt: resetTime + 90 }] } },
+    thresholds: { session: 80, week: 85 },
+    memory: mem3,
+    now: now + 700000,
+  });
+  assert.equal(againEvents.length, 0, 'a reset read a few milliseconds differently is the same period');
 
   // Fourth pass: usage crosses threshold again -> fires new alert
   const snapshots4 = {
@@ -285,8 +300,11 @@ test('parseNotifyArgs parses webhook, command, thresholds, test and json flags',
 
   // Clearing webhook and command
   const args2 = parseNotifyArgs(['--webhook', 'none', '--command', 'none']);
-  assert.equal(args2.webhook, 'none');
-  assert.equal(args2.command, 'none');
+  // "none" clears a hook. Kept as the word, a command hook of "none" was run through the
+  // shell on every alert.
+  assert.equal(args2.webhook, null);
+  assert.equal(args2.command, null);
+  assert.equal(parseNotifyArgs(['--command', 'NONE']).command, null);
 
   // Error cases
   assert.throws(() => parseNotifyArgs(['--threshold', 'invalid']), /Use <window>=<percent>/i);
@@ -313,4 +331,111 @@ test('settings persists notify settings and normalizes thresholds', () => {
   assert.equal(s2.notifyWebhookUrl, 'https://hooks.slack.com/services/test');
   assert.equal(s2.notifyCommand, 'python notify.py');
   assert.deepEqual(s2.thresholds, { session: 70, week: 88 });
+});
+
+test('alert memory survives between separate watch runs', () => {
+  const dir = tempDir('sb-hook-');
+  try {
+    const file = path.join(dir, 'alerts.json');
+    const accounts = [{ id: 'acc1', provider: 'claude', label: 'Primary' }];
+    const snapshots = { acc1: { windows: [{ key: 'week', label: 'Week', usedPercent: 90, resetsAt: 9e12 }] } };
+
+    // Two `watch --once` runs: each loads what the last one saved.
+    const first = checkThresholds({ accounts, snapshots, memory: loadAlertMemory(file).hooks.thresholds, now: 1000 });
+    saveAlertMemory('hooks', { thresholds: first.memory, notices: {} }, file);
+    const second = checkThresholds({ accounts, snapshots, memory: loadAlertMemory(file).hooks.thresholds, now: 2000 });
+
+    assert.equal(first.events.length, 1);
+    assert.equal(second.events.length, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('telling the hooks does not count as telling the desktop, and saving one keeps the other', () => {
+  const dir = tempDir('sb-hook-');
+  try {
+    const file = path.join(dir, 'alerts.json');
+    const accounts = [{ id: 'acc1', provider: 'claude', label: 'Primary' }];
+    const snapshots = { acc1: { windows: [{ key: 'week', label: 'Week', usedPercent: 90, resetsAt: 9e12 }] } };
+
+    // A terminal watch tells the hooks first.
+    const hooks = checkThresholds({ accounts, snapshots, memory: loadAlertMemory(file).hooks.thresholds, now: 1000 });
+    saveAlertMemory('hooks', { thresholds: hooks.memory, notices: {} }, file);
+    // The tray still shows it on the desktop.
+    const desk = checkThresholds({ accounts, snapshots, memory: loadAlertMemory(file).tray.thresholds, now: 2000 });
+    saveAlertMemory('tray', { thresholds: desk.memory, notices: {} }, file);
+
+    assert.equal(desk.events.length, 1);
+    assert.ok(loadAlertMemory(file).hooks.thresholds['acc1:week'], 'the tray saving its record kept the hooks record');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a reading whose window has already reset raises no alert', () => {
+  const accounts = [{ id: 'acc1', provider: 'claude', label: 'Primary' }];
+  const now = 10 * 24 * 60 * 60 * 1000;
+  // An old snapshot still marked current: high usage, for a week that ended two days ago.
+  const snapshots = { acc1: { windows: [{ key: 'week', label: 'Week', usedPercent: 92, resetsAt: now - 2 * 24 * 60 * 60 * 1000 }] } };
+  let memory = {};
+  for (let pass = 0; pass < 3; pass += 1) {
+    const { events, memory: next } = checkThresholds({ accounts, snapshots, memory, now: now + pass * 300000 });
+    assert.equal(events.length, 0, `pass ${pass}`);
+    memory = next;
+  }
+});
+
+test('an unreadable alert memory file reads as nothing said yet', () => {
+  const dir = tempDir('sb-hook-');
+  try {
+    const file = path.join(dir, 'alerts.json');
+    fs.writeFileSync(file, 'not json');
+    const empty = { thresholds: {}, notices: {} };
+    assert.deepEqual(loadAlertMemory(file), { hooks: empty, tray: empty });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a command hook saved as the word "none" by an older version reads as no hook', () => {
+  const dir = tempDir('sb-hook-');
+  try {
+    const file = path.join(dir, 'settings.json');
+    fs.writeFileSync(file, JSON.stringify({ notifyCommand: 'none' }));
+    assert.equal(loadSettings(file).notifyCommand, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('notify --command none clears a saved command rather than saving the word', () => {
+  const dir = tempDir('sb-hook-');
+  try {
+    const file = path.join(dir, 'settings.json');
+    saveSettings({ ...loadSettings(file), notifyCommand: 'echo alert', notifyWebhookUrl: 'https://example.invalid/hook' }, file);
+    const parsed = parseNotifyArgs(['--command', 'none', '--webhook', 'none']);
+    saveSettings({ ...loadSettings(file), notifyCommand: parsed.command, notifyWebhookUrl: parsed.webhook }, file);
+    const after = loadSettings(file);
+    assert.equal(after.notifyCommand, null);
+    assert.equal(after.notifyWebhookUrl, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readings that take turns stating and not stating a reset raise one alert per period', () => {
+  const accounts = [{ id: 'acc1', provider: 'claude', label: 'Primary' }];
+  const start = 1_000_000_000;
+  const reset = start + 3 * 24 * 60 * 60 * 1000;
+  const stated = { acc1: { windows: [{ key: 'week', label: 'Week', usedPercent: 90, resetsAt: reset }] } };
+  const unstated = { acc1: { windows: [{ key: 'week', label: 'Week', usedPercent: 90 }] } };
+  let memory = {};
+  let alerts = 0;
+  [unstated, stated, unstated, stated, unstated].forEach((snapshots, pass) => {
+    const result = checkThresholds({ accounts, snapshots, memory, now: start + pass * 300000 });
+    alerts += result.events.length;
+    memory = result.memory;
+  });
+  assert.equal(alerts, 1);
 });

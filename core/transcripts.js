@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { redactSecrets } from './handoff.js';
 
 /**
  * Carrying a Claude session from one account to the next.
@@ -24,9 +25,9 @@ import path from 'node:path';
  *    file to carry. Picking the most recently modified file instead would take the wrong
  *    conversation whenever two sessions share a working directory, which is normal on a
  *    machine running several agents.
- *  - Every step is allowed to fail. A missing transcript, a destination that already
- *    holds that session, an unreadable folder: each one falls back to the fresh start
- *    that used to be the only behaviour. A failover that continues is better than one
+ *  - Every step is allowed to fail. A missing transcript, a destination holding a
+ *    different conversation under that id, an unreadable folder: each one falls back to
+ *    the fresh start that used to be the only behavior. A failover that continues is better than one
  *    that restarts, and a failover that restarts is far better than one that dies.
  *
  * Only Claude Code is handled here. Codex keeps its own sessions in a different layout
@@ -65,28 +66,77 @@ export function newSessionId() {
 const SESSION_FLAGS = new Set(['--session-id', '--resume', '-r', '--continue', '-c', '--fork-session']);
 
 export function callerManagesSession(args = []) {
-  return args.some((a) => SESSION_FLAGS.has(a));
+  // `--resume=<id>` and `--session-id=<id>` are the same flags in their other spelling.
+  return args.some((a) => SESSION_FLAGS.has(String(a).split('=')[0]));
 }
 
 /**
  * The session a command line names outright, with `--session-id <id>` or `--resume <id>`,
  * or null when it names none.
  *
- * Only for READING that session afterwards, to write a handoff from it. A caller that
- * builds its own command line names its own sessions, so Switchboard does not name one and
- * used to conclude it had no way of finding the transcript. It has: the id is right there
- * on the command line it was given. That is not licence to CARRY such a session to another
- * account, which stays the caller's business (see callerManagesSession). `--continue` and
- * a bare `--resume` name nothing, so they give null and no handoff is derived.
+ * A caller that builds its own command line names its own sessions, so Switchboard does
+ * not name one, and the id is read from the command line instead. That is enough both to
+ * write a handoff from the session and to carry it to the next account (sessionToCarry).
+ * `--continue` and a bare `--resume` name nothing, so they give null.
  */
 export function namedSession(args = []) {
-  for (let i = 0; i < args.length - 1; i += 1) {
+  for (let i = 0; i < args.length; i += 1) {
+    const joined = /^(--session-id|--resume)=(.*)$/.exec(String(args[i]));
+    if (joined && UUID_SHAPE.test(joined[2])) return joined[2];
     if (args[i] !== '--session-id' && args[i] !== '--resume' && args[i] !== '-r') continue;
     const id = String(args[i + 1] ?? '');
-    if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id)) return id;
+    if (UUID_SHAPE.test(id)) return id;
   }
   return null;
 }
+
+/**
+ * The session a run on this command line can be carried on with, or null.
+ *
+ * Whoever named it, Switchboard or the caller, the conversation is the same file, and
+ * following the work to the next account is what makes the pool feel like one account.
+ * Two forms name nothing usable: `--continue` picks whatever was newest in the folder,
+ * and `--fork-session` writes a NEW session whose id is not on the command line, so the
+ * id that is there belongs to a conversation this run did not add to.
+ */
+export function sessionToCarry(args = []) {
+  if (args.some((a) => a === '--fork-session' || a === '--continue' || a === '-c')) return null;
+  return namedSession(args);
+}
+
+/**
+ * The session a command line asks to resume (`--resume <id>`, `-r <id>`, `--resume=<id>`),
+ * or null. A fork counts: it has to read the conversation it forks from.
+ */
+export function resumedSession(args = []) {
+  for (let i = 0; i < args.length; i += 1) {
+    const joined = /^--resume=(.*)$/.exec(String(args[i]));
+    if (joined && UUID_SHAPE.test(joined[1])) return joined[1];
+    if ((args[i] === '--resume' || args[i] === '-r') && UUID_SHAPE.test(String(args[i + 1] ?? ''))) return args[i + 1];
+  }
+  return null;
+}
+
+/**
+ * The same command line with any session it names taken out, so `--resume` can be put in
+ * front without the session being named twice.
+ */
+export function withoutNamedSession(args = []) {
+  const kept = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const joined = /^(--session-id|--resume)=(.*)$/.exec(String(args[i]));
+    if (joined && UUID_SHAPE.test(joined[2])) continue;
+    const flag = args[i] === '--session-id' || args[i] === '--resume' || args[i] === '-r';
+    if (flag && UUID_SHAPE.test(String(args[i + 1] ?? ''))) {
+      i += 1;
+      continue;
+    }
+    kept.push(args[i]);
+  }
+  return kept;
+}
+
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
 
 /**
  * The command line to launch with, with the session named so it can be found again.
@@ -107,15 +157,73 @@ export function withSessionId(args = [], sessionId) {
  * simply reopens the session.
  */
 export function resumeArgs(args = [], sessionId) {
-  return ['--resume', sessionId, ...args];
+  return ['--resume', sessionId, ...withoutNamedSession(args)];
+}
+
+/**
+ * How one copy of a transcript stands against another: 'behind' when `olderFile` holds
+ * exactly the first part of `newerFile` and `newerFile` has more, 'same' when the two are
+ * identical, and 'different' otherwise (or when either cannot be read).
+ *
+ * A Claude transcript only ever grows at the end, so an account holding a shorter copy
+ * that matches byte for byte is simply behind: the conversation went on in another
+ * account. Replacing that copy loses nothing. A copy that differs anywhere is a
+ * conversation of its own and is never touched. Compared in chunks, because a transcript
+ * can run to hundreds of megabytes.
+ */
+export function compareCopies(olderFile, newerFile, fsImpl = fs) {
+  let a;
+  let b;
+  try {
+    const olderSize = fsImpl.statSync(olderFile).size;
+    const newerSize = fsImpl.statSync(newerFile).size;
+    if (olderSize > newerSize) return 'different';
+    a = fsImpl.openSync(olderFile, 'r');
+    b = fsImpl.openSync(newerFile, 'r');
+    const size = 1024 * 1024;
+    const bufA = Buffer.alloc(size);
+    const bufB = Buffer.alloc(size);
+    for (let at = 0; at < olderSize; at += size) {
+      const want = Math.min(size, olderSize - at);
+      const gotA = fsImpl.readSync(a, bufA, 0, want, at);
+      const gotB = fsImpl.readSync(b, bufB, 0, want, at);
+      if (gotA !== want || gotB !== want || !bufA.subarray(0, want).equals(bufB.subarray(0, want))) return 'different';
+    }
+    return olderSize === newerSize ? 'same' : 'behind';
+  } catch {
+    return 'different';
+  } finally {
+    for (const fd of [a, b]) if (fd !== undefined) try { fsImpl.closeSync(fd); } catch { /* already gone */ }
+  }
+}
+
+/** Whether `olderFile` is an older copy of the same conversation as `newerFile`. */
+export function isOlderCopy(olderFile, newerFile, fsImpl = fs) {
+  return compareCopies(olderFile, newerFile, fsImpl) === 'behind';
+}
+
+/** Replace an older copy with the newer one, through a temporary file so a reader never
+ * sees half a transcript. */
+function refreshCopy(source, target, fsImpl) {
+  const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fsImpl.copyFileSync(source, temp);
+    fsImpl.renameSync(temp, target);
+  } catch (e) {
+    // Never leave a half-made copy in the account's projects folder.
+    try { fsImpl.rmSync?.(temp, { force: true }); } catch { /* already gone */ }
+    throw e;
+  }
 }
 
 /**
  * Copy one session's transcript from the spent account into the incoming one.
  *
- * Never overwrites: a destination that already holds this session is left exactly as it
- * is, because that file is the incoming account's own history and the copy would destroy
- * it. Never moves either, so the spent account keeps its record of what it did.
+ * Never destroys anything. A destination that already holds this session keeps it, unless
+ * its copy is an older one of the very same conversation (see isOlderCopy), which is the
+ * normal case once work has moved between two accounts and back: that copy is brought up
+ * to date, because resuming it would silently drop everything done since. Never moves
+ * either, so the spent account keeps its record of what it did.
  *
  * Answers a plain outcome rather than throwing, since every failure here has the same
  * remedy (start fresh) and none of them should end the run.
@@ -129,7 +237,14 @@ export function carryTranscript({ fromHome, toHome, cwd, sessionId, fsImpl = fs 
 
   try {
     if (!fsImpl.existsSync(source)) return { carried: false, reason: 'no-transcript' };
-    if (fsImpl.existsSync(target)) return { carried: false, reason: 'already-there', target };
+    if (fsImpl.existsSync(target)) {
+      const standing = compareCopies(target, source, fsImpl);
+      // An identical copy is already the conversation: nothing to copy, and it resumes.
+      if (standing === 'same') return { carried: true, alreadyCurrent: true, source, target };
+      if (standing !== 'behind') return { carried: false, reason: 'already-there', target };
+      refreshCopy(source, target, fsImpl);
+      return { carried: true, refreshed: true, source, target };
+    }
     fsImpl.mkdirSync(path.dirname(target), { recursive: true });
     // COPYFILE_EXCL makes the no-overwrite promise the filesystem's job rather than a
     // race between the check above and the write: another session in the same directory
@@ -139,6 +254,52 @@ export function carryTranscript({ fromHome, toHome, cwd, sessionId, fsImpl = fs 
   } catch (e) {
     // Includes the EEXIST that COPYFILE_EXCL raises when something won that race.
     return { carried: false, reason: e.code === 'EEXIST' ? 'already-there' : 'copy-failed', error: String(e.message || e) };
+  }
+}
+
+/**
+ * Before an account resumes a session, make sure it holds the newest copy there is.
+ *
+ * A caller that keeps a conversation going over many requests (a chat bot answering a
+ * thread, say) asks for `--resume <id>` each time, and each request can land on a
+ * different account: the pool picks whichever has room. The conversation lives in the
+ * account folder it last ran in, so the account picked next either has no copy at all
+ * ("No conversation found") or an older one, and quietly continues from an earlier
+ * point. This looks across every other registered Claude folder for the same session in
+ * the same working directory and brings the newest copy over when the account about to
+ * run has none, or has an older copy of the same conversation (isOlderCopy). A copy that
+ * differs is a conversation of its own and is never replaced.
+ *
+ * Answers what happened and never throws: a run that cannot be synced is no worse off
+ * than it was before this existed.
+ */
+export function syncSessionInto({ toHome, otherHomes = [], cwd, sessionId, fsImpl = fs } = {}) {
+  if (!toHome || !cwd || !sessionId) return { synced: false, reason: 'incomplete' };
+  const target = transcriptFile(toHome, cwd, sessionId);
+  try {
+    const hasTarget = fsImpl.existsSync(target);
+    const candidates = [];
+    for (const home of otherHomes) {
+      if (!home || path.resolve(home).toLowerCase() === path.resolve(toHome).toLowerCase()) continue;
+      const file = transcriptFile(home, cwd, sessionId);
+      if (!fsImpl.existsSync(file)) continue;
+      if (hasTarget && !isOlderCopy(target, file, fsImpl)) continue;
+      const stat = fsImpl.statSync(file);
+      candidates.push({ file, home, size: stat.size, mtimeMs: stat.mtimeMs });
+    }
+    if (!candidates.length) return { synced: false, reason: hasTarget ? 'up-to-date' : 'nowhere' };
+    // The longest is the furthest along; where two are the same length, the newest.
+    candidates.sort((x, y) => (y.size - x.size) || (y.mtimeMs - x.mtimeMs));
+    const best = candidates[0];
+    if (hasTarget) {
+      refreshCopy(best.file, target, fsImpl);
+    } else {
+      fsImpl.mkdirSync(path.dirname(target), { recursive: true });
+      fsImpl.copyFileSync(best.file, target, fs.constants.COPYFILE_EXCL);
+    }
+    return { synced: true, from: best.home, refreshed: hasTarget };
+  } catch (e) {
+    return { synced: false, reason: 'copy-failed', error: String(e.message || e) };
   }
 }
 
@@ -231,6 +392,12 @@ export const TRANSCRIPTS = {
       // 'developer' is instruction Codex injects for itself, not the conversation.
       if (role !== 'user' && role !== 'assistant') return null;
       const text = messageText(record.payload.content, ['input_text', 'output_text', 'text']);
+      // Codex files the context it injects for itself (the working folder, the project's
+      // instructions file) as user messages too. Read as the first request, that block
+      // became a handoff's objective instead of the task. Seen in real Codex sessions.
+      // The instructions block comes as "# AGENTS.md instructions for <folder>" for a
+      // project's file and as plain "# AGENTS.md instructions" for the global one.
+      if (role === 'user' && /^(?:<(?:environment_context|user_instructions)>|# AGENTS\.md instructions\b)/.test(text)) return null;
       return text ? { role, text, key: record.payload.id ?? `${record.timestamp}:${record.ordinal}` } : null;
     },
   },
@@ -344,8 +511,10 @@ export function sessionDigest({ harness = 'claude', home, cwd, sessionId, since 
   const turns = readSessionTurns(file, { harness, fsImpl });
   if (!turns.length) return null;
 
+  // Redacted here, before the state budget cuts anything: a cut inside a key leaves a
+  // piece the patterns may no longer recognize, and this text goes to another vendor.
   const objective = turns.find((t) => t.role === 'user')?.text ?? null;
-  const said = turns.filter((t) => t.role === 'assistant').map((t) => t.text);
+  const said = turns.filter((t) => t.role === 'assistant').map((t) => redactSecrets(t.text));
   if (!objective && !said.length) return null;
 
   const kept = [];
@@ -361,7 +530,7 @@ export function sessionDigest({ harness = 'claude', home, cwd, sessionId, since 
   if (!kept.length && said.length) kept.push(said[said.length - 1].slice(-budget));
 
   return {
-    objective: objective ?? 'Not recorded in the transcript.',
+    objective: objective == null ? 'Not recorded in the transcript.' : redactSecrets(objective),
     state: kept.join('\n\n'),
     turns: turns.length,
     truncated: kept.length < said.length,
@@ -372,7 +541,7 @@ export function sessionDigest({ harness = 'claude', home, cwd, sessionId, since 
 export function carryNote(reason) {
   switch (reason) {
     case 'no-transcript': return 'the spent lane left no transcript to carry, so this lane starts fresh';
-    case 'already-there': return 'this lane already has that session, so it was left alone and this lane starts fresh';
+    case 'already-there': return 'this lane already holds a different conversation under that session id, so it was left alone and not resumed from the spent lane';
     case 'copy-failed': return 'the transcript could not be copied, so this lane starts fresh';
     case 'caller-managed': return 'the session was named on your own command line, so it is yours to resume';
     case 'unsupported-harness': return 'only Claude sessions can be carried, so this lane starts fresh';

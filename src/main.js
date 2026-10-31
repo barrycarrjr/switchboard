@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, Notification, screen, safeStorage } from 'electron';
+import { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, Notification, screen } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -13,7 +13,7 @@ import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { signOutAccount, signoutSupported } from '../core/signout.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
-import { registerVaultDriver } from '../core/vault.js';
+// import { registerVaultDriver } from '../core/vault.js';
 import { validateLaneTokens, mergeLaneTokenResults } from '../core/lane-tokens.js';
 import { maybeUpdateAgy } from '../core/agy-updates.js';
 import { detectApps, getStartApps, launchApp, orderApps, antigravityPresence, resolvePackagedExe, APPS } from '../core/apps.js';
@@ -39,7 +39,7 @@ import { accountNote, colorDotBitmap, loginStatesFrom, trayModel, trayTooltip } 
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
-import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText } from '../core/hooks.js';
+import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let win = null;
@@ -55,16 +55,23 @@ if (!app.requestSingleInstanceLock()) {
 
 app.setAppUserModelId('io.switchboard.app');
 
-// Register Windows DPAPI credential vault via Electron safeStorage when available
-try {
-  if (safeStorage && typeof safeStorage.isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable()) {
-    registerVaultDriver({
-      id: 'dpapi',
-      encrypt: (plain) => safeStorage.encryptString(plain).toString('base64'),
-      decrypt: (cipher) => safeStorage.decryptString(Buffer.from(cipher, 'base64')),
-    });
-  }
-} catch {}
+// Lane tokens are deliberately NOT encrypted with Electron's safeStorage (Windows DPAPI).
+// The command line is plain Node and cannot decrypt what safeStorage writes, so once the
+// tray had saved settings, `dry-run --with-token` would have handed automation the
+// encrypted text and `switchboard watch` would have marked a good token dead. The tray
+// and the CLI must read the same file the same way, so both use core/vault.js's own
+// scheme. This block never actually ran: it sat above app.whenReady, and on Windows
+// safeStorage reports itself unavailable until the app is ready. Kept, disabled, as the
+// way back if the CLI ever gains a way to read DPAPI.
+// try {
+//   if (safeStorage && typeof safeStorage.isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable()) {
+//     registerVaultDriver({
+//       id: 'dpapi',
+//       encrypt: (plain) => safeStorage.encryptString(plain).toString('base64'),
+//       decrypt: (cipher) => safeStorage.decryptString(Buffer.from(cipher, 'base64')),
+//     });
+//   }
+// } catch {}
 
 function registry() {
   return loadRegistry();
@@ -625,18 +632,17 @@ function setWatchMode(mode) {
   const settings = loadSettings();
   settings.quotaWatch = mode;
   saveSettings(settings);
-  // Choosing a mode again is asking to be told again.
-  watchNotices = {};
-  thresholdMemory = {};
+  // Choosing a mode again is asking to be told again. Threshold alerts are not part of
+  // that: they are said once per reset period whatever the watch is set to.
+  saveAlertMemory('tray', { ...loadAlertMemory().tray, notices: {} });
   refresh();
   if (mode !== 'off') runQuotaWatch();
 }
 
 let pinNotified = false;
-// What the watch has already told the user, so an unchanged suggestion or "no account has
-// room" is said once rather than every five minutes. See freshNotices.
-let watchNotices = {};
-let thresholdMemory = {};
+// What the watch has already said (an unchanged suggestion, "no account has room", a
+// threshold alert) is kept on disk, one record for the desktop and one for the hooks,
+// the second shared with `switchboard watch`. See loadAlertMemory and freshNotices.
 
 function configuredClaudeOverrides() {
   return configuredClaudeCredentialOverrides({
@@ -754,18 +760,27 @@ async function runQuotaWatch() {
     }
     refreshTray();
 
-    const { events: thresholdEvents, memory: nextThresh } = checkThresholds({
+    // Judged twice, once per audience: the desktop and the hooks each hear an alert once,
+    // and a terminal watch that already told the hooks does not silence the desktop.
+    // See loadAlertMemory.
+    const told = loadAlertMemory();
+    const thresholdCheck = (memory) => checkThresholds({
       accounts: reg.accounts,
       snapshots,
       thresholds: settings.thresholds,
-      memory: thresholdMemory,
+      memory,
       now: Date.now(),
     });
-    thresholdMemory = nextThresh;
+    const forDesk = thresholdCheck(told.tray.thresholds);
+    const forHooks = thresholdCheck(told.hooks.thresholds);
+    saveAlertMemory('tray', { ...told.tray, thresholds: forDesk.memory });
+    saveAlertMemory('hooks', { ...told.hooks, thresholds: forHooks.memory });
 
-    for (const ev of thresholdEvents) {
-      dispatchNotification(settings, buildNotificationPayload(ev));
+    for (const ev of forDesk.events) {
       new Notification({ title: 'Switchboard quota alert', body: formatNotificationText(ev) }).show();
+    }
+    for (const ev of forHooks.events) {
+      dispatchNotification(settings, buildNotificationPayload(ev));
     }
 
     if (settings.quotaWatch === 'off') return;
@@ -783,8 +798,19 @@ async function runQuotaWatch() {
       now: Date.now(),
     });
 
-    const { notices, memory } = freshNotices(switchDecisions, watchNotices, activeIds);
-    watchNotices = memory;
+    const toldNow = loadAlertMemory();
+    const { notices, memory } = freshNotices(switchDecisions, toldNow.tray.notices, activeIds);
+    const { notices: hookNotices, memory: hookMemory } = freshNotices(switchDecisions, toldNow.hooks.notices, activeIds);
+    saveAlertMemory('tray', { ...toldNow.tray, notices: memory });
+    saveAlertMemory('hooks', { ...toldNow.hooks, notices: hookMemory });
+
+    // "No account has room" goes to the hooks once for each time it happens, whether or
+    // not the desktop already showed it.
+    for (const decision of switchDecisions) {
+      if (decision.kind === 'exhausted' && hookNotices.includes(decision)) {
+        dispatchNotification(settings, buildNotificationPayload({ kind: 'exhausted', event: 'quota_exhausted', provider: decision.provider, resetsAt: decision.resetsAt }));
+      }
+    }
 
     for (const decision of switchDecisions) {
       if ((decision.kind === 'exhausted' || decision.kind === 'suggest') && !notices.includes(decision)) continue;
@@ -799,7 +825,6 @@ async function runQuotaWatch() {
       if (decision.kind === 'exhausted') {
         const when = decision.resetsAt ? ` Earliest reset: ${new Date(decision.resetsAt).toLocaleString()}.` : '';
         new Notification({ title: 'Switchboard', body: `No signed-in ${decision.provider} account with readable quota has room.${when}` }).show();
-        dispatchNotification(settings, buildNotificationPayload({ kind: 'exhausted', event: 'quota_exhausted', provider: decision.provider, resetsAt: decision.resetsAt }));
         continue;
       }
       if (decision.kind === 'switch') {

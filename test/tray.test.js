@@ -590,6 +590,10 @@ test('trayTooltip prioritizes active accounts across providers when multiple acc
   assert.ok(text.includes('Claude Code:'));
   assert.ok(text.includes('Codex:'));
   assert.ok(text.includes('Antigravity:'));
+  // Two Claude accounts were left out to make room, and the hover says so.
+  if (!text.includes('backup-acct') && !text.includes('secondary-acct2')) {
+    assert.match(text, /and \d+ more/, `the accounts left out must be counted:\n${text}`);
+  }
 });
 
 test('an account row and its terminal entry carry the account color, and a plain one carries none', () => {

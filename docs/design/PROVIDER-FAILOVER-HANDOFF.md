@@ -156,7 +156,7 @@ flag, so its session is recognised after the fact by the working directory recor
 load bearing. Without it a rollout left behind by earlier work in the same directory would
 be handed over as the current task, which is worse than handing over nothing.
 
-Gemini and Qwen are not readable yet, so a hop involving either still starts fresh. Adding
+No other tool (Gemini, Qwen, Antigravity) is readable yet, so a hop away from one still starts fresh. Adding
 one needs a table entry and a session layout somebody has actually checked, not assumed.
 
 A handoff already written for the workspace is used untouched rather than generated over.

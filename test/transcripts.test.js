@@ -12,12 +12,19 @@ import {
   namedSession,
   withSessionId,
   resumeArgs,
+  sessionToCarry,
+  resumedSession,
+  withoutNamedSession,
+  isOlderCopy,
+  syncSessionInto,
   carryTranscript,
   carryNote,
   readSessionTurns,
   sessionDigest,
+  DIGEST_STATE_BUDGET,
   findCodexSession,
   transcriptSupport,
+  TRANSCRIPTS,
 } from '../core/transcripts.js';
 
 /** A pair of account folders and a working directory, thrown away after each test. */
@@ -564,4 +571,147 @@ test('only a session proven portable is marked carryable', () => {
   // unproven yes here would silently lose a run's work.
   assert.equal(transcriptSupport('codex').carryable, false);
   assert.deepEqual(CARRYABLE_HARNESSES, ['claude']);
+});
+
+const SID = '0b8c7a52-6f1e-4d3a-9c2b-7e5f4a3d2c1b';
+
+test('sessionToCarry follows a session whoever named it, but not one that names nothing new', () => {
+  assert.equal(sessionToCarry(['--session-id', SID, '-p']), SID);
+  assert.equal(sessionToCarry(['--resume', SID, '-p']), SID);
+  assert.equal(sessionToCarry(['-p', 'hello']), null);
+  assert.equal(sessionToCarry(['--continue']), null);
+  assert.equal(sessionToCarry(['--resume', SID, '--fork-session']), null, 'a fork writes a session whose id is not on the line');
+});
+
+test('a session named with --resume=<id> or --session-id=<id> is the caller naming it', () => {
+  assert.equal(callerManagesSession([`--resume=${SID}`, '-p']), true);
+  assert.equal(callerManagesSession([`--session-id=${SID}`]), true);
+  assert.equal(namedSession(['-p', `--resume=${SID}`]), SID);
+  assert.deepEqual(resumeArgs([`--session-id=${SID}`, '-p'], SID), ['--resume', SID, '-p']);
+});
+
+test('carryTranscript resumes an identical copy the incoming account already holds', () => {
+  const f = fixture();
+  try {
+    seedTranscript(f.fromHome, f.cwd, 'sid-1', 'turn-1\n');
+    seedTranscript(f.toHome, f.cwd, 'sid-1', 'turn-1\n');
+    const result = carryTranscript({ fromHome: f.fromHome, toHome: f.toHome, cwd: f.cwd, sessionId: 'sid-1' });
+    assert.equal(result.carried, true);
+    assert.equal(result.alreadyCurrent, true);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('resumeArgs names the carried session once, replacing whatever the line named before', () => {
+  assert.deepEqual(resumeArgs(['--session-id', SID, '-p', 'x'], SID), ['--resume', SID, '-p', 'x']);
+  assert.deepEqual(resumeArgs(['-p', '--resume', SID], SID), ['--resume', SID, '-p']);
+  assert.deepEqual(withoutNamedSession(['--resume', '--model', 'x']), ['--resume', '--model', 'x'], 'a flag is not an id');
+});
+
+test('isOlderCopy recognizes a copy that is simply behind, and nothing else', () => {
+  const f = fixture();
+  try {
+    const older = seedTranscript(f.toHome, f.cwd, 'sid-1', 'a\nb\n');
+    const newer = seedTranscript(f.fromHome, f.cwd, 'sid-1', 'a\nb\nc\n');
+    assert.equal(isOlderCopy(older, newer), true);
+    assert.equal(isOlderCopy(newer, older), false, 'the longer one is not behind');
+    const diverged = seedTranscript(f.fromHome, f.cwd, 'sid-2', 'a\nX\nc\n');
+    assert.equal(isOlderCopy(older, diverged), false, 'a copy that differs is its own conversation');
+    assert.equal(isOlderCopy(older, older), false, 'the same file is not behind itself');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('carryTranscript brings an older copy of the same conversation up to date', () => {
+  const f = fixture();
+  try {
+    seedTranscript(f.fromHome, f.cwd, 'sid-1', 'turn-1\nturn-2\nturn-3\n');
+    const target = seedTranscript(f.toHome, f.cwd, 'sid-1', 'turn-1\n');
+
+    const result = carryTranscript({ fromHome: f.fromHome, toHome: f.toHome, cwd: f.cwd, sessionId: 'sid-1' });
+
+    assert.equal(result.carried, true);
+    assert.equal(result.refreshed, true);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'turn-1\nturn-2\nturn-3\n');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('syncSessionInto brings a conversation to an account that has never held it', () => {
+  const f = fixture();
+  try {
+    seedTranscript(f.fromHome, f.cwd, SID, 'turn-1\n');
+    const result = syncSessionInto({ toHome: f.toHome, otherHomes: [f.fromHome, f.toHome], cwd: f.cwd, sessionId: SID });
+    assert.equal(result.synced, true);
+    assert.equal(fs.readFileSync(transcriptFile(f.toHome, f.cwd, SID), 'utf8'), 'turn-1\n');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('syncSessionInto takes the copy that went furthest and refreshes one that is behind', () => {
+  const f = fixture();
+  try {
+    const third = path.join(f.root, 'account-c');
+    seedTranscript(f.fromHome, f.cwd, SID, 'turn-1\nturn-2\n');
+    seedTranscript(third, f.cwd, SID, 'turn-1\nturn-2\nturn-3\n');
+    const target = seedTranscript(f.toHome, f.cwd, SID, 'turn-1\n');
+    const result = syncSessionInto({ toHome: f.toHome, otherHomes: [f.fromHome, third], cwd: f.cwd, sessionId: SID });
+    assert.equal(result.synced, true);
+    assert.equal(result.from, third);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'turn-1\nturn-2\nturn-3\n');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('syncSessionInto never replaces a copy that differs from the others', () => {
+  const f = fixture();
+  try {
+    seedTranscript(f.fromHome, f.cwd, SID, 'turn-1\nturn-2\n');
+    const target = seedTranscript(f.toHome, f.cwd, SID, 'other-1\n');
+    const result = syncSessionInto({ toHome: f.toHome, otherHomes: [f.fromHome], cwd: f.cwd, sessionId: SID });
+    assert.equal(result.synced, false);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'other-1\n');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('resumedSession reads every spelling of resume, including a fork', () => {
+  assert.equal(resumedSession(['--resume', SID, '-p']), SID);
+  assert.equal(resumedSession(['-r', SID]), SID);
+  assert.equal(resumedSession([`--resume=${SID}`]), SID);
+  assert.equal(resumedSession(['--resume', SID, '--fork-session']), SID, 'a fork reads the conversation it forks from');
+  assert.equal(resumedSession(['--session-id', SID]), null, 'naming a new session resumes nothing');
+});
+
+test('a key in a long reply is redacted before the reply is cut to fit', () => {
+  const f = fixture();
+  try {
+    // Assembled at runtime so the source-tree scan does not see a credential shape here.
+    const key = ['sk', 'ant', 'api03', 'Z'.repeat(82)].join('-');
+    // The tail kept for the state starts inside the key, past its prefix.
+    const reply = 'x'.repeat(100) + key + 'y'.repeat(DIGEST_STATE_BUDGET - 50);
+    seedTranscript(f.fromHome, f.cwd, SID,
+      JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'do it' } }) + '\n' +
+      JSON.stringify({ type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: reply }] } }) + '\n');
+    const digest = sessionDigest({ harness: 'claude', home: f.fromHome, cwd: f.cwd, sessionId: SID });
+    assert.equal(digest.state.includes('Z'.repeat(20)), false, 'no part of the key may survive the cut');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('context Codex injects for itself is never taken for the request', () => {
+  const turn = TRANSCRIPTS.codex.turn;
+  const user = (text) => ({ type: 'response_item', payload: { type: 'message', role: 'user', id: text.slice(0, 8), content: [{ type: 'input_text', text }] } });
+  assert.equal(turn(user('<environment_context>\n  <cwd>C:/work</cwd>\n</environment_context>')), null);
+  assert.equal(turn(user('# AGENTS.md instructions for C:/work\n\nBe brief.')), null);
+  assert.equal(turn(user('# AGENTS.md instructions\n\nUse tabs.')), null);
+  assert.equal(turn(user('# AGENTS.md instructionsless request')).text, '# AGENTS.md instructionsless request');
+  assert.equal(turn(user('Rename the login helper')).text, 'Rename the login helper');
 });

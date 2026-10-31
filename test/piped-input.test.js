@@ -223,3 +223,19 @@ test('recording never holds the process open on its own', () => {
   recordPipedInput(source);
   assert.equal(unrefs, 1);
 });
+
+test('nothingArrived tells a caller that piped nothing from one whose input is still coming', async () => {
+  const empty = new PassThrough();
+  const none = recordPipedInput(empty);
+  none.attach(sink().stream);
+  empty.end();
+  await settle();
+  assert.equal(none.nothingArrived(), true);
+
+  const open = new PassThrough();
+  const coming = recordPipedInput(open);
+  coming.attach(sink().stream);
+  open.write('part of a prompt');
+  await settle();
+  assert.equal(coming.nothingArrived(), false, 'input still arriving is not nothing');
+});

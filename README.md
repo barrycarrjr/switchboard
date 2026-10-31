@@ -48,8 +48,8 @@ For deep-dives into architecture, guides, and full command references, see the *
   never reusing a folder that already exists) and opens the vendor's sign-in pointed at
   it, so a subscription that has never been used on this machine can be added. A folder
   that already holds a login can still be picked by hand from the same form.
-  `switchboard add <tool> <label>` does the same from a terminal when the folder is left
-  out.
+  `switchboard add <tool> <label>` makes the folder the same way from a terminal when the
+  folder is left out, and prints the sign-in command to run in it.
 - An account can have a color, so it is easy to tell at a glance which one you are using,
   and so it can match the color T3 Code shows it in. Click the dot after an account's name
   on the Accounts or Lanes tab to pick one, type a hex value, or clear it. The card gets a
@@ -94,28 +94,40 @@ For deep-dives into architecture, guides, and full command references, see the *
   registered account it is signed in as, and lets you add a folder kept anywhere else.
   Signing in stays the app's own job, and an app that keeps one login per machine
   (Antigravity), switches accounts inside itself (T3 Code), or has no account at all
-  (LM Studio) keeps its plain button.
+  (LM Studio) keeps its plain button. So does the Codex app, until opening it on a
+  chosen account has been checked to work.
 - Account switching and usage display store no secrets. Quota display reads each
   account's own credentials file transiently and calls the vendor usage endpoint; that
   token is never persisted or logged. The one secret Switchboard does keep is a lane
-  token you mint yourself for automation, held in plain text in its own settings file.
+  token you mint yourself for automation, stored encrypted in its own settings file.
   See `lane-token` under Development.
 - Usage is shown wherever the vendor gives an honest source. Claude and Codex both read
-  the account's own sign-in and ask the vendor what that account has spent. When a Codex
-  check is refused, usually a token its CLI has not refreshed in a while, Switchboard
-  falls back to the rate-limit reply the CLI already recorded in that account's session
-  log, says why it is standing in, and always shows when the snapshot was taken rather
-  than passing it off as live. Gemini and Qwen publish nothing, and the card says so
-  instead of showing an empty bar.
+  the account's own sign-in and ask the vendor what that account has spent. When a check
+  is refused, Switchboard falls back to a record the vendor's own software already keeps:
+  for Claude, the usage log Claude Desktop writes for the same organization; for Codex,
+  the rate-limit reply its CLI recorded in that account's session log (usually the cause
+  is a token that CLI has not refreshed in a while). It says why the fallback is standing
+  in, and always shows when the snapshot was taken rather than passing it off as live.
+  Antigravity's usage is read by asking its own CLI. Gemini and Qwen publish nothing, and
+  the card says so instead of showing an empty bar.
+- Claude plans differ in which windows they have. Most have a five-hour session window and
+  a weekly one. Ultra (formerly Max 20x) has no five-hour window, only the weekly one plus
+  a weekly cap on the Fable model. Everything below that mentions the five-hour window
+  applies only where the account has one. The Fable cap is shown on the card, but it is
+  not one of the limits that moves the default or picks a lane, and it raises no alert
+  unless you set a threshold for it (see `switchboard notify`).
 - Hovering over the tray icon shows every signed-in account for each installed provider
-  and, where the provider reports them, that account's five-hour and weekly usage. The
-  hover never starts a provider request: it consumes readings already made by the
-  Accounts page or an enabled quota watch, using a compact layout when that is what lets
-  all of them fit in Windows' tooltip limit. Each provider is a heading, with its accounts
-  indented beneath it, the account in use first. Normal
-  reads are shared for five minutes. The icon already identifies Switchboard, so the hover
-  spends none of the limit repeating the app name. A rate-limited response backs automatic
-  checks off for thirty minutes. A rejected
+  and, where the provider reports them, that account's session and weekly usage. Each
+  provider is a heading, with its accounts indented beneath it, the account in use first.
+  Windows cuts a tray hover at 127 characters, so a compact layout is used when that is
+  what fits, and when even that does not, only the account in use for each tool, with a
+  count of the ones left out. The icon already identifies Switchboard, so the hover
+  spends none of the limit repeating the app name.
+- The hover itself starts no provider request: it shows readings already made by the
+  Accounts page or the tray's five-minute pass. That pass reads usage live only when it
+  has a reason to: the quota watch is on, a notification hook is set, or Antigravity is
+  signed in (its usage is read on every pass). Normal reads are shared for five minutes. A
+  rate-limited response backs automatic checks off for thirty minutes. A rejected
   credential backs off for an hour unless the credential file changes. A newer sign-in
   check on the Accounts page also clears any older tray warning.
 - A fallback never replaces something newer. When a live check fails and the snapshot
@@ -127,7 +139,8 @@ For deep-dives into architecture, guides, and full command references, see the *
   a process of that app is alive, matched by its program file (or, for a Store app, the
   package folder its processes run from) so a same-named file elsewhere never counts. A
   background worker with no window, such as a Slack bridge, can be watched too: give it a
-  name and a piece of its command line, and its card says Running or Not running. The
+  name and a piece of its command line (or pick it from a searchable list of what is
+  running now), and its card says Running or Not running. The
   check is a local process listing taken only while the window is open; nothing is ever
   started or stopped.
 - Installs and updates delegate to vendor mechanisms: winget, npm, pip, or the vendor's
@@ -143,18 +156,21 @@ For deep-dives into architecture, guides, and full command references, see the *
   command that reports an available update without installing it, so the row reports the
   result of the last update Switchboard ran, and says it does not know once that result is
   more than two days old.
-- Execution lanes are the failover pool. `switchboard run` picks the first healthy lane
-  (on "Switch automatically", the accounts of each tool are taken soonest weekly reset
+- Execution lanes are the failover pool. A lane is one account of one tool. Besides the
+  four tools above, a lane can use a tool with a single machine-wide login, such as
+  Antigravity, Copilot or Junie. `switchboard run` picks the first healthy lane (on
+  "Switch automatically", the accounts of each tool are taken soonest weekly reset
   first), launches the vendor's own CLI pinned to that account, and, when a run stops on a
-  provider limit or cannot sign in at all, drops that lane and starts the command again in
-  the next one. Between
-  two Claude accounts the conversation goes with it: the session is copied into the
-  incoming account and resumed there, so the new account carries on from where the spent
-  one stopped instead of starting over. Every other combination gets a handoff instead:
-  Switchboard writes one from what the spent session said as it worked, and tells the
-  next tool to read it. Claude and Codex can each hand over to the other, and to another
-  account of their own. A handoff you wrote yourself is used as it is and never
-  overwritten.
+  provider limit, a provider server error, or a sign-in the vendor refused, drops that
+  lane and starts the command again in the next one. Between two Claude accounts the
+  conversation goes with it: the session is copied into the incoming account and resumed
+  there, so the new account carries on from where the spent one stopped instead of
+  starting over. Every other combination gets a handoff instead: Switchboard writes one
+  from what the spent session said as it worked, and tells the next tool to read it.
+  Claude and Codex can each hand over to the other, and to another account of their own.
+  Moving work that has already started to a different tool asks first, unless you passed
+  `--yes`. A handoff you
+  wrote yourself is used as it is and never overwritten.
 
 ## MCP servers
 
@@ -190,8 +206,8 @@ and a short suggested list at the top of it.
   handed a shape it does not expect. Where a file must be edited, a timestamped backup is
   written first and a config that cannot be parsed is refused rather than overwritten.
 - Claude Code and Antigravity each keep more than one list on a machine, and a session
-  reads only one of them, so a server added while one account was in use used to be missing
-  under the next. Switchboard now shares them automatically: every server any of these
+  reads only one of them, so a server added while one account was in use would be missing
+  under the next. Switchboard shares them automatically: every server any of these
   lists has is added to every other list of the same tool. For Claude Code the lists are the
   `.claude.json` in the folder `CLAUDE_CONFIG_DIR` points at, the one in your home folder
   (something may start Claude without that variable set), and the one in each Claude
@@ -206,7 +222,8 @@ and a short suggested list at the top of it.
   and only the newest three backups are kept. A file that does not exist yet is not
   created, and a file that is empty, cannot be read or will not parse is left alone and
   named in the output of `switchboard mcp sync`. A server switched off here is not shared,
-  so it cannot creep back on from a list that still had it.
+  so it cannot creep back on from a list that still had it. For the same reason, taking a
+  server out of Claude Code or Antigravity takes it out of every one of that tool's lists.
 - A chip shows four states: not registered, registered and signed in, registered but not
   signed in, and plain registered for a client that cannot report its sign-in state. A
   tick that meant "signed out and broken" would be worse than no tick, so that last case
@@ -239,7 +256,9 @@ switchboard mcp enable <name>                       put it back from that copy
 switchboard mcp sync [--json]                       share servers across accounts now
 ```
 
-`<client>` is one of `claude`, `codex`, `antigravity`, `junie` or `vscode`.
+`<client>` is one of `claude`, `codex`, `antigravity`, `junie` or `vscode`; leaving it out
+means all of them. With `--json`, anything Switchboard has to say about a file it left
+alone goes to standard error, so standard output is only the JSON.
 
 ## Install
 
@@ -259,8 +278,8 @@ versioned JSON file and import it later: account registrations and active choice
 preferences, custom app launchers, and custom MCP server definitions. It does not contain
 tokens, vendor credential files, MCP client sign-ins, or the environment values of a local
 MCP server (an import keeps the ones this machine already has for the same server), and
-it does not carry the lane pool, spend policies or lane tokens, which stay on the machine
-that set them up. Import
+it does not carry the lane pool, spend policies, lane tokens or notification hooks, which
+stay on the machine that set them up. Import
 validates the complete file and writes a pre-import recovery backup under
 `%APPDATA%\Switchboard\backups` before replacing anything.
 An in-app upgrade writes the same kind of importable backup immediately before its setup
@@ -311,8 +330,9 @@ address and drops any that need an API key.
 
 The core (`core/`, `bin/cli.js`) is plain Node with no Electron dependency; the tray shell
 is a thin skin over it. `switchboard` is also a CLI: `status`, `accounts`, `add`,
-`remove`, `use`, `detect`, `providers`, `doctor`, `quota`, `lanes`, `lane-token`, `watch`,
-`notify`, `dry-run` and `run`. Running it with no command prints the same list with a line each.
+`remove`, `use`, `color`, `detect`, `providers`, `doctor`, `quota`, `lanes`, `lane-token`,
+`watch`, `notify`, `mcp`, `dry-run` and `run`. Running it with no command prints the same
+list with a line each.
 
 Everything the tray decides, the CLI decides the same way, because both call the same code
 in `core/`. That is what makes a machine with no desktop usable: `switchboard lanes` edits
@@ -327,8 +347,9 @@ for scripts.
 
 `switchboard lanes` is the failover pool: `lanes` lists it in the order as set (and says
 when "Switch automatically" ranks each tool's accounts by reset instead), `lanes add
-<accountId>` appends one, `lanes order <id>...` reorders it, `lanes remove <id>` takes one
-out, and `lanes budget <id> <amount>` sets what a metered lane may spend. A metered lane
+<accountId> [--metered] [--budget <amount>]` appends one, `lanes order <id>...` reorders
+it, `lanes remove <id>` takes one out, and `lanes budget <id> <amount|none>` sets or
+clears what a metered lane may spend. A metered lane
 with no budget is deliberately unselectable rather than unlimited, and the listing says so
 rather than leaving it to be discovered by a run that skips it.
 
@@ -340,8 +361,12 @@ wrong account. Claude's own tool prints the minted token on screen, exactly as i
 when run by hand; copy it and paste it at the prompt Switchboard shows next. The token
 is validated by a small real Claude run using it before it is stored, and a refused one
 is not stored at all; a check that cannot reach the vendor stores the token anyway and
-says it is unverified, so you can confirm it later with `--check`. It is kept in plain
-text in `%APPDATA%\Switchboard\settings.json`, so treat that file as a secret.
+says it is unverified, so you can confirm it later with `--check`. It is kept in
+`%APPDATA%\Switchboard\settings.json`, encrypted with a key derived from your Windows user
+name, computer name and home folder. That keeps it unreadable in a copy of the file taken
+to another machine or account, but not from a program running as you on this one, so
+still treat that file as a secret. A token that cannot be decrypted (the computer was
+renamed, say) is never handed out; Health says so and asks for a new one to be minted.
 The minting login's identity is stamped into the stored entry,
 so a lane folder later signed in to a different account stops receiving the token (and
 Health says why) instead of quietly billing the account the token was minted for; a
@@ -373,11 +398,13 @@ within the hour rather than at the next failed run. An explicit `--check` is nev
 throttled and always asks the vendor immediately.
 
 The watch moves the default before an account is completely out, not after. Two windows
-decide it: the five hour session window and the weekly one. The five hour window is the one
-that stops work first in practice, because it is the smallest and fills fastest, and it can
-sit at ninety odd percent while the weekly figure still looks comfortable. So an account
-gives the machine default up as soon as either window passes its mark (90 percent of the
-five hour window, 95 percent of the weekly one) and somewhere better exists.
+decide it: the five hour session window and the weekly one. Where an account has a five
+hour window, that is the one that stops work first in practice, because it is the smallest
+and fills fastest, and it can sit at ninety odd percent while the weekly figure still looks
+comfortable. So an account gives the machine default up as soon as either window passes
+its mark (90 percent of the five hour window, 95 percent of the weekly one) and somewhere
+better exists. An account with no five hour window (Ultra) is judged on the weekly one
+alone.
 
 Winning the default back is a stricter test than giving it up, deliberately. An account
 that has been passed over takes the default back only once it has dropped clear to under
@@ -465,41 +492,67 @@ rather than bounced on a blip.
 
 On "Tell me", the tray says each suggestion once instead of on every five-minute pass, and
 "no account has room" once for each time it ends. A suggestion is said again only after the
-account in use has changed, or after the watch setting is chosen again. A switch the watch
-makes on "Switch automatically" is always reported.
+account in use has changed, or after the watch setting is chosen again in the tray. A
+switch the watch makes on "Switch automatically" is always reported. `switchboard watch`
+prints every pass's decisions to its own output, which is its log, but what it sends to
+the notification hooks follows the same once-only rule. What has already been said is kept
+in `%APPDATA%\Switchboard\alerts.json`, so this holds across separate `watch --once` runs
+too. It keeps two records: what went to the notification hooks, which
+the tray and `switchboard watch` share so the hooks hear each thing once when both are
+running, and what the tray showed on the desktop, so a terminal watch that told the hooks
+first does not stop the desktop notification.
 
 `switchboard notify` manages notification hooks for quota thresholds, lane switches and
-exhaustion events. You can configure an incoming webhook URL (such as a Slack or Discord webhook),
-a local shell command hook, and threshold percentages for the session and weekly windows:
+exhaustion events. You can configure an incoming webhook URL (such as a Slack or Discord
+webhook), a local shell command hook, and threshold percentages per usage window:
+
 - `switchboard notify` shows current notification hooks and threshold settings.
 - `switchboard notify --webhook <url|none>` configures or removes the webhook URL.
 - `switchboard notify --command <cmd|none>` configures or removes the local command hook.
 - `switchboard notify --threshold session=80 --threshold week=85` sets alert thresholds.
+  Any window an account reports can be named (for example `week_fable` or `week_opus`);
+  only `session` and `week` have a threshold by default.
 - `switchboard notify --test` dispatches a test alert through configured hooks.
 - `switchboard notify --json` outputs configuration and status in JSON.
 
 Notifications are evaluated automatically during background quota passes (in both
-`switchboard watch` and the system tray watch). When an account crosses a threshold
-(default: 80% of the 5-hour session window, 85% of the weekly window), Switchboard emits
-an alert once per reset period. Payloads include standard `text` (Slack) and `content` (Discord)
-fields, along with structured JSON delivered to command hooks via stdin and the
-`SWITCHBOARD_EVENT` environment variable. The same settings can also be configured from the
-Notification hooks section under the About tab in the desktop app.
+`switchboard watch` and the tray's five-minute pass, whatever the watch is set to). When
+an account crosses a threshold (default: 80% of the five hour session window, 85% of the
+weekly window), Switchboard sends one alert for that reset period, even if a later reading
+dips under the mark and back. A reading whose window has already reset raises none. The
+tray also shows it as a desktop notification, with or without hooks. Account switches and "no account has room" go to the hooks too; suggestions
+made on "Tell me" do not. Payloads include standard `text` (Slack) and `content`
+(Discord) fields, along with structured JSON delivered to command hooks via stdin and the
+`SWITCHBOARD_EVENT` environment variable. The same settings can also be configured from
+the Notification hooks section under the About tab in the desktop app.
 
 `switchboard run` is the execution broker. It walks the lanes in order (soonest weekly reset
 first within each tool on "Switch automatically", as described above), takes the first
 healthy one, and launches the vendor's own CLI with an environment scoped to that
-lane's account: the account's own folder and nothing inherited from the calling shell that
-could bill somebody else. Your arguments are passed through as you wrote them, with one
-addition: on a Claude lane it puts `--session-id` in front of them, so that if the run
-has to move accounts later it knows which conversation to take with it. If your own
-command line already steers the session, with `--resume`, `--continue`, `--fork-session`
-or a `--session-id` of your own, it adds nothing and carries nothing; that session is
-yours. `--provider` and
-`--account` narrow the pool, `--no-fallback` keeps it to one lane, and `--quiet` moves
-Switchboard's own lines to standard error so a caller can parse the tool's output.
-`--spec <file>` supplies a command line per tool instead, for a caller that cannot know
-in advance which tool it will get.
+lane's account. The tool's folder variable is set to that account's folder, and every
+variable that would sign the tool in some other way, or send its requests and its bill
+elsewhere, is removed: `ANTHROPIC_API_KEY` and Claude's token variables, `OPENAI_API_KEY`
+and `CODEX_API_KEY`, `GEMINI_API_KEY` and `GOOGLE_API_KEY`, `GH_TOKEN` for Copilot, and
+the like. An account signs in one way only, through its own folder, set up from
+Switchboard with the vendor's own sign-in (Codex, for one, takes an API key there). The
+same goes for a sign-in, a sign-out and a terminal opened on an account, and for whatever
+the agent itself runs during the session. Health mentions any of these variables it finds
+set for a tool you use here. It does not offer to remove them, because other programs
+(`gh`, git and so on) may rely on the same ones. Switchboard's own
+flags can go anywhere on the line; everything after a `--` goes to the tool untouched.
+
+Your arguments are passed through as you wrote them, with one addition: on a Claude lane
+it puts `--session-id` in front of them, so that if the run has to move accounts later it
+knows which conversation to take with it. If your own command line already names the
+session, with `--resume <id>` or a `--session-id` of your own, it adds nothing and uses
+your name instead (either spelling, `--resume <id>` or `--resume=<id>`), so your session
+moves between accounts just the same. `--continue`
+and `--fork-session` name no session Switchboard can find, so a run using them is not
+carried. `--provider` and `--account` narrow the pool, `--no-fallback` keeps it to one
+lane, and `--quiet` moves Switchboard's own lines to standard error so a caller can parse
+the tool's output. `--spec <file>` supplies a command line per tool instead, for a caller
+that cannot know in advance which tool it will get; the session name is added to its
+Claude command line in the same way.
 
 Lanes can sit in any order, whatever each caller supports. A caller that can only drive
 some tools says which, and lanes for the rest are left out before anything is chosen, for
@@ -511,79 +564,104 @@ the tools it covers, so its answer is always the lane `run` would take with the 
 arguments and the same readings. A narrowed `dry-run --json` answer carries a `harnesses` field listing the
 tools it was narrowed to, because a version from before this existed ignores the flag
 and answers for every lane: a caller that named its tools and does not get them back
-knows the order still matters on that machine. A run says once which lanes it left out and why, so a lane that never gets
-work from that caller does not look broken. This used to be decided the other way round:
-the first healthy lane won whatever its tool, and a fallback onto a tool the spec said
-nothing about ended the run, with a usable lane one place lower. The order then had to be
-arranged around each caller, which defeats the point of having one.
+knows the order still matters on that machine. A run says once which lanes it left out and
+why, so a lane that never gets work from that caller does not look broken. Because a lane
+the caller cannot drive is left out before anything is chosen, the order never has to be
+arranged around a particular caller.
 
 Choosing a lane reads each account only when its lane comes up, and stops at the first lane
 with room, for `dry-run`, for the first pick of a run and for every fallback. A lane further
 down cannot change that answer, and reading it can be slow: a usage reading older than five
-minutes means asking the vendor, and Antigravity's means starting its CLI twice. Every
-lane's account used to be read first, so an answer about the top lane could wait many
-seconds on a lane it was never going to pick, long enough for an automated caller with a
-deadline to give up. Every account is still read when no lane has room, because the last
-resort, a lane whose usage could not be read, is only chosen once all of them have been
-seen. On "Switch automatically" a tool's accounts are ranked the first time the walk
-reaches one of its lanes, from the last reading the shared cache holds for each (the reset
-time is all ranking needs, and it stays true until it passes), so ranking never asks the
-vendor and a tool the walk never reaches is never looked at. Readings come from the shared
-cache the tray fills on its five-minute pass, and that
-now includes its Antigravity reading, so a check that does reach Antigravity normally
-finds one there instead of starting the CLI itself.
+minutes means asking the vendor, and Antigravity's means starting its CLI twice. Reading
+every lane first would make an answer about the top lane wait many seconds on a lane it
+was never going to pick, long enough for an automated caller with a deadline to give up.
+Every account is still read when no lane has room, because the last resort, a lane whose
+usage could not be read, is only chosen once all of them have been seen. On "Switch
+automatically" a tool's accounts are ranked the first time the walk reaches one of its
+lanes, from the last reading the shared cache holds for each (the reset time is all
+ranking needs, and it stays true until it passes), so ranking never asks the vendor and a
+tool the walk never reaches is never looked at. Readings come from the shared cache the
+tray fills on its five-minute pass, including its Antigravity reading, so a check that
+does reach Antigravity normally finds one there instead of starting the CLI itself.
 
 A prompt piped into `switchboard run` reaches every lane the run lands on, not only the
 first. An automated caller hands its prompt over on standard input, and the first tool
-reads that pipe to its end, so a tool that merely inherited it on the next lane started
-with no question at all: Claude refuses to run, and the rescue failed on exactly the run
-that needed it. The input is recorded as it arrives and replayed to a lane the run falls
-back to. It is passed on while it is still arriving and never waited for, and the process
-is not kept alive by it, so a caller that leaves its pipe open cannot hang a run. Only a
-complete prompt is replayed: a caller feeding turns down a pipe it keeps open would
-otherwise have every earlier turn run twice, so a lane it falls back to gets what arrives
-from then on, which is what it used to inherit. Input past 8 MB is still delivered to the
-lane that is running and is simply not kept for a second one.
+reads that pipe to its end, so a tool on the next lane that merely inherited it would start
+with no question at all. So the input is recorded as it arrives and replayed to a lane the
+run falls back to. It is passed on while it is still arriving and never waited for, and
+the process is not kept alive by it, so a caller that leaves its pipe open cannot hang a
+run. Only a complete prompt is replayed: a caller feeding turns down a pipe it keeps open
+would otherwise have every earlier turn run twice, so a lane it falls back to gets what
+arrives from then on. Input past 8 MB is still delivered to the lane that is running and
+is simply not kept for a second one.
 
-When a lane takes over part-way and this run derived a handoff, a sentence offering it
-follows the replayed prompt on standard input. It used to be appended to the command
-line, which no spec could survive: after Claude's list-valued flags it is swallowed as one
-more tool name, and Codex and Antigravity reject a stray argument outright. The sentence
-is worded for a tool that also has the request in front of it. The handoff opens with the
-first thing that session was ever asked, which in a conversation several requests long is
-not what is being asked now, so the request is said to be what counts and the handoff is
-offered as the first tool's notes. It is never added to input that is a stream of JSON
-messages, which a bare sentence would corrupt. A caller that piped nothing still gets the
-pointer on the command line, because there is nowhere else to put it. A person at a
-keyboard is unaffected: their tool keeps the real terminal, and none of this applies
-unless both the input and the output are something other than a terminal.
+When a lane takes over part-way with a handoff to read, where it is told about the
+handoff depends on how the caller gave its command line and its prompt:
+
+- With a spec and a piped prompt, a sentence offering the handoff follows the replayed
+  prompt on standard input. The command line is the wrong place: after Claude's
+  list-valued flags the sentence is swallowed as one more tool name, and Codex and
+  Antigravity reject a stray argument outright. The sentence is worded for a tool that
+  also has the request in front of it: the handoff opens with the first thing that
+  session was ever asked, which in a conversation several requests long is not what is
+  being asked now, so the request is said to be what counts and the handoff is offered as
+  the first tool's notes. Only a handoff this run derived is offered this way. It is never
+  added to input that is a stream of JSON messages, which a bare sentence would corrupt;
+  the run says so, and the lane starts from the request alone.
+- With a spec and nothing piped at all, a lane of a different tool gets the pointer added
+  to the end of its command line, because there is nowhere else to put it. A lane of the
+  same tool does not: it runs the same spec, which already holds the request as an
+  argument, and Codex refuses a second one outright. Input that is still arriving or too
+  big to keep is not "nothing", so it gets no pointer on the command line either. In both
+  cases the run says the handoff went unused.
+- Without a spec, the lane taking over is started with just the one sentence pointing at
+  the handoff, because your arguments were written for the first tool or already hold a
+  prompt. The exception is a command line that resumes a conversation by name on the same
+  tool: it is kept as it is, since it holds the request being asked now, and the handoff
+  would only offer that conversation's first request.
+
+A person at a keyboard is unaffected by the piping: their tool keeps the real terminal,
+and none of it applies unless both the input and the output are something other than a
+terminal.
 
 A fallback that changes tool is always announced, as
 `[switchboard] Cross-provider failover: claude to codex (lane <id>).`, because the new
 tool does not hold the conversation the old one had and a caller that handed over one
-process has no other way to find out. Automated callers match on that line.
+process has no other way to find out. It is also said when only the vendor behind a lane
+changes. Automated callers match on that line; under `--quiet` it is on standard error
+with Switchboard's other lines.
 
-A run that ends on a provider limit, or on a sign-in the vendor refused, drops that lane
-and starts again in the next healthy one. An ordinary non-zero exit is still reported and
-left alone, because guessing would move work to another account on any old failure.
+A run that ends on a provider limit, a provider server error, or a sign-in the vendor
+refused, drops that lane and starts again in the next healthy one. An ordinary non-zero
+exit is still reported and left alone, because guessing would move work to another account
+on any old failure.
 
-The two are read apart, because they do not mean the same thing. A limit means the account
-is real and merely spent: the work started, and between two lanes of the same tool it is
-carried across so the next account picks it up mid-task. A refused sign-in means the run
-never began, so there is no session to carry and no handoff to write, and the command
-simply starts on the next lane as if it were the first. Only the sign-in failure is said
-out loud with the account named, because a spent lane returns by itself when its window
-resets and a broken one does not: without that line, every later run would quietly start
-one lane lower and nobody would know a lane had gone.
+The three are read apart, because they do not mean the same thing. A limit means the
+account is real and merely spent, and a server error (a 500, 502, 503, 504 or 529 reply,
+or the vendor saying it is overloaded) means the vendor failed part-way: either way the
+work started, and between two lanes of the same tool it is carried across so the next
+account picks it up mid-task. A refused sign-in means the run never began, so there is no
+new work to carry or hand off: the next lane is given whatever the refused one was given
+(a conversation carried into it, or the handoff it was pointed at), and when the next lane
+is back on the tool whose work it is, the conversation itself is carried from the last
+lane that ran. A handoff you wrote yourself is only ever given to a different tool, so it
+is not passed back to the tool whose work it is. Otherwise the command simply starts there
+as if it were the first. When a handoff is written after a lane that itself started from
+one, the new handoff keeps the original objective and adds that lane's work to what was
+already recorded. A refused sign-in and a server error are both said out loud with
+the account named. That matters most for the sign-in: a spent lane returns by itself when
+its window resets and a broken one does not, so without that line every later run would
+quietly start one lane lower and nobody would know a lane had gone.
 
-Both readings are deliberately narrow, and they are taken from the tool's own output. A
-refused sign-in is recognised from specific phrases, never from a lone word like
+All three readings are deliberately narrow, and they are taken from the tool's own output.
+A refused sign-in is recognized from specific phrases, never from a lone word like
 unauthorized, because a run's output includes what the agent itself printed and an agent
 discussing an unauthorized request in somebody else's code must not be mistaken for a lane
 that cannot log in. Output is only ever classified after a non-zero exit, which keeps the
-cost of a wrong reading to a run that had already failed. Where a limit and a sign-in
-failure both appear, it is read as a limit: an exhausted account is not a broken one, and
-sending somebody to repair a sign-in that was never at fault is the worse mistake.
+cost of a wrong reading to a run that had already failed. They are checked in order:
+limit, then refused sign-in, then server error. Where a limit and a sign-in failure both
+appear, it is read as a limit: an exhausted account is not a broken one, and sending
+somebody to repair a sign-in that was never at fault is the worse mistake.
 
 Classification reads the tool's standard output as well as its standard error, because
 that is where a harness actually reports both of these. It is captured only when
@@ -594,15 +672,28 @@ already reading it.
 Between two Claude accounts the retry is a real continuation. Claude Code keeps each
 session as a file under the account folder it ran in, and that file is portable, so
 Switchboard copies the session into the incoming account and resumes it there. The new
-account sees everything the spent one had established and picks the work up mid-task. The
-spent account keeps its own copy, and a session the incoming account already holds is
-never overwritten. Switchboard reads none of it: this is a file copy, not a summary, and
-nothing is sent anywhere.
+account sees everything the spent one had established and picks the work up mid-task.
+This works whoever named the session, Switchboard or your own command line. The spent
+account keeps its own copy. A copy the incoming account already holds is never
+overwritten, with one exception that loses nothing: an older copy of the very same
+conversation (identical as far as it goes, just shorter), which is brought up to date. An
+identical copy is simply resumed.
+Switchboard reads none of it: this is a file copy, not a summary, and nothing is sent
+anywhere.
+
+The same happens before any Claude lane resumes a conversation by name
+(`--resume <id>`), not only on a failover. A caller that keeps one conversation going over
+many requests, such as a chat bot answering a thread, can land on a different account each
+time, and the conversation lives in whichever account it last ran in. So Switchboard looks
+for that session in every registered Claude account folder and, when another account has
+gone further with it, brings that copy over first and says so. A copy that differs from
+the others is a conversation of its own and is left alone.
 
 Every part of that is allowed to fail without ending the run. A spent lane that left no
-session, a destination that already has one, an unreadable folder: each falls back to
-starting the tool fresh, which is what used to happen every time, and the run says which
-happened. Carrying only works between Claude accounts, because Codex files its sessions
+session, a destination holding a different conversation under the same name, an
+unreadable folder: each falls back to starting the tool from your command line as given,
+and the run says which happened. That is a fresh start, unless your own command line
+resumes a session by name, in which case it resumes whatever that account holds under it. Carrying only works between Claude accounts, because Codex files its sessions
 differently and that has not been proven the same way.
 
 Every other hop gets a written handoff instead, because a session file means nothing to
@@ -626,27 +717,31 @@ though it were current.
 
 A handoff you wrote yourself is used exactly as it is and never overwritten, on the
 grounds that it may be better than anything derivable and is not Switchboard's to replace.
-One that Switchboard derived is a different thing, and it says so on its second line, with
-the run it belongs to. It describes that run and nothing else, so it is removed when the
-run ends, and one found from an earlier run (a run that was killed before it could tidy
-up) is replaced or removed rather than followed. Before this, nothing told the two kinds
-apart and nothing removed either, so the first handoff ever derived in a folder stayed for
-good: every later run that changed tool there was pointed at it, however unrelated, and no
-newer one was written because one already existed. A caller that piped its prompt is only
-ever offered a handoff its own run derived, never one left in the folder for other work.
-Where there is nothing to write from either, because the spent lane was not a Claude
-session or died before saying anything, it says a handoff is missing rather than inventing
-one. In every case it asks before going ahead, unless you passed `--yes`. It can only ask
-a person: with the input piped there is nobody at a terminal, so without `--yes` the run
-is not moved to another tool, says that `--yes` is needed, and ends with a failing exit.
+One that Switchboard derived is a different thing, and it says so just under its title,
+with the run it belongs to. It describes that run and nothing else, so it is removed when
+the run ends, and one found from an earlier run (a run that was killed before it could
+tidy up) is replaced or removed rather than followed, so an unrelated later run is never
+pointed at it. A same-tool hop only ever uses a handoff its own run derived, and so does a
+caller with a spec that piped its prompt; a hop to another tool otherwise points at a
+handoff you wrote yourself too. Where there is nothing to write from, because the spent
+lane was not a Claude or Codex session or died before saying anything, it says a handoff
+is missing rather than inventing one.
 
-Two limits are worth stating plainly. Gemini and Qwen lanes cannot be read at all yet, so
-a hop involving either still starts fresh; adding one is a table entry in
-`core/transcripts.js` and a session layout somebody has actually checked. And the document
-is capped at 4 KB, as it always has been, so a long run is recorded from its most recent
-work backwards and the run says when it had to do that. The document is written through
-the same writer as before, which means it still gets the size limit and the redaction of
-common API-key shapes.
+Moving work to a different tool asks first, unless you passed `--yes`, whether or not
+there is a handoff, as soon as any lane has actually run, including when the hop passes a
+lane whose sign-in was refused on the way. It can only ask a person: with no terminal on
+standard input there is nobody to answer, so without `--yes` the run is not moved to
+another tool, says that `--yes` is needed, and ends with a failing exit. A hop between two
+lanes of the same tool goes ahead without asking, and so does a hop after the first lane's
+sign-in was refused, because nothing had started yet.
+
+Two limits are worth stating plainly. Only Claude and Codex sessions can be read, so a hop
+away from any other tool (Gemini, Qwen, Antigravity and the rest) still starts fresh;
+adding one is a table entry in `core/transcripts.js` and a session layout somebody has
+actually checked. And the document is capped at 4 KB. A long run is recorded from its most
+recent work backwards, and a long first request keeps its opening, each trimmed until the
+document fits, and the run says when it had to do that. The document also gets the
+redaction of common API-key shapes.
 
 A run never uses a stored lane token; the launched tool authenticates with the account
 folder's own sign-in. `switchboard dry-run` answers which lane would be picked without

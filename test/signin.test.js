@@ -64,3 +64,33 @@ test('process-only Claude overrides block switching case-insensitively', () => {
   });
   assert.deepEqual(found, ['CLAUDE_CODE_USE_VERTEX']);
 });
+
+test('a lane of every tool starts without API keys inherited from the calling shell', () => {
+  const shell = {
+    Path: 'C:\\Windows',
+    OPENAI_API_KEY: 'k1',
+    codex_api_key: 'k2',
+    GEMINI_API_KEY: 'k3',
+    GOOGLE_API_KEY: 'k4',
+    DASHSCOPE_API_KEY: 'k5',
+    GH_TOKEN: 'k6',
+    GOOGLE_CLOUD_PROJECT: 'my-project',
+    UNRELATED: 'keep-me',
+  };
+  const cases = [
+    [{ provider: 'codex', home: 'C:\\p\\.codex' }, ['OPENAI_API_KEY', 'CODEX_API_KEY']],
+    [{ provider: 'gemini', home: 'C:\\p\\.gemini' }, ['GEMINI_API_KEY', 'GOOGLE_API_KEY']],
+    [{ provider: 'qwen', home: 'C:\\p\\.qwen' }, ['OPENAI_API_KEY', 'DASHSCOPE_API_KEY']],
+    [{ provider: 'antigravity', home: 'C:\\p\\.gemini' }, ['GEMINI_API_KEY', 'GOOGLE_API_KEY']],
+    [{ provider: 'copilot', home: 'C:\\p\\.copilot' }, ['GH_TOKEN']],
+  ];
+  for (const [account, gone] of cases) {
+    const env = accountScopedEnv(account, shell);
+    const names = Object.keys(env).map((n) => n.toUpperCase());
+    for (const name of gone) assert.equal(names.includes(name), false, `${account.provider} kept ${name}`);
+    assert.equal(env.UNRELATED, 'keep-me', account.provider);
+    assert.equal(env.Path, 'C:\\Windows', account.provider);
+  }
+  // Picks a project for a Code Assist sign-in; signs nothing in by itself.
+  assert.equal(accountScopedEnv({ provider: 'gemini', home: 'C:\\p\\.gemini' }, shell).GOOGLE_CLOUD_PROJECT, 'my-project');
+});

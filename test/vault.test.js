@@ -140,3 +140,26 @@ test('settings transparently encrypts laneTokens on save and decrypts on load', 
   assert.ok(!reSavedRaw.includes('legacy-plaintext-token'));
   assert.ok(reSavedRaw.includes('enc:v1:aes-gcm:'));
 });
+
+test('a lane token this machine cannot decrypt is never passed off as the token, and survives a save', () => {
+  resetVaultDriver();
+  const dir = tempDir('sb-vault-');
+  try {
+    const file = path.join(dir, 'settings.json');
+    // Encrypted by a scheme this process has no key for, as a token from another machine is.
+    const sealed = 'enc:v1:dpapi:QUJD';
+    fs.writeFileSync(file, JSON.stringify({ laneTokens: { 'lane-1': { token: sealed, accountId: 'acct-1' } } }));
+
+    const loaded = loadSettings(file);
+    assert.equal(loaded.laneTokens['lane-1'].token, null, 'the encrypted text must not stand in for the token');
+    assert.equal(loaded.laneTokens['lane-1'].unreadable, true);
+
+    saveSettings(loaded, file);
+    const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(onDisk.laneTokens['lane-1'].token, sealed, 'a save writes it back exactly as it was');
+    assert.equal(onDisk.laneTokens['lane-1'].unreadable, undefined);
+    assert.equal(onDisk.laneTokens['lane-1'].sealed, undefined);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

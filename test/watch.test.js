@@ -1557,11 +1557,15 @@ test('a different suggestion is news, and so is the same one after the account h
 test('running out is said once for each time it ends, and a switch is always reported', () => {
   const active = { claude: 'a' };
   const out = (resetsAt) => ({ kind: 'exhausted', provider: 'claude', resetsAt });
-  let { notices, memory } = freshNotices([out(5_000)], {}, active);
+  const reset = 1_800_000_000_000;
+  let { notices, memory } = freshNotices([out(reset)], {}, active);
   assert.equal(notices.length, 1);
-  ({ notices, memory } = freshNotices([out(5_000)], memory, active));
+  ({ notices, memory } = freshNotices([out(reset)], memory, active));
   assert.equal(notices.length, 0);
-  ({ notices, memory } = freshNotices([out(9_000)], memory, active));
+  // Two readings of one reset can differ in the last digits; that is not news.
+  ({ notices, memory } = freshNotices([out(reset + 7)], memory, active));
+  assert.equal(notices.length, 0, 'the same reset read a few milliseconds differently');
+  ({ notices, memory } = freshNotices([out(reset + 3 * 60 * 60 * 1000)], memory, active));
   assert.equal(notices.length, 1, 'a later end is a new state of affairs');
 
   const pass = freshNotices([{ kind: 'switch', provider: 'claude', from: 'a', to: 'b' }, { kind: 'pin-blocked', provider: 'claude' }], memory, active);

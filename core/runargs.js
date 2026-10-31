@@ -216,6 +216,9 @@ export function parseWatchArgs(rawArgs = []) {
 /**
  * `switchboard notify [--webhook <url|none>] [--command <cmd|none>] [--threshold <window=percent>] [--test] [--json]`.
  */
+/** Whether a value given for a hook means "no hook". */
+const isNone = (val) => String(val ?? '').trim().toLowerCase() === 'none';
+
 export function parseNotifyArgs(rawArgs = []) {
   const parsed = {
     webhook: undefined,
@@ -229,7 +232,7 @@ export function parseNotifyArgs(rawArgs = []) {
     if (arg === '--webhook') {
       if (i + 1 >= rawArgs.length) throw new Error('--webhook needs a URL or "none"');
       const val = rawArgs[++i];
-      if (val !== 'none') {
+      if (!isNone(val)) {
         try {
           const u = new URL(val);
           if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error();
@@ -237,10 +240,13 @@ export function parseNotifyArgs(rawArgs = []) {
           throw new Error(`--webhook requires a valid http: or https: URL, or "none": "${val}"`);
         }
       }
-      parsed.webhook = val;
+      parsed.webhook = isNone(val) ? null : val;
     } else if (arg === '--command') {
       if (i + 1 >= rawArgs.length) throw new Error('--command needs a shell command or "none"');
-      parsed.command = rawArgs[++i];
+      const val = rawArgs[++i];
+      // "none" clears the hook. Passed through, it was saved as the command itself and run
+      // through the shell on every alert.
+      parsed.command = isNone(val) ? null : val;
     } else if (arg === '--threshold') {
       if (i + 1 >= rawArgs.length) throw new Error('--threshold needs <window>=<percent> (e.g. session=80)');
       const val = rawArgs[++i];

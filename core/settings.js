@@ -41,7 +41,12 @@ export function protectSettings(settings) {
   if (clone.laneTokens && typeof clone.laneTokens === 'object' && !Array.isArray(clone.laneTokens)) {
     const protectedLaneTokens = {};
     for (const [k, v] of Object.entries(clone.laneTokens)) {
-      if (v && typeof v === 'object' && typeof v.token === 'string' && !isEncrypted(v.token)) {
+      if (v && typeof v === 'object' && v.unreadable && typeof v.sealed === 'string') {
+        // Written back exactly as it was read, so a token this process could not open is
+        // never lost by a save. See unprotectSettings.
+        const { sealed, unreadable, ...rest } = v;
+        protectedLaneTokens[k] = { ...rest, token: sealed };
+      } else if (v && typeof v === 'object' && typeof v.token === 'string' && !isEncrypted(v.token)) {
         protectedLaneTokens[k] = { ...v, token: protectSecret(v.token) };
       } else {
         protectedLaneTokens[k] = v;
@@ -57,7 +62,17 @@ export function unprotectSettings(settings) {
   if (settings.laneTokens && typeof settings.laneTokens === 'object' && !Array.isArray(settings.laneTokens)) {
     for (const [k, v] of Object.entries(settings.laneTokens)) {
       if (v && typeof v === 'object' && typeof v.token === 'string' && isEncrypted(v.token)) {
-        v.token = unprotectSecret(v.token) ?? v.token;
+        const plain = unprotectSecret(v.token);
+        if (plain == null) {
+          // Encrypted in a way this process cannot open: by another scheme, or under a
+          // different user name, computer name or home folder (the key is derived from
+          // those). The encrypted text is never passed off as the token, which would hand
+          // automation garbage and get a good token marked dead by its first check. It is
+          // kept aside so a save writes it back unchanged, and Health says to mint again.
+          settings.laneTokens[k] = { ...v, token: null, sealed: v.token, unreadable: true };
+        } else {
+          v.token = plain;
+        }
       }
     }
   }
@@ -94,7 +109,9 @@ export function loadSettings(file = settingsFile()) {
     } else {
       merged.notifyWebhookUrl = null;
     }
-    if (typeof merged.notifyCommand !== 'string' || !merged.notifyCommand.trim()) {
+    // "none" is how a hook is cleared. An older version saved the word itself as the
+    // command, which then ran through the shell on every alert, so it reads as no command.
+    if (typeof merged.notifyCommand !== 'string' || !merged.notifyCommand.trim() || merged.notifyCommand.trim().toLowerCase() === 'none') {
       merged.notifyCommand = null;
     } else {
       merged.notifyCommand = merged.notifyCommand.trim();

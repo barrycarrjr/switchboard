@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
+import { REMOVABLE_USER_ENV_VARS } from '../core/fixes.js';
 import {
   runChecks,
   claudeLoginState,
@@ -723,4 +724,50 @@ test('without a way to tell what is installed, nothing is called stray', async (
   });
 
   assert.equal(checks.some((c) => c.id.startsWith('stray-account-')), false);
+});
+
+test('a lane token this machine cannot decrypt warns once, and is not also reported as a mismatch', async () => {
+  const account = { id: 'claude-work', provider: 'claude', label: 'Work', home: tmpHome() };
+  const checks = await runChecks({
+    accounts: [account],
+    env: envNone,
+    fetchImpl: noFetch,
+    settings: {
+      laneTokens: {
+        'lane-1': { token: null, sealed: 'enc:v1:dpapi:QUJD', unreadable: true, accountId: 'claude-work', mintedAt: 1 },
+      },
+    },
+  });
+  const c = checks.find((x) => x.id === 'lane-token-unreadable-lane-1');
+  assert.equal(c.level, 'warn');
+  assert.equal(c.title, 'Lane token for Work cannot be read on this machine');
+  assert.match(c.detail, /switchboard lane-token lane-1/);
+  assert.equal(checks.find((x) => x.id === 'lane-token-identity-lane-1'), undefined);
+});
+
+test('an API key ignored by a tool in use here is named in Health, and nothing is offered to remove it', async () => {
+  const env = {
+    user: (name) => (name === 'OPENAI_API_KEY' ? 'k' : null),
+    machine: () => null,
+    process: () => null,
+  };
+  const accounts = [{ id: 'codex-work', provider: 'codex', label: 'Work', home: tmpHome() }];
+  const checks = await runChecks({ accounts, env, fetchImpl: noFetch });
+  const c = checks.find((x) => x.id === 'ignored-key-OPENAI_API_KEY');
+  assert.equal(c.level, 'info');
+  assert.match(c.title, /Codex/);
+  assert.doesNotMatch(c.title, /Qwen/, 'only the tools in use are named');
+  // The same variable serves gh, git and other programs Switchboard cannot see.
+  assert.equal(c.fix, undefined);
+  assert.equal(REMOVABLE_USER_ENV_VARS.includes('OPENAI_API_KEY'), false);
+});
+
+test('an API key for a tool nobody uses here is none of Health\'s business', async () => {
+  const env = {
+    user: (name) => (name === 'GH_TOKEN' || name === 'OPENAI_API_KEY' ? 'k' : null),
+    machine: () => null,
+    process: () => null,
+  };
+  const checks = await runChecks({ env, fetchImpl: noFetch });
+  assert.equal(checks.some((x) => x.id.startsWith('ignored-key-')), false);
 });
