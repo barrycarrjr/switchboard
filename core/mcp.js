@@ -4,20 +4,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mcpFile, writeJsonAtomic } from './paths.js';
+import { accountsFile, mcpFile, samePath, writeJsonAtomic } from './paths.js';
 import { readUserEnv } from './env.js';
 
 const run = promisify(execFile);
 
 /**
  * MCP servers give an AI client access to an outside service (an issue tracker, an
- * error reporter). Every client keeps its own private list and its own private login,
- * so connecting one service to four clients means doing the same job four times, and
- * a new machine repeats all of it.
+ * error reporter) or a local tool. Every client keeps its own private list and its own
+ * private login, so connecting one service to five clients means doing the same job five
+ * times, and a new machine repeats all of it.
  *
- * Switchboard stores the definition only: a name and an https URL. It holds no token,
- * opens no port and proxies nothing. Each client still performs its own sign-in and
- * keeps its own credentials, exactly as it does today.
+ * Switchboard stores the definition only: a name and either an https URL or a local
+ * command the client starts itself (`command`, optional `args`, optional `env`). It holds
+ * no sign-in session, opens no port and proxies nothing. Each client still performs its
+ * own sign-in and keeps its own credentials, exactly as it does today.
  *
  * Registration delegates to each client's own CLI rather than editing its config file.
  * The file formats genuinely conflict (TOML versus JSON, `servers` versus `mcpServers`,
@@ -135,9 +136,26 @@ export function categoriesOf(servers) {
   return suggested ? [{ name: SUGGESTED, count: suggested }, ...rest] : rest;
 }
 
+/** Command-line environment flags (`-e KEY=VAL` or `--env KEY=VAL`) from a server's `env` map. */
+export function stdioEnvFlags(flag, env) {
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return [];
+  const out = [];
+  for (const [k, v] of Object.entries(env)) {
+    out.push(flag, `${k}=${v}`);
+  }
+  return out;
+}
+
+/** The environment map a JSON client entry carries, or nothing when there is none. */
+function envPart(s) {
+  return s.env && typeof s.env === 'object' && Object.keys(s.env).length ? { env: s.env } : {};
+}
+
 /**
- * How each client is told about a server. `shell` is set on Windows because these
- * entry points are variously .exe, .cmd and .ps1, and only the shell resolves all three.
+ * How each client is told about a server, remote (`url`) or local (`command`). `shell` is
+ * set on Windows because these entry points are variously .exe, .cmd and .ps1, and only
+ * the shell resolves all three. That is also why every value that reaches a command line
+ * is held to the strict checks below and quoted by quoteWinShellArgs.
  *
  * Claude Desktop is deliberately absent: its config file takes local commands only, and
  * writing a URL into it makes the application delete its entire server list. Its remote
@@ -151,12 +169,18 @@ export const CLIENTS = {
     id: 'claude',
     name: 'Claude Code',
     bin: 'claude',
-    addArgs: (s) => ['mcp', 'add', '-t', 'http', '-s', 'user', s.name, s.url],
+    addArgs: (s) => s.url
+      ? ['mcp', 'add', '-t', 'http', '-s', 'user', s.name, s.url]
+      : ['mcp', 'add', '-t', 'stdio', '-s', 'user', s.name, ...stdioEnvFlags('-e', s.env), '--', s.command, ...(s.args ?? [])],
     removeArgs: (s) => ['mcp', 'remove', '-s', 'user', s.name],
     listArgs: () => ['mcp', 'list'],
     site: 'https://claude.com/product/claude-code',
     format: 'json',
     rootKey: 'mcpServers',
+    // The entry as Claude writes it, for the account folders its own CLI does not reach.
+    entry: (s) => s.url
+      ? { type: 'http', url: s.url }
+      : { type: 'stdio', command: s.command, args: Array.isArray(s.args) ? s.args : [], ...envPart(s) },
     configFile: claudeUserConfigFile,
     // Claude records which servers it has signed in to, by url. Reading the names tells
     // us whether a registered server actually works; the tokens are never touched.
@@ -167,12 +191,42 @@ export const CLIENTS = {
     id: 'codex',
     name: 'Codex',
     bin: 'codex',
-    addArgs: (s) => ['mcp', 'add', s.name, '--url', s.url],
+    addArgs: (s) => s.url
+      ? ['mcp', 'add', s.name, '--url', s.url]
+      : ['mcp', 'add', s.name, ...stdioEnvFlags('--env', s.env), '--', s.command, ...(s.args ?? [])],
     removeArgs: (s) => ['mcp', 'remove', s.name],
     listArgs: () => ['mcp', 'list'],
     site: 'https://developers.openai.com/codex',
     format: 'toml',
     configFile: () => path.join(readUserEnv('CODEX_HOME') || path.join(os.homedir(), '.codex'), 'config.toml'),
+  },
+  /**
+   * Antigravity's `agy` CLI. Its flags must come before the server name; a flag placed
+   * after the name is rejected, which is why `-e` sits earlier here than for Claude.
+   */
+  antigravity: {
+    id: 'antigravity',
+    name: 'Antigravity',
+    bin: 'agy',
+    addArgs: (s) => s.url
+      ? ['mcp', 'add', '-t', 'http', s.name, s.url]
+      : ['mcp', 'add', '-t', 'stdio', ...stdioEnvFlags('-e', s.env), s.name, '--', s.command, ...(s.args ?? [])],
+    removeArgs: (s) => ['mcp', 'remove', s.name],
+    listArgs: () => ['mcp', 'list'],
+    site: 'https://antigravity.google',
+    format: 'json',
+    rootKey: 'mcpServers',
+    // Both `url` (read by the copy of the agent T3 Code runs) and `serverUrl` (read by the
+    // agy CLI), because the same file can be read by either and each ignores the other key.
+    entry: (s) => s.url
+      ? { url: s.url, serverUrl: s.url, disabled: false }
+      : {
+          command: s.command,
+          ...(Array.isArray(s.args) && s.args.length ? { args: s.args } : {}),
+          ...envPart(s),
+          disabled: false,
+        },
+    configFile: () => antigravityConfigFile(),
   },
   /**
    * Junie is JetBrains' agent, and it reads a plain JSON file of the same shape as Claude
@@ -190,7 +244,9 @@ export const CLIENTS = {
     via: 'file',
     format: 'json',
     rootKey: 'mcpServers',
-    entry: (s) => ({ url: s.url }),
+    entry: (s) => s.url
+      ? { url: s.url }
+      : { command: s.command, ...(Array.isArray(s.args) && s.args.length ? { args: s.args } : {}), ...envPart(s) },
     configFile: () => path.join(os.homedir(), '.junie', 'mcp', 'mcp.json'),
     detect: () => fs.existsSync(path.join(os.homedir(), '.junie')),
   },
@@ -213,7 +269,9 @@ export const CLIENTS = {
     // VS Code calls the map `servers`; everyone else calls it `mcpServers`.
     format: 'json',
     rootKey: 'servers',
-    entry: (s) => ({ type: 'http', url: s.url }),
+    entry: (s) => s.url
+      ? { type: 'http', url: s.url }
+      : { type: 'stdio', command: s.command, ...(Array.isArray(s.args) && s.args.length ? { args: s.args } : {}), ...envPart(s) },
     configFile: () => path.join(process.env.APPDATA || path.join(os.homedir(), '.config'), 'Code', 'User', 'mcp.json'),
   },
 };
@@ -224,9 +282,69 @@ export const CLIENTS = {
  * in the home directory. Getting this wrong reads a stale file and reports servers the
  * client is not actually loading, so the two cases are handled apart rather than joined.
  */
-export function claudeUserConfigFile(envReader = readUserEnv) {
+export function claudeUserConfigFile(envReader = readUserEnv, home = os.homedir()) {
   const dir = envReader('CLAUDE_CONFIG_DIR');
-  return dir ? path.join(dir, '.claude.json') : path.join(os.homedir(), '.claude.json');
+  return dir ? path.join(dir, '.claude.json') : path.join(home, '.claude.json');
+}
+
+/** Antigravity's own MCP list. GEMINI_HOME moves the folder it sits in. */
+export function antigravityConfigFile(envReader = readUserEnv, home = os.homedir()) {
+  return path.join(envReader('GEMINI_HOME') || path.join(home, '.gemini'), 'config', 'mcp_config.json');
+}
+
+function uniquePaths(files) {
+  const unique = [];
+  for (const file of files) {
+    if (!unique.some((u) => samePath(u, file))) unique.push(file);
+  }
+  return unique;
+}
+
+/**
+ * Every user-level `.claude.json` that could be the one a Claude Code session reads: the
+ * one CLAUDE_CONFIG_DIR points at now, the one in the home folder, and one per Claude
+ * account registered here. Switching accounts moves CLAUDE_CONFIG_DIR, and a server that
+ * lives in only one of these files silently vanishes from every session started under
+ * another. The home folder's copy stays on the list because something may still start
+ * Claude without the variable set.
+ */
+export function claudeAllConfigFiles({ envReader = readUserEnv, home = os.homedir(), accounts = accountsFile() } = {}) {
+  const candidates = [claudeUserConfigFile(envReader, home), path.join(home, '.claude.json')];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(accounts, 'utf8'));
+    for (const acc of parsed?.accounts ?? []) {
+      if (acc?.provider === 'claude' && typeof acc.home === 'string' && fs.existsSync(acc.home)) {
+        candidates.push(path.join(acc.home, '.claude.json'));
+      }
+    }
+  } catch { /* no accounts file yet: the first two are all there is */ }
+  return uniquePaths(candidates);
+}
+
+/**
+ * Every Antigravity MCP list on the machine: its own (`~/.gemini/config`), the IDE's
+ * (`~/.gemini/antigravity-ide`), and one per profile T3 Code gives the copy of the agent it
+ * runs (`~/.t3/userdata/providers/antigravity/<id>/config`). Each reads only its own file,
+ * so a server added to one is invisible to the others until it is copied across.
+ */
+export function antigravityAllConfigFiles({ envReader = readUserEnv, home = os.homedir() } = {}) {
+  const candidates = [antigravityConfigFile(envReader, home), path.join(home, '.gemini', 'config', 'mcp_config.json')];
+  const ideDir = path.join(home, '.gemini', 'antigravity-ide');
+  if (fs.existsSync(ideDir)) candidates.push(path.join(ideDir, 'mcp_config.json'));
+  const t3Root = path.join(home, '.t3', 'userdata', 'providers', 'antigravity');
+  try {
+    for (const d of fs.readdirSync(t3Root, { withFileTypes: true })) {
+      if (d.isDirectory()) candidates.push(path.join(t3Root, d.name, 'config', 'mcp_config.json'));
+    }
+  } catch { /* no T3 Code profiles, or the folder cannot be listed */ }
+  return uniquePaths(candidates);
+}
+
+/** The files a multi-home client's servers can live in. Every other client has one. */
+function clientConfigFiles(clientId) {
+  if (clientId === 'claude') return claudeAllConfigFiles();
+  if (clientId === 'antigravity') return antigravityAllConfigFiles();
+  return [client(clientId).configFile()];
 }
 
 /** First key of a TOML table path, honouring quotes: `a.b` and `"a".b` both give `a`. */
@@ -288,6 +406,45 @@ export function parseCodexServerNames(toml) {
 }
 
 /**
+ * The arguments and environment of one local server in a Codex config, read only when
+ * that server is being copied into another client, which cannot start it without them.
+ * Best effort: anything this simple reader does not understand is left out, and what it
+ * does read is checked again before it reaches a command line.
+ */
+function parseCodexStdioDetails(block, name) {
+  const out = {};
+  let section = null;
+  for (const line of String(block ?? '').split(/\r?\n/)) {
+    const header = line.match(/^\s*\[(.+)\]\s*$/);
+    if (header) {
+      const table = header[1].trim().match(/^mcp_servers\.(.+)$/);
+      if (!table) { section = null; continue; }
+      const rest = table[1].trim();
+      if (rest === name || rest === `"${name}"` || rest === `'${name}'`) section = 'main';
+      else if (rest === `${name}.env` || rest === `"${name}".env` || rest === `'${name}'.env`) section = 'env';
+      else section = null;
+      continue;
+    }
+    if (section === 'main') {
+      const m = line.match(/^\s*args\s*=\s*\[(.*)\]\s*$/);
+      if (m) {
+        try {
+          const parsed = JSON.parse(`[${m[1]}]`);
+          if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) out.args = parsed;
+        } catch { /* not the double-quoted form JSON can read: left out */ }
+      }
+    } else if (section === 'env') {
+      const kv = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(["'])(.*?)\2\s*$/);
+      if (kv) {
+        if (!out.env) out.env = {};
+        out.env[kv[1]] = kv[2] === '"' ? kv[3].replace(/\\(["\\])/g, '$1') : kv[3];
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Add or replace one server in a JSON config, returning the new text.
  *
  * A file that is not valid JSON, or not an object, is refused outright rather than
@@ -344,21 +501,26 @@ export function parseClaudeAuthorizedUrls(text) {
 }
 
 /**
- * Servers from a JSON config, as a name and whatever address each carries: `url` for a
- * remote server, `command` for one the client starts itself. An unreadable or unexpected
- * file reports nothing. Arguments and environment variables are deliberately not read;
- * they hold API keys, and nothing here needs them.
+ * Servers from a JSON config, as a name and whatever address each carries: `url` (or
+ * Antigravity's `serverUrl`) for a remote server, `command` for one the client starts
+ * itself. An entry the client itself marks `disabled` is not running, so it is not
+ * reported. An unreadable or unexpected file reports nothing. Arguments and environment
+ * variables are deliberately not read here; they hold API keys, and nothing that shows a
+ * server on screen needs them.
  */
 export function parseJsonServerEntries(text, rootKey) {
   try {
     const map = JSON.parse(text)?.[rootKey];
     if (!map || typeof map !== 'object' || Array.isArray(map)) return [];
-    return Object.entries(map).map(([name, entry]) => {
-      const out = { name };
-      if (entry && typeof entry.url === 'string') out.url = entry.url;
-      if (entry && typeof entry.command === 'string') out.command = entry.command;
-      return out;
-    });
+    return Object.entries(map)
+      .filter(([, entry]) => !(entry && typeof entry === 'object' && entry.disabled === true))
+      .map(([name, entry]) => {
+        const out = { name };
+        if (entry && typeof entry.url === 'string' && entry.url) out.url = entry.url;
+        else if (entry && typeof entry.serverUrl === 'string' && entry.serverUrl) out.url = entry.serverUrl;
+        if (entry && typeof entry.command === 'string' && entry.command) out.command = entry.command;
+        return out;
+      });
   } catch {
     return [];
   }
@@ -370,7 +532,7 @@ export function parseJsonServerNames(text, rootKey) {
 }
 
 /**
- * Server names become config keys and command arguments in three different tools, so
+ * Server names become config keys and command arguments in five different tools, so
  * keep them boring: lowercase, no spaces, no punctuation beyond a hyphen.
  */
 export function isValidServerName(name) {
@@ -402,14 +564,69 @@ export function isValidHttpUrl(url) {
   }
 }
 
+/**
+ * Characters a local server's command, arguments and environment values may not contain.
+ *
+ * On Windows these values are joined into one line for cmd.exe (see CLIENTS), and a
+ * client installed as a .cmd file hands them through cmd a second time. Quoting keeps
+ * spaces in one piece, but only refusing these keeps a value from doing anything else:
+ * `& | < > ( )` start or redirect another command, `^` is cmd's escape character, `%`
+ * expands a variable whose value could itself carry any of the others, and `"` would let
+ * a value close the quotes put around it. The rest are the POSIX shell's equivalents,
+ * refused too so a definition means the same thing on every machine it is imported to.
+ */
+const SHELL_UNSAFE = /[\r\n\0"'`<>|&;$()%^]/;
+
+/** A local stdio command (executable name or path), free of shell metacharacters. */
+export function isValidStdioCommand(command) {
+  if (typeof command !== 'string') return false;
+  const trimmed = command.trim();
+  if (!trimmed || trimmed.length > 512) return false;
+  return !SHELL_UNSAFE.test(trimmed);
+}
+
+/** Optional stdio argument list: an array of non-empty strings held to the same rule. */
+export function isValidStdioArgs(args) {
+  if (args === undefined) return true;
+  if (!Array.isArray(args) || args.length > 64) return false;
+  return args.every((a) => typeof a === 'string' && a.length > 0 && a.length <= 512 && !SHELL_UNSAFE.test(a));
+}
+
+/** Optional stdio environment map: variable-name keys, and values held to the same rule. */
+export function isValidStdioEnv(env) {
+  if (env === undefined) return true;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return false;
+  const keys = Object.keys(env);
+  if (keys.length > 64) return false;
+  return keys.every((k) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(k)
+    && typeof env[k] === 'string' && env[k].length <= 2048 && !SHELL_UNSAFE.test(env[k]));
+}
+
 /** Throws with a readable reason, so callers do not have to compose the message. */
 export function assertValidServer(server) {
-  if (!server || typeof server !== 'object') throw new Error('a server needs a name and a url');
+  if (!server || typeof server !== 'object') throw new Error('a server needs a name and a url or command');
   if (!isValidServerName(server.name)) {
     throw new Error(`invalid server name: ${server.name}. Use lowercase letters, digits and hyphens.`);
   }
-  if (!isValidHttpUrl(server.url)) {
-    throw new Error(`invalid server url: ${server.url}. Use a plain https address.`);
+  const hasUrl = server.url !== undefined && server.url !== null && String(server.url).trim() !== '';
+  const hasCommand = server.command !== undefined && server.command !== null && String(server.command).trim() !== '';
+  if (!hasUrl && !hasCommand) {
+    throw new Error(`invalid server url: ${server.url}. Use a plain https address or a local command.`);
+  }
+  if (hasUrl) {
+    if (!isValidHttpUrl(server.url)) {
+      throw new Error(`invalid server url: ${server.url}. Use a plain https address.`);
+    }
+    return server;
+  }
+  if (!isValidStdioCommand(server.command)) {
+    throw new Error(`invalid server command: ${server.command}. Use a program name or path with none of " ' \` < > | & ; $ ( ) % ^ in it.`);
+  }
+  if (!isValidStdioArgs(server.args)) {
+    throw new Error(`invalid server args for ${server.name}: each must be a non-empty value with none of " ' \` < > | & ; $ ( ) % ^ in it.`);
+  }
+  if (!isValidStdioEnv(server.env)) {
+    throw new Error(`invalid server env for ${server.name}: names must be variable names and values may not contain " ' \` < > | & ; $ ( ) % ^.`);
   }
   return server;
 }
@@ -432,14 +649,72 @@ export function saveServers(registry, file = mcpFile()) {
   writeJsonAtomic(file, { servers: registry.servers, disabled: registry.disabled ?? [] });
 }
 
-export function addServer(registry, { name, url, label }) {
-  assertValidServer({ name, url });
+export function addServer(registry, { name, url, command, args, env, label, note } = {}) {
+  const candidate = {
+    name,
+    ...(url !== undefined ? { url } : {}),
+    ...(command !== undefined ? { command } : {}),
+    ...(args !== undefined ? { args } : {}),
+    ...(env !== undefined ? { env } : {}),
+  };
+  assertValidServer(candidate);
   if (registry.servers.some((s) => s.name === name)) {
     throw new Error(`a server named ${name} is already registered`);
   }
-  const server = { name, url, label: label ? String(label) : name };
+  // A url wins when both arrive, exactly as it does when the server is registered, so what
+  // is stored is what a client would actually be given.
+  const local = !url && command;
+  const server = {
+    name,
+    ...(url ? { url } : {}),
+    ...(local ? { command: String(command).trim(), transport: 'stdio' } : {}),
+    ...(local && Array.isArray(args) && args.length ? { args: [...args] } : {}),
+    ...(local && env && typeof env === 'object' && Object.keys(env).length ? { env: { ...env } } : {}),
+    ...(note ? { note: String(note) } : {}),
+    label: label ? String(label) : name,
+  };
   registry.servers.push(server);
   return server;
+}
+
+/**
+ * The words after `switchboard mcp add`, as the definition they describe.
+ *
+ *   <name> <https url>
+ *   <name> [-e KEY=VALUE ...] --stdio <command> [args...]
+ *
+ * Everything after the command belongs to it, flags included, so a server that takes
+ * `--port 3000` can be written as it is. Anything else unexpected is refused rather than
+ * dropped, because a definition missing a word it was given is a server that will not
+ * start, and the place to find that out is here.
+ */
+export function parseMcpAddArgs(argv) {
+  const usage = 'usage: switchboard mcp add <name> <https url>, or switchboard mcp add <name> [-e KEY=VALUE ...] --stdio <command> [args...]';
+  const [name, ...rest] = argv ?? [];
+  if (!name || name.startsWith('-')) throw new Error(usage);
+  const stdioAt = rest.indexOf('--stdio');
+  if (stdioAt === -1) {
+    if (rest.length !== 1 || rest[0].startsWith('-')) throw new Error(usage);
+    return { name, url: rest[0] };
+  }
+  const env = {};
+  for (let i = 0; i < stdioAt; i++) {
+    const flag = rest[i];
+    if (flag !== '-e' && flag !== '--env') throw new Error(`unexpected ${flag} before --stdio. ${usage}`);
+    const pair = rest[i + 1];
+    const eq = typeof pair === 'string' && i + 1 < stdioAt ? pair.indexOf('=') : -1;
+    if (eq < 1) throw new Error(`${flag} needs KEY=VALUE. ${usage}`);
+    env[pair.slice(0, eq)] = pair.slice(eq + 1);
+    i++;
+  }
+  const command = rest[stdioAt + 1];
+  if (!command) throw new Error(`--stdio needs the command to run. ${usage}`);
+  return {
+    name,
+    command,
+    args: rest.slice(stdioAt + 2),
+    ...(Object.keys(env).length ? { env } : {}),
+  };
 }
 
 export function removeServer(registry, name) {
@@ -541,6 +816,38 @@ export function browseServers(registry = loadServers()) {
 }
 
 /**
+ * A local server found in a client's config is listed by name and command only (see
+ * parseJsonServerEntries), but copying it into another client needs its arguments and
+ * environment too, or the copy cannot start. They are read from the client's own entry
+ * at the moment of copying, checked like anything typed in, and never kept here.
+ */
+function enrichDiscoveredStdioServer(server, clientIds, capture) {
+  if (!server || !server.command || server.url) return server;
+  if (server.args !== undefined || server.env !== undefined) return server;
+  for (const id of clientIds) {
+    if (!CLIENTS[id]) continue;
+    try {
+      const stash = capture(id, server.name);
+      if (!stash) continue;
+      if (stash.format === 'json' && stash.entry && typeof stash.entry === 'object') {
+        const enriched = { ...server };
+        if (Array.isArray(stash.entry.args) && isValidStdioArgs(stash.entry.args)) enriched.args = [...stash.entry.args];
+        if (stash.entry.env && typeof stash.entry.env === 'object' && isValidStdioEnv(stash.entry.env)) enriched.env = { ...stash.entry.env };
+        return enriched;
+      }
+      if (stash.format === 'toml' && typeof stash.block === 'string') {
+        const details = parseCodexStdioDetails(stash.block, server.name);
+        const enriched = { ...server };
+        if (details.args && isValidStdioArgs(details.args)) enriched.args = details.args;
+        if (details.env && isValidStdioEnv(details.env)) enriched.env = details.env;
+        return enriched;
+      }
+    } catch { /* that client's config cannot be read: try the next one */ }
+  }
+  return server;
+}
+
+/**
  * The definition behind a name: from the catalogue, from what was added by hand, or from
  * a client's own config. Registering and removing send a name and nothing else, so this
  * is the single place a name turns back into an address.
@@ -548,11 +855,11 @@ export function browseServers(registry = loadServers()) {
  * The catalogue has to be part of that, and once was not: every browse row outside the
  * six suggestions failed with "no such server" the moment its button was clicked.
  */
-export function resolveServerByName(name, registry = loadServers(), clientIds = Object.keys(CLIENTS), read = registeredServers) {
+export function resolveServerByName(name, registry = loadServers(), clientIds = Object.keys(CLIENTS), read = registeredServers, capture = captureClientEntry) {
   const found = browseServers(registry).find((s) => s.name === name)
     ?? activeServers(registry, clientIds, read).find((s) => s.name === name);
   if (!found) throw new Error(`no such server: ${name}`);
-  return found;
+  return enrichDiscoveredStdioServer(found, clientIds, capture);
 }
 
 function client(clientId) {
@@ -562,6 +869,19 @@ function client(clientId) {
 }
 
 const execOpts = { windowsHide: true, timeout: 60000, shell: process.platform === 'win32' };
+
+/**
+ * Arguments as cmd.exe must see them. With `shell` set, Node joins the arguments with
+ * spaces and quotes nothing, so a path with a space in it arrives as two arguments.
+ * Wrapping a value that has whitespace keeps it whole. Nothing that reaches here can hold
+ * a quote of its own (the checks above refuse one), so the wrapping cannot be closed
+ * early. A trailing backslash is doubled, because the program on the other end would
+ * otherwise read `\"` as a literal quote and run the next argument into this one.
+ */
+export function quoteWinShellArgs(args, platform = process.platform) {
+  if (platform !== 'win32') return args;
+  return args.map((a) => (typeof a === 'string' && /\s/.test(a) ? `"${a.replace(/(\\+)$/, '$1$1')}"` : a));
+}
 
 /**
  * Whether the client is on this machine. Most are a binary on PATH; a plugin-style client
@@ -595,10 +915,6 @@ export function canRegister(server) {
   }
 }
 
-/**
- * Register one server with one client. Sign-in is the client's own business and may
- * open a browser; that is the vendor's flow and Switchboard neither drives nor sees it.
- */
 /** Whether a server can work in a given client at all. No `only` list means anywhere. */
 export function supportsClient(server, clientId) {
   const only = server?.only;
@@ -626,6 +942,160 @@ export function cleanCliError(text) {
   return out || 'the command failed without saying why';
 }
 
+/**
+ * Read one JSON config for copying servers into it. The result says either what is in it
+ * or why it must be left alone. A file that is missing is not reported: there is nothing
+ * there to share with, and creating a client's whole state file just to hold a server
+ * list is not this module's place. A file that cannot be read, is empty, will not parse,
+ * or holds something other than a server map under the root key is reported and never
+ * written, because rewriting a file nobody could read is how a client loses everything
+ * in it. An empty file is most likely one its own client is part way through writing.
+ */
+function readServerMap(file, rootKey) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    return { skip: e?.code === 'ENOENT' ? null : 'it could not be read' };
+  }
+  if (!text.trim()) return { skip: 'it is empty' };
+  let doc;
+  try {
+    doc = parseJsonObject(text);
+  } catch (e) {
+    return { skip: e.message };
+  }
+  const map = doc[rootKey];
+  if (map !== undefined && (!map || typeof map !== 'object' || Array.isArray(map))) {
+    return { skip: `its ${rootKey} is not a list of servers` };
+  }
+  return { doc, map: map ?? {} };
+}
+
+/**
+ * Antigravity's two readers each look for a different key (see CLIENTS), so an entry
+ * carrying only one of them is given the other, with the same address. Anything else is
+ * returned exactly as it was.
+ */
+function withBothAddresses(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  if (typeof entry.serverUrl === 'string' && entry.serverUrl && entry.url === undefined) return { ...entry, url: entry.serverUrl };
+  if (typeof entry.url === 'string' && entry.url && entry.serverUrl === undefined) return { ...entry, serverUrl: entry.url };
+  return entry;
+}
+
+/**
+ * Give every file in a set each server that any of them has.
+ *
+ * Only ever adds. An entry already in a file is never replaced, even where another file
+ * describes the same name differently: the one already there may have been edited by
+ * hand, and it is the one that file's sessions have been running. The single change made
+ * to an existing entry is the Antigravity address key above, which adds a key with the
+ * entry's own value and changes nothing it already says.
+ */
+function shareAcross(clientId, files, skipNames, summary) {
+  const c = CLIENTS[clientId];
+  const read = files.map((file) => ({ file, ...readServerMap(file, c.rootKey) }));
+  const merged = new Map();
+  for (const r of read) {
+    if (!r.map) continue;
+    for (const [name, entry] of Object.entries(r.map)) {
+      if (skipNames.has(name) || merged.has(name)) continue;
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      merged.set(name, clientId === 'antigravity' ? withBothAddresses(entry) : entry);
+    }
+  }
+  for (const r of read) {
+    if (r.skip) summary.skipped.push({ file: r.file, reason: r.skip });
+    if (!r.map) continue;
+    const next = { ...r.map };
+    let changed = false;
+    for (const [name, entry] of merged) {
+      if (!Object.hasOwn(next, name)) {
+        next[name] = entry;
+        changed = true;
+      } else if (clientId === 'antigravity') {
+        const filled = withBothAddresses(next[name]);
+        if (filled !== next[name]) {
+          next[name] = filled;
+          changed = true;
+        }
+      }
+    }
+    if (!changed) continue;
+    try {
+      writeConfig(r.file, JSON.stringify({ ...r.doc, [c.rootKey]: next }, null, 2) + '\n');
+      summary[clientId].push(r.file);
+    } catch (e) {
+      summary.skipped.push({ file: r.file, reason: `it could not be written: ${e?.message ?? e}` });
+    }
+  }
+}
+
+/**
+ * Share MCP servers across every Claude Code account and every Antigravity home.
+ *
+ * Claude Code and Antigravity each keep several lists on one machine (see
+ * claudeAllConfigFiles and antigravityAllConfigFiles), and each session reads exactly one
+ * of them, so a server registered while one account was active was missing the moment
+ * another was. This puts every server any list has into every other list of the same
+ * client, backing each file up before it is changed. It runs whenever the MCP tab opens
+ * and on `switchboard mcp`, so a server added outside Switchboard is shared too.
+ *
+ * A server switched off here is left out, or the next sync would quietly switch it back
+ * on from whichever list still had a copy. The lists to work on can be handed in, which
+ * is how the tests keep away from the real ones.
+ */
+export function syncClientAccountMirrors(registry = loadServers(), {
+  claudeFiles = claudeAllConfigFiles(),
+  antigravityFiles = antigravityAllConfigFiles(),
+} = {}) {
+  const skipNames = new Set((registry.disabled ?? []).map((d) => d.name));
+  const summary = { claude: [], antigravity: [], skipped: [] };
+  shareAcross('claude', claudeFiles, skipNames, summary);
+  shareAcross('antigravity', antigravityFiles, skipNames, summary);
+  return summary;
+}
+
+/**
+ * After a client's own CLI has added a server, put the same entry in that client's other
+ * lists, so it is there whichever account or home starts next. Additive like the sync:
+ * a list that already has the name keeps its own entry, a list that does not exist yet is
+ * not created, and one that cannot be parsed is left alone.
+ */
+function addToClientMirrorFiles(clientId, name, entry) {
+  const c = client(clientId);
+  if (c.format !== 'json' || (clientId !== 'claude' && clientId !== 'antigravity')) return;
+  for (const file of clientConfigFiles(clientId)) {
+    const r = readServerMap(file, c.rootKey);
+    if (!r.map || Object.hasOwn(r.map, name)) continue;
+    try {
+      writeConfig(file, JSON.stringify({ ...r.doc, [c.rootKey]: { ...r.map, [name]: entry } }, null, 2) + '\n');
+    } catch { /* best effort: the client's own list already has it, and the next sync retries */ }
+  }
+}
+
+/**
+ * Take a server out of every list a multi-home client keeps. Without this, removing it
+ * from the active account would last only until the next sync copied it back in from
+ * another account's list.
+ */
+function removeFromClientMirrorFiles(clientId, name) {
+  const c = client(clientId);
+  if (c.format !== 'json' || (clientId !== 'claude' && clientId !== 'antigravity')) return;
+  for (const file of clientConfigFiles(clientId)) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      const { changed, out } = deleteJsonServer(readIfPresent(file), c.rootKey, name);
+      if (changed) writeConfig(file, out);
+    } catch { /* a file that will not parse is left exactly as it is */ }
+  }
+}
+
+/**
+ * Register one server with one client. Sign-in is the client's own business and may
+ * open a browser; that is the vendor's flow and Switchboard neither drives nor sees it.
+ */
 export async function registerServer(clientId, server) {
   const c = client(clientId);
   assertValidServer(server);
@@ -644,12 +1114,13 @@ export async function registerServer(clientId, server) {
   // so anything this call created is taken back out before the error is reported.
   const wasThere = registeredNames(c.id).includes(server.name);
   try {
-    const { stdout, stderr } = await run(c.bin, c.addArgs(server), execOpts);
+    const { stdout, stderr } = await run(c.bin, quoteWinShellArgs(c.addArgs(server)), execOpts);
+    if (c.entry) addToClientMirrorFiles(c.id, server.name, c.entry(server));
     return { ok: true, client: c.id, server: server.name, output: `${stdout ?? ''}${stderr ?? ''}`.trim() };
   } catch (e) {
     if (!wasThere && registeredNames(c.id).includes(server.name) && c.removeArgs) {
       try {
-        await run(c.bin, c.removeArgs(server), execOpts);
+        await run(c.bin, quoteWinShellArgs(c.removeArgs(server)), execOpts);
       } catch { /* best effort: the reported failure matters more than a tidy rollback */ }
     }
     const err = new Error(`${c.name} could not add ${server.name}: ${cleanCliError(e?.stderr || e?.message || e)}`);
@@ -660,9 +1131,8 @@ export async function registerServer(clientId, server) {
 
 export async function unregisterServer(clientId, server) {
   const c = client(clientId);
-  // Deliberately not assertValidServer: that demands an https url, and removing needs no
-  // url at all. A server the client starts itself has none, so requiring one refused to
-  // remove the very servers that can only be removed here.
+  // Deliberately not assertValidServer: that demands an address, and removing needs no
+  // address at all. Requiring one refused to remove servers Switchboard could not describe.
   if (!isRemovableServerName(server?.name)) {
     throw new Error(`invalid server name: ${server?.name}`);
   }
@@ -674,8 +1144,21 @@ export async function unregisterServer(clientId, server) {
     return { ok: true, client: c.id, server: server.name, output: `Removed ${server.name} from ${file}` };
   }
   if (!c.removeArgs) throw new Error(`${c.name} has no remove command.`);
-  const { stdout, stderr } = await run(c.bin, c.removeArgs(server), execOpts);
-  return { ok: true, client: c.id, server: server.name, output: `${stdout ?? ''}${stderr ?? ''}`.trim() };
+  let cliOut = '';
+  try {
+    const { stdout, stderr } = await run(c.bin, quoteWinShellArgs(c.removeArgs(server)), execOpts);
+    cliOut = `${stdout ?? ''}${stderr ?? ''}`.trim();
+  } catch (e) {
+    // The CLI only sees the active account's list, and fails when the server lives in
+    // another one. The lists are removed from directly below either way, so for a client
+    // that keeps several, that failure is not the answer.
+    if (c.id !== 'claude' && c.id !== 'antigravity') throw e;
+  }
+  removeFromClientMirrorFiles(c.id, server.name);
+  if (registeredNames(c.id).includes(server.name)) {
+    throw new Error(`${c.name} could not remove ${server.name}: it is still listed in one of its config files`);
+  }
+  return { ok: true, client: c.id, server: server.name, output: cliOut || `Removed ${server.name}` };
 }
 
 function readIfPresent(file) {
@@ -693,13 +1176,25 @@ function readIfPresent(file) {
  */
 export const BACKUPS_KEPT = 3;
 
+/**
+ * The write itself goes to a temporary file that is then renamed over the original, so a
+ * client reading its config at the same moment (Claude Code reads `.claude.json`
+ * constantly) sees the old file or the new one, never half of one.
+ */
 function writeConfig(file, text, keep = BACKUPS_KEPT) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   if (fs.existsSync(file)) {
     fs.copyFileSync(file, `${file}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
     pruneBackups(file, keep);
   }
-  fs.writeFileSync(file, text);
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, text);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* already gone */ }
+    throw e;
+  }
 }
 
 /** Keep the newest few backups of one file. Names sort chronologically, being ISO stamps. */
@@ -722,22 +1217,34 @@ export function pruneBackups(file, keep = BACKUPS_KEPT, fsImpl = fs) {
 }
 
 /**
- * What a client already has, read straight from its config file.
+ * What a client already has, read straight from its config files.
  *
  * Note the deliberate asymmetry: registering goes through the vendor's CLI because the
  * dialects are destructive to write by hand, but reading a file is harmless and instant.
  * Asking each CLI instead would mean running `mcp list`, and at least one of them health
  * checks every server first, which takes tens of seconds and would make the panel crawl.
+ *
+ * For a client that keeps several lists, a server in any of them counts: the sync makes
+ * them agree, and until it has, the server is still one a session of that client can use.
  */
 export function registeredServers(clientId) {
   const c = client(clientId);
-  let text;
-  try {
-    text = fs.readFileSync(c.configFile(), 'utf8');
-  } catch {
-    return []; // no config yet, or unreadable: nothing is registered as far as we can tell
+  if (c.format === 'toml') {
+    try {
+      return parseCodexServerEntries(fs.readFileSync(c.configFile(), 'utf8'));
+    } catch {
+      return []; // no config yet, or unreadable: nothing is registered as far as we can tell
+    }
   }
-  return c.format === 'toml' ? parseCodexServerEntries(text) : parseJsonServerEntries(text, c.rootKey);
+  const byName = new Map();
+  for (const file of clientConfigFiles(clientId)) {
+    try {
+      for (const entry of parseJsonServerEntries(fs.readFileSync(file, 'utf8'), c.rootKey)) {
+        if (!byName.has(entry.name)) byName.set(entry.name, entry);
+      }
+    } catch { /* no config there yet */ }
+  }
+  return [...byName.values()];
 }
 
 /** Just the names, for the callers that only need to know whether a server is there. */
@@ -781,9 +1288,9 @@ export function registrationMatrix(servers, clientIds = Object.keys(CLIENTS), re
   }
   return servers.map((s) => ({
     ...s,
-    // Whether Switchboard could put this server into another client. It cannot invent an
-    // address, and it only ever writes remote https ones, so a server the client starts
-    // itself is shown where it is and offered nowhere else.
+    // Whether Switchboard could put this server into another client: a remote https
+    // address, or a local command that passes the same checks as one typed in. A loopback
+    // http address is shown where it is and offered nowhere else.
     addable: canRegister(s),
     state: Object.fromEntries(clientIds.map((id) => {
       if (!names[id].has(s.name)) return [id, 'off'];
@@ -813,9 +1320,9 @@ export async function listRegistered(clientId) {
  *
  * Unchecking a server client by client works, but it is not the same job: someone who
  * wants Docker's gateway quiet wants it quiet everywhere, and for the servers most likely
- * to need that, taking them out is a one-way door. Switchboard writes remote https
- * addresses and nothing else, so a server the client starts itself, or one on a loopback
- * address, can be removed here but never put back.
+ * to need that, taking them out is a one-way door. A server with a loopback address, or
+ * a local one whose entry carries anything Switchboard would not write itself, can be
+ * removed here but could never be put back from a definition.
  *
  * So switching off is a move, not a delete. Each client's own entry is copied out
  * verbatim first and kept in Switchboard's registry, then the client is told to remove
@@ -828,21 +1335,27 @@ export async function listRegistered(clientId) {
  * shown in the panel, and is never written into an exported config.
  */
 
-/** One client's own entry for a server, taken verbatim. Null when that client has none. */
-export function captureClientEntry(clientId, name, file = client(clientId).configFile()) {
+/**
+ * One client's own entry for a server, taken verbatim. Null when that client has none.
+ * For a client that keeps several lists, the first list that has it supplies the copy.
+ */
+export function captureClientEntry(clientId, name, file) {
   const c = client(clientId);
-  const text = readIfPresent(file);
-  if (!text.trim()) return null;
-  if (c.format === 'toml') {
-    const block = extractCodexServerBlock(text, name);
-    return block ? { format: 'toml', block } : null;
+  const explicitFile = file !== undefined;
+  for (const candidate of explicitFile ? [file] : clientConfigFiles(clientId)) {
+    const text = readIfPresent(candidate);
+    if (!text.trim()) continue;
+    if (c.format === 'toml') {
+      const block = extractCodexServerBlock(text, name);
+      return block ? { format: 'toml', block } : null;
+    }
+    // parseJsonObject throws on a file that will not parse, and that is the right answer:
+    // a config nobody can read is one nothing should be removed from either.
+    const map = parseJsonObject(text)[c.rootKey];
+    const entry = map && typeof map === 'object' && !Array.isArray(map) ? map[name] : undefined;
+    if (entry && typeof entry === 'object') return { format: 'json', entry };
   }
-  // parseJsonObject throws on a file that will not parse, and that is the right answer:
-  // a config nobody can read is one nothing should be removed from either.
-  const map = parseJsonObject(text)[c.rootKey];
-  const entry = map && typeof map === 'object' && !Array.isArray(map) ? map[name] : undefined;
-  if (!entry || typeof entry !== 'object') return null;
-  return { format: 'json', entry };
+  return null;
 }
 
 /**
@@ -850,24 +1363,27 @@ export function captureClientEntry(clientId, name, file = client(clientId).confi
  *
  * A client that has the server again already is left alone rather than written twice:
  * someone may have put it back by hand between the two clicks, and theirs is the newer
- * entry.
+ * entry. The same goes for each of a multi-home client's other lists.
  */
-export function restoreClientEntry(clientId, name, stash, file = client(clientId).configFile()) {
+export function restoreClientEntry(clientId, name, stash, file) {
   const c = client(clientId);
+  const explicitFile = file !== undefined;
+  const target = explicitFile ? file : c.configFile();
   const usable = stash && (stash.format === 'toml' ? typeof stash.block === 'string' : Boolean(stash.entry));
   if (!usable) throw new Error(`nothing was kept for ${name} in ${c.name}`);
-  const text = readIfPresent(file);
+  const text = readIfPresent(target);
   // Read from the same text that is about to be rewritten, rather than asking what the
   // client has: the two could be different files if this one was handed in.
   const present = c.format === 'toml'
     ? parseCodexServerNames(text).includes(name)
     : parseJsonServerNames(text, c.rootKey).includes(name);
-  if (present) return { ok: true, client: c.id, server: name, output: `${name} is already in ${file}` };
+  if (present) return { ok: true, client: c.id, server: name, output: `${name} is already in ${target}` };
   const out = stash.format === 'toml'
     ? appendCodexServerBlock(text, stash.block)
     : upsertJsonServer(text, c.rootKey, name, stash.entry);
-  writeConfig(file, out);
-  return { ok: true, client: c.id, server: name, output: `Put ${name} back into ${file}` };
+  writeConfig(target, out);
+  if (!explicitFile && stash.format === 'json') addToClientMirrorFiles(clientId, name, stash.entry);
+  return { ok: true, client: c.id, server: name, output: `Put ${name} back into ${target}` };
 }
 
 /**
@@ -921,6 +1437,7 @@ export function describeStash(stash) {
     return out;
   }
   if (typeof stash.entry?.url === 'string') out.url = stash.entry.url;
+  else if (typeof stash.entry?.serverUrl === 'string') out.url = stash.entry.serverUrl;
   if (typeof stash.entry?.command === 'string') out.command = stash.entry.command;
   return out;
 }

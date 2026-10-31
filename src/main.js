@@ -23,7 +23,7 @@ import { appRunning, bridgeProblem, bridgeRunning, candidateBridgeProcesses, lis
 import { terminalRows, terminalChips } from '../core/terminals.js';
 import { matchT3Colors, readT3Instances } from '../core/t3colors.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
-import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix, disableServer, enableServer } from '../core/mcp.js';
+import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix, disableServer, enableServer, syncClientAccountMirrors } from '../core/mcp.js';
 import { createRequire } from 'node:module';
 
 // CI stamps updateRepo into the packaged package.json (extraMetadata); the committed
@@ -38,7 +38,7 @@ import { addLane, removeLane, reorderLanes, setLaneBudget, resolveAllAccounts } 
 import { accountNote, colorDotBitmap, loginStatesFrom, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
-import { configSummary, createSwitchboardConfig, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
+import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText } from '../core/hooks.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -950,7 +950,7 @@ ipcMain.handle('sb:configImport', async () => {
   // The copies held for switched-off servers are not part of an exported config and are
   // not something an import should throw away: they are the only way those servers come
   // back, and the machine they came from is this one.
-  const nextMcp = { servers: imported.mcpServers, disabled: oldMcp.disabled ?? [] };
+  const nextMcp = { servers: keepLocalEnv(imported.mcpServers, oldMcp.servers), disabled: oldMcp.disabled ?? [] };
   try {
     saveRegistry(nextRegistry);
     saveSettings(nextSettings);
@@ -1182,12 +1182,16 @@ ipcMain.handle('sb:providerHealth', async (_e, force = false) => {
 });
 
 /**
- * MCP servers. Switchboard keeps the definition (a name and an https url) and asks each
- * client's own CLI to register it. No token passes through here and nothing is proxied:
- * every client still signs in for itself and keeps its own credentials.
+ * MCP servers. Switchboard keeps the definition (a name and an https url, or a local
+ * command) and asks each client's own CLI to register it. No sign-in passes through here
+ * and nothing is proxied: every client still signs in for itself and keeps its own
+ * credentials.
  */
 ipcMain.handle('sb:mcpState', async () => {
   const reg = loadServers();
+  // Opening the tab is when someone wants to see every account's servers, so it is when
+  // they are shared across accounts. A failure here must not stop the tab from opening.
+  try { syncClientAccountMirrors(reg); } catch { /* the panel still shows what each file has */ }
   const clients = await Promise.all(
     Object.values(MCP_CLIENTS).map(async (c) => ({
       id: c.id,
@@ -1226,9 +1230,9 @@ ipcMain.handle('sb:mcpBrowse', async (_e, { query = '', category = '' } = {}) =>
   };
 });
 
-ipcMain.handle('sb:mcpAdd', (_e, { name, url, label }) => {
+ipcMain.handle('sb:mcpAdd', (_e, payload = {}) => {
   const reg = loadServers();
-  const server = addServer(reg, { name, url, label });
+  const server = addServer(reg, payload);
   saveServers(reg);
   return { ok: true, server };
 });

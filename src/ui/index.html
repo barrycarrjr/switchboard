@@ -3281,14 +3281,33 @@ function mcpSubtabs(onPick) {
 
 /**
  * Why a server that is not registered here cannot be added, in one sentence. Switchboard
- * writes remote https addresses and nothing else, so a server the client starts itself,
- * or one on a loopback address, has to be set up inside that client.
+ * writes remote https addresses, and local commands whose name and every piece of which
+ * pass its checks (they reach a command line on Windows). Anything else, a loopback
+ * address or a name another client may refuse, has to be set up inside that client.
  */
 function mcpWhyNotAddable(server, client) {
-  if (!server.url) {
-    return (server.label || server.name) + ' is a program the client starts itself, so it has to be set up inside ' + client.name + '.';
+  const name = server.label || server.name;
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(String(server.name || ''))) {
+    return name + ' has a name Switchboard does not copy between clients (lowercase letters, digits and hyphens only), so it has to be set up inside ' + client.name + '.';
   }
-  return 'Switchboard adds remote https servers only, so ' + (server.label || server.name) + ' has to be set up inside ' + client.name + '.';
+  if (!server.url) {
+    return name + ' starts a program with characters Switchboard will not put on a command line, so it has to be set up inside ' + client.name + '.';
+  }
+  return 'Switchboard adds remote https servers only, so ' + name + ' has to be set up inside ' + client.name + '.';
+}
+
+/**
+ * What the add form sends. An https address is a remote server; anything else typed in
+ * the address box is the command a local server runs, with the arguments box split on
+ * spaces. A path with a space in it therefore needs the terminal (`switchboard mcp add`),
+ * which takes each argument as typed.
+ */
+function mcpAddPayload(name, target, rawArgs) {
+  const n = String(name || '').trim();
+  const t = String(target || '').trim();
+  const a = String(rawArgs || '').trim();
+  if (/^https?:\/\//i.test(t) || (!t && !a)) return { name: n, url: t, label: n };
+  return { name: n, command: t, args: a ? a.split(/\s+/) : [], label: n };
 }
 
 /**
@@ -3407,7 +3426,9 @@ function mcpChip(server, client, onDone) {
         toast((server.label || server.title || server.name) + ' removed from ' + client.name + '.');
       } else {
         await sb.mcpRegister(client.id, server.name);
-        toast('Added to ' + client.name + '. Sign in from ' + client.name + ' itself when it first connects.');
+        toast(server.url
+          ? 'Added to ' + client.name + '. Sign in from ' + client.name + ' itself when it first connects.'
+          : 'Added ' + (server.label || server.title || server.name) + ' to ' + client.name + '.');
       }
     } catch (e) {
       toast(mcpError(e));
@@ -3523,12 +3544,15 @@ async function renderMcp() {
   nameIn.placeholder = 'name (e.g. my-tracker)';
   nameIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 140px;min-width:120px;max-width:100%';
   const urlIn = el('input');
-  urlIn.placeholder = 'https://.../mcp';
-  urlIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 140px;min-width:120px;max-width:100%';
+  urlIn.placeholder = 'https://.../mcp, or a local command such as node';
+  urlIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 180px;min-width:140px;max-width:100%';
+  const argsIn = el('input');
+  argsIn.placeholder = 'arguments for a local command (optional)';
+  argsIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 140px;min-width:120px;max-width:100%';
   const add = el('button', 'btn primary', 'Add server');
   add.addEventListener('click', async () => {
     try {
-      await sb.mcpAdd({ name: nameIn.value.trim(), url: urlIn.value.trim(), label: nameIn.value.trim() });
+      await sb.mcpAdd(mcpAddPayload(nameIn.value, urlIn.value, argsIn.value));
       renderMcp();
     } catch (e) {
       toast(e.message || String(e));
@@ -3536,6 +3560,7 @@ async function renderMcp() {
   });
   foot.appendChild(nameIn);
   foot.appendChild(urlIn);
+  foot.appendChild(argsIn);
   foot.appendChild(add);
   panel.appendChild(foot);
   realPanel.replaceChildren(...panel.childNodes);

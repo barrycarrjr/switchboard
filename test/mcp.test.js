@@ -50,6 +50,14 @@ import {
   disableServer,
   enableServer,
   disabledServers,
+  syncClientAccountMirrors,
+  claudeAllConfigFiles,
+  antigravityAllConfigFiles,
+  isValidStdioCommand,
+  isValidStdioArgs,
+  isValidStdioEnv,
+  quoteWinShellArgs,
+  parseMcpAddArgs,
 } from '../core/mcp.js';
 
 function tmp() {
@@ -334,7 +342,7 @@ test('a registered suggestion is described in the curated wording', () => {
 test('a server only the client knows about is still listed', () => {
   const rows = activeServers({ servers: [] }, ['junie'], registeredIn({
     junie: [{ name: 'unifi-home', command: 'C:\\bin\\unifi-mcp-server.exe' }],
-  }));
+  }), () => null);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].name, 'unifi-home');
   assert.equal(rows[0].command, 'C:\\bin\\unifi-mcp-server.exe', 'so the row can say what it runs');
@@ -374,7 +382,7 @@ test('any catalogue server resolves by name, not just the suggestions', () => {
 test('a server found in a client config resolves too, so it can be removed again', () => {
   const found = resolveServerByName('unifi-home', { servers: [] }, ['junie'], registeredIn({
     junie: [{ name: 'unifi-home', command: 'C:\\bin\\unifi-mcp-server.exe' }],
-  }));
+  }), () => null);
   assert.equal(found.name, 'unifi-home');
 });
 
@@ -387,9 +395,11 @@ test('an invented name still resolves to nothing', () => {
 
 // ---- What Switchboard can and cannot write ----
 
-test('only a plain https server with a boring name can be registered', () => {
+test('plain https servers and valid stdio servers with a boring name can be registered', () => {
   assert.ok(canRegister({ name: 'sentry', url: 'https://mcp.sentry.dev/mcp' }));
-  assert.ok(!canRegister({ name: 'unifi-home', command: 'C:\\bin\\unifi.exe' }), 'no address to write');
+  assert.ok(canRegister({ name: 'unifi-home', command: 'C:\\bin\\unifi.exe' }), 'valid stdio command is addable');
+  assert.ok(canRegister({ name: 'google-workspace', command: 'node', args: ['C:\\mcp\\server.mjs'], env: { KEY: 'val' } }));
+  assert.ok(!canRegister({ name: 'bad-stdio', command: 'node; calc' }), 'shell metacharacters in command are refused');
   assert.ok(!canRegister({ name: 'phpstorm', url: 'http://127.0.0.1:64410/stream' }), 'not https');
   assert.ok(!canRegister({ name: 'MCP_DOCKER', url: 'https://example.com/mcp' }), 'not a usable config key');
 });
@@ -398,9 +408,11 @@ test('the matrix says whether a row can be offered to other clients', () => {
   const rows = registrationMatrix([
     { name: 'sentry', url: 'https://mcp.sentry.dev/mcp' },
     { name: 'unifi-home', command: 'C:\\bin\\unifi.exe' },
+    { name: 'phpstorm', url: 'http://127.0.0.1:64410/stream' },
   ], []);
   assert.equal(rows[0].addable, true);
-  assert.equal(rows[1].addable, false);
+  assert.equal(rows[1].addable, true);
+  assert.equal(rows[2].addable, false);
 });
 
 // A local server has nothing to sign in to, so the "registered, not signed in yet" warning
@@ -821,8 +833,8 @@ test('an empty failure still says something', () => {
 // A server the client starts itself has no url at all, so the panel listed servers it
 // then refused to remove: unchecking Junie on unifi-home answered "invalid server url:
 // undefined". Removing needs a name and nothing else.
-test('removing needs a name, not a url', () => {
-  const discovered = { name: 'unifi-home', command: 'D:\\tools\\unifi.exe' };
+test('removing needs a name, not a url or command', () => {
+  const discovered = { name: 'unifi-home' };
   assert.throws(() => assertValidServer(discovered), /invalid server url/, 'the rule that used to gate removal');
   assert.ok(isRemovableServerName(discovered.name), 'the rule that gates it now');
 });
@@ -852,7 +864,22 @@ test('a name that a shell would act on is still refused', async () => {
 
 test('adding is still held to the stricter rule', () => {
   assert.throws(() => assertValidServer({ name: 'MCP_DOCKER', url: 'https://example.com/mcp' }), /invalid server name/);
-  assert.throws(() => assertValidServer({ name: 'ok', command: 'thing' }), /invalid server url/);
+  assert.throws(() => assertValidServer({ name: 'ok' }), /invalid server url/);
+  assert.throws(() => assertValidServer({ name: 'ok', command: 'bad;cmd' }), /invalid server command/);
+});
+
+test('antigravity is a supported client for both http and stdio servers', () => {
+  assert.ok(CLIENTS.antigravity, 'antigravity is in CLIENTS');
+  assert.equal(CLIENTS.antigravity.bin, 'agy');
+  const httpSrv = { name: 'sentry', url: 'https://mcp.sentry.dev/mcp' };
+  assert.deepEqual(CLIENTS.antigravity.addArgs(httpSrv), ['mcp', 'add', '-t', 'http', 'sentry', 'https://mcp.sentry.dev/mcp']);
+  assert.deepEqual(CLIENTS.antigravity.entry(httpSrv), { url: 'https://mcp.sentry.dev/mcp', serverUrl: 'https://mcp.sentry.dev/mcp', disabled: false });
+
+  const stdioSrv = { name: 'google-workspace', command: 'node', args: ['C:\\server.mjs'], env: { FOO: 'bar' } };
+  assert.deepEqual(CLIENTS.antigravity.addArgs(stdioSrv), ['mcp', 'add', '-t', 'stdio', '-e', 'FOO=bar', 'google-workspace', '--', 'node', 'C:\\server.mjs']);
+  assert.deepEqual(CLIENTS.antigravity.entry(stdioSrv), { command: 'node', args: ['C:\\server.mjs'], env: { FOO: 'bar' }, disabled: false });
+  assert.deepEqual(CLIENTS.claude.addArgs(stdioSrv), ['mcp', 'add', '-t', 'stdio', '-s', 'user', 'google-workspace', '-e', 'FOO=bar', '--', 'node', 'C:\\server.mjs']);
+  assert.deepEqual(CLIENTS.codex.addArgs(stdioSrv), ['mcp', 'add', 'google-workspace', '--env', 'FOO=bar', '--', 'node', 'C:\\server.mjs']);
 });
 
 // ---- Switching a whole server off, and back on ----
@@ -1105,4 +1132,270 @@ test('the copies survive a save and a load', () => {
   reg.disabled = [{ name: 'MCP_DOCKER', at: '2026-01-01T00:00:00.000Z', clients: { junie: { format: 'json', entry: DOCKER_ENTRY } } }];
   saveServers(reg, file);
   assert.deepEqual(loadServers(file).disabled[0].clients.junie.entry, DOCKER_ENTRY);
+});
+
+// ---- Local (stdio) servers: what may reach a command line ----
+
+// On Windows every client CLI runs through cmd.exe, and a client installed as a .cmd file
+// hands its arguments through cmd a second time. A value that can end the line early, or
+// expand into something that can, is a second command waiting to run.
+test('a local server is refused anything a shell could act on', () => {
+  for (const ch of ['&', '|', '<', '>', '(', ')', '^', '%', '"', "'", '`', ';', '$', '\n', '\r', '\0']) {
+    assert.ok(!isValidStdioCommand(`node${ch}calc`), `command with ${JSON.stringify(ch)}`);
+    assert.ok(!isValidStdioArgs(['ok', `a${ch}b`]), `argument with ${JSON.stringify(ch)}`);
+    assert.ok(!isValidStdioEnv({ KEY: `a${ch}b` }), `environment value with ${JSON.stringify(ch)}`);
+  }
+  assert.ok(!isValidStdioEnv({ 'NOT A NAME': 'x' }), 'a key must be a variable name');
+  assert.ok(!isValidStdioEnv({ KEY: 3 }), 'a value must be text');
+  assert.ok(!isValidStdioArgs(['']), 'an empty argument would vanish on the command line');
+  assert.ok(!isValidStdioArgs('node server.mjs'), 'arguments are a list, never one string to split');
+});
+
+test('ordinary commands, paths and arguments are accepted', () => {
+  assert.ok(isValidStdioCommand('node'));
+  assert.ok(isValidStdioCommand('C:\\Program Files\\nodejs\\node.exe'));
+  assert.ok(isValidStdioArgs(['-y', '@modelcontextprotocol/server-filesystem', 'D:\\work dir\\', '--port=3000']));
+  assert.ok(isValidStdioEnv({ API_KEY: 'abc123-XYZ_=+/.', EMPTY: '' }));
+  assert.ok(isValidStdioArgs(undefined) && isValidStdioEnv(undefined), 'both are optional');
+});
+
+test('a value with a space stays one argument on a Windows command line', () => {
+  assert.deepEqual(
+    quoteWinShellArgs(['mcp', 'add', 'x', '--', 'C:\\Program Files\\node.exe', 'D:\\my dir\\', 'KEY=two words'], 'win32'),
+    ['mcp', 'add', 'x', '--', '"C:\\Program Files\\node.exe"', '"D:\\my dir\\\\"', '"KEY=two words"'],
+    'and a trailing backslash is doubled so it cannot escape the closing quote',
+  );
+  const plain = ['mcp', 'add', 'x', 'https://mcp.example.com/mcp'];
+  assert.deepEqual(quoteWinShellArgs(plain, 'win32'), plain, 'nothing to quote');
+  assert.equal(quoteWinShellArgs(plain, 'linux'), plain, 'no shell elsewhere, so nothing is touched');
+});
+
+test('every accepted local server builds a command line whose quotes all pair up', () => {
+  const server = { name: 'workspace', command: 'C:\\Program Files\\node.exe', args: ['D:\\a b\\server.mjs', 'x y\\'], env: { TOKEN: 'two words' } };
+  assertValidServer(server);
+  for (const id of ['claude', 'codex', 'antigravity']) {
+    const line = quoteWinShellArgs(CLIENTS[id].addArgs(server), 'win32').join(' ');
+    assert.equal((line.match(/"/g) ?? []).length % 2, 0, `${id}: ${line}`);
+    assert.ok(!/[&|<>^%()]/.test(line), `${id}: nothing cmd would act on`);
+  }
+});
+
+test('adding a local server stores it as one, trimmed', () => {
+  const reg = { servers: [] };
+  const server = addServer(reg, { name: 'workspace', command: '  node  ', args: ['server.mjs'], env: { KEY: 'v' } });
+  assert.deepEqual(server, { name: 'workspace', command: 'node', transport: 'stdio', args: ['server.mjs'], env: { KEY: 'v' }, label: 'workspace' });
+  assert.throws(() => addServer(reg, { name: 'bad', command: 'node', args: ['a&b'] }), /invalid server args/);
+  assert.throws(() => addServer(reg, { name: 'bad2', command: 'node', env: { KEY: '^' } }), /invalid server env/);
+});
+
+test('an address wins over a command when both arrive, as it does when registering', () => {
+  const server = addServer({ servers: [] }, { name: 'both', url: 'https://mcp.example.com/mcp', command: 'node', args: ['x'] });
+  assert.equal(server.url, 'https://mcp.example.com/mcp');
+  assert.equal(server.command, undefined);
+  assert.equal(server.args, undefined);
+});
+
+test('Claude, VS Code and Junie are given a local server in their own shapes', () => {
+  const s = { name: 'workspace', command: 'node', args: ['server.mjs'], env: { KEY: 'v' } };
+  assert.deepEqual(CLIENTS.claude.entry(s), { type: 'stdio', command: 'node', args: ['server.mjs'], env: { KEY: 'v' } });
+  assert.deepEqual(CLIENTS.vscode.entry(s), { type: 'stdio', command: 'node', args: ['server.mjs'], env: { KEY: 'v' } });
+  assert.deepEqual(CLIENTS.junie.entry(s), { command: 'node', args: ['server.mjs'], env: { KEY: 'v' } });
+  assert.deepEqual(CLIENTS.junie.entry({ name: 'bare', command: 'node' }), { command: 'node' }, 'no empty args or env');
+});
+
+test('a local server in Antigravity keeps its flags ahead of the name', () => {
+  const s = { name: 'workspace', command: 'node', args: ['--flag'], env: { A: '1', B: '2' } };
+  const args = CLIENTS.antigravity.addArgs(s);
+  assert.ok(args.lastIndexOf('-e') < args.indexOf('workspace'), 'agy rejects a flag placed after the name');
+  assert.deepEqual(args.slice(args.indexOf('--')), ['--', 'node', '--flag'], 'and a command argument starting with a dash still reaches the command');
+});
+
+// ---- `switchboard mcp add` ----
+
+test('the terminal add takes a name and an https address', () => {
+  assert.deepEqual(parseMcpAddArgs(['sentry', 'https://mcp.sentry.dev/mcp']), { name: 'sentry', url: 'https://mcp.sentry.dev/mcp' });
+});
+
+test('the terminal add takes a local command with environment values and its own flags', () => {
+  assert.deepEqual(
+    parseMcpAddArgs(['workspace', '-e', 'KEY=a=b', '--env', 'OTHER=', '--stdio', 'node', 'server.mjs', '--port', '3000', '-e', 'x']),
+    { name: 'workspace', command: 'node', args: ['server.mjs', '--port', '3000', '-e', 'x'], env: { KEY: 'a=b', OTHER: '' } },
+  );
+  assert.deepEqual(parseMcpAddArgs(['bare', '--stdio', 'node']), { name: 'bare', command: 'node', args: [] });
+});
+
+test('the terminal add refuses words it would otherwise drop', () => {
+  assert.throws(() => parseMcpAddArgs([]), /usage/);
+  assert.throws(() => parseMcpAddArgs(['--stdio', 'node']), /usage/, 'a name comes first');
+  assert.throws(() => parseMcpAddArgs(['sentry']), /usage/, 'no address');
+  assert.throws(() => parseMcpAddArgs(['sentry', 'https://a.example', 'extra']), /usage/);
+  assert.throws(() => parseMcpAddArgs(['workspace', '--stdio']), /needs the command/);
+  assert.throws(() => parseMcpAddArgs(['workspace', '-e', 'NOEQUALS', '--stdio', 'node']), /KEY=VALUE/);
+  assert.throws(() => parseMcpAddArgs(['workspace', '-e', '--stdio', 'node']), /KEY=VALUE/);
+  assert.throws(() => parseMcpAddArgs(['workspace', 'stray', '--stdio', 'node']), /unexpected stray/);
+});
+
+// ---- Sharing servers across accounts and homes ----
+//
+// Every file here is in a scratch folder handed to the sync, so nothing a test does can
+// reach a real `.claude.json` or Antigravity list.
+
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2));
+}
+const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
+const backupsOf = (file) => fs.readdirSync(path.dirname(file)).filter((n) => n.startsWith(path.basename(file) + '.bak-'));
+
+function claudeHomes() {
+  const dir = tmp();
+  return ['active', 'home', 'second'].map((n) => path.join(dir, n, '.claude.json'));
+}
+
+test('a server in one Claude account is copied into every other account', () => {
+  const [a, b, c] = claudeHomes();
+  writeJson(a, { numStartups: 4, mcpServers: { sentry: { type: 'http', url: 'https://mcp.sentry.dev/mcp' } } });
+  writeJson(b, { mcpServers: { workspace: { type: 'stdio', command: 'node', args: ['s.mjs'], env: { KEY: 'v' } } } });
+  writeJson(c, { theme: 'dark' });
+  const summary = syncClientAccountMirrors({ servers: [], disabled: [] }, { claudeFiles: [a, b, c], antigravityFiles: [] });
+  for (const file of [a, b, c]) {
+    assert.deepEqual(Object.keys(readJson(file).mcpServers).sort(), ['sentry', 'workspace'], file);
+  }
+  assert.deepEqual(readJson(b).mcpServers.sentry, { type: 'http', url: 'https://mcp.sentry.dev/mcp' });
+  assert.deepEqual(readJson(a).mcpServers.workspace, { type: 'stdio', command: 'node', args: ['s.mjs'], env: { KEY: 'v' } });
+  assert.equal(readJson(a).numStartups, 4, 'everything else in the file is kept');
+  assert.equal(readJson(c).theme, 'dark');
+  assert.deepEqual(summary.claude.sort(), [a, b, c].sort());
+});
+
+test('an entry already in a list is never replaced by another list\'s version', () => {
+  const [a, b] = claudeHomes();
+  writeJson(a, { mcpServers: { tracker: { type: 'http', url: 'https://one.example/mcp' } } });
+  writeJson(b, { mcpServers: { tracker: { type: 'http', url: 'https://two.example/mcp', headers: { X: '1' } } } });
+  const before = fs.readFileSync(b, 'utf8');
+  const summary = syncClientAccountMirrors({ servers: [] }, { claudeFiles: [a, b], antigravityFiles: [] });
+  assert.equal(fs.readFileSync(b, 'utf8'), before);
+  assert.equal(readJson(a).mcpServers.tracker.url, 'https://one.example/mcp');
+  assert.deepEqual(summary.claude, [], 'nothing needed writing');
+  assert.deepEqual(backupsOf(a), [], 'and a file left as it was gets no backup either');
+});
+
+test('a server switched off in Switchboard is not copied back in from another list', () => {
+  const [a, b] = claudeHomes();
+  writeJson(a, { mcpServers: { quiet: { type: 'http', url: 'https://q.example/mcp' }, loud: { type: 'http', url: 'https://l.example/mcp' } } });
+  writeJson(b, { mcpServers: {} });
+  syncClientAccountMirrors({ servers: [], disabled: [{ name: 'quiet', clients: {} }] }, { claudeFiles: [a, b], antigravityFiles: [] });
+  assert.deepEqual(Object.keys(readJson(b).mcpServers), ['loud']);
+});
+
+test('a list that will not parse is reported and never written, and the others still are', () => {
+  const [a, b, c] = claudeHomes();
+  writeJson(a, { mcpServers: { sentry: { type: 'http', url: 'https://mcp.sentry.dev/mcp' } } });
+  fs.mkdirSync(path.dirname(b), { recursive: true });
+  fs.writeFileSync(b, '{"mcpServers": {broken');
+  writeJson(c, {});
+  const summary = syncClientAccountMirrors({ servers: [] }, { claudeFiles: [a, b, c], antigravityFiles: [] });
+  assert.equal(fs.readFileSync(b, 'utf8'), '{"mcpServers": {broken');
+  assert.deepEqual(backupsOf(b), []);
+  assert.deepEqual(summary.skipped.map((s) => s.file), [b]);
+  assert.match(summary.skipped[0].reason, /not valid JSON/);
+  assert.ok(readJson(c).mcpServers.sentry, 'one bad file does not stop the rest');
+});
+
+test('an empty list, or one whose server map is not a map, is left alone', () => {
+  const [a, b, c] = claudeHomes();
+  writeJson(a, { mcpServers: { sentry: { type: 'http', url: 'https://mcp.sentry.dev/mcp' } } });
+  fs.mkdirSync(path.dirname(b), { recursive: true });
+  fs.writeFileSync(b, '');
+  writeJson(c, { mcpServers: ['not', 'a', 'map'] });
+  const summary = syncClientAccountMirrors({ servers: [] }, { claudeFiles: [a, b, c], antigravityFiles: [] });
+  assert.equal(fs.readFileSync(b, 'utf8'), '', 'most likely its own client is part way through writing it');
+  assert.deepEqual(readJson(c).mcpServers, ['not', 'a', 'map']);
+  assert.deepEqual(summary.skipped.map((s) => s.file).sort(), [b, c].sort());
+});
+
+test('a list that does not exist yet is not created', () => {
+  const [a, b] = claudeHomes();
+  writeJson(a, { mcpServers: { sentry: { type: 'http', url: 'https://mcp.sentry.dev/mcp' } } });
+  const summary = syncClientAccountMirrors({ servers: [] }, { claudeFiles: [a, b], antigravityFiles: [] });
+  assert.equal(fs.existsSync(b), false);
+  assert.deepEqual(summary.skipped, [], 'and a missing file is not a problem worth reporting');
+});
+
+test('a list is backed up exactly as it was before a server is added to it', () => {
+  const [a, b] = claudeHomes();
+  writeJson(a, { mcpServers: { sentry: { type: 'http', url: 'https://mcp.sentry.dev/mcp' } } });
+  writeJson(b, { keep: true, mcpServers: {} });
+  const original = fs.readFileSync(b, 'utf8');
+  syncClientAccountMirrors({ servers: [] }, { claudeFiles: [a, b], antigravityFiles: [] });
+  const [backup] = backupsOf(b);
+  assert.ok(backup, 'a backup sits beside the file');
+  assert.equal(fs.readFileSync(path.join(path.dirname(b), backup), 'utf8'), original);
+  assert.ok(readJson(b).mcpServers.sentry);
+  assert.deepEqual(fs.readdirSync(path.dirname(b)).filter((n) => n.includes('.tmp-')), [], 'no temp file left behind');
+});
+
+test('repeated sharing keeps only the newest few backups of a list', () => {
+  const [a, b] = claudeHomes();
+  writeJson(b, { mcpServers: {} });
+  for (let i = 0; i < 6; i++) {
+    writeJson(a, { mcpServers: { [`s${i}`]: { type: 'http', url: `https://s${i}.example/mcp` } } });
+    syncClientAccountMirrors({ servers: [] }, { claudeFiles: [a, b], antigravityFiles: [] });
+  }
+  assert.equal(Object.keys(readJson(b).mcpServers).length, 6);
+  assert.ok(backupsOf(b).length <= 3, `kept ${backupsOf(b).length}`);
+});
+
+test('Antigravity homes share servers too, and each address carries both keys its readers use', () => {
+  const dir = tmp();
+  const own = path.join(dir, 'gemini', 'config', 'mcp_config.json');
+  const t3 = path.join(dir, 't3', 'one', 'config', 'mcp_config.json');
+  writeJson(own, { mcpServers: { remote: { serverUrl: 'https://r.example/mcp' } } });
+  writeJson(t3, { mcpServers: { local: { command: 'node', args: ['s.mjs'] }, other: { url: 'https://o.example/mcp', disabled: false } } });
+  syncClientAccountMirrors({ servers: [] }, { claudeFiles: [], antigravityFiles: [own, t3] });
+  assert.deepEqual(readJson(t3).mcpServers.remote, { serverUrl: 'https://r.example/mcp', url: 'https://r.example/mcp' });
+  assert.deepEqual(readJson(own).mcpServers.remote, { serverUrl: 'https://r.example/mcp', url: 'https://r.example/mcp' }, 'the missing key is added with the entry\'s own address');
+  assert.deepEqual(readJson(own).mcpServers.local, { command: 'node', args: ['s.mjs'] });
+  assert.deepEqual(readJson(t3).mcpServers.other, { url: 'https://o.example/mcp', disabled: false, serverUrl: 'https://o.example/mcp' });
+});
+
+test('every Claude list is found: the active one, the home one and each registered account', () => {
+  const home = tmp();
+  const active = path.join(home, '.claude-active');
+  const second = path.join(home, '.claude-second');
+  fs.mkdirSync(active);
+  fs.mkdirSync(second);
+  const accounts = path.join(home, 'accounts.json');
+  writeJson(accounts, { accounts: [
+    { provider: 'claude', home: active },
+    { provider: 'claude', home: second },
+    { provider: 'claude', home: path.join(home, 'gone') },
+    { provider: 'codex', home: path.join(home, '.codex') },
+  ] });
+  const files = claudeAllConfigFiles({ envReader: (k) => (k === 'CLAUDE_CONFIG_DIR' ? active : null), home, accounts });
+  assert.deepEqual(files, [
+    path.join(active, '.claude.json'),
+    path.join(home, '.claude.json'),
+    path.join(second, '.claude.json'),
+  ], 'the active account once, a folder that is gone not at all, and no other tool');
+  assert.deepEqual(
+    claudeAllConfigFiles({ envReader: () => null, home, accounts: path.join(home, 'missing.json') }),
+    [path.join(home, '.claude.json')],
+  );
+});
+
+test('every Antigravity list is found: its own, the IDE\'s and each T3 Code profile', () => {
+  const home = tmp();
+  fs.mkdirSync(path.join(home, '.gemini', 'antigravity-ide'), { recursive: true });
+  fs.mkdirSync(path.join(home, '.t3', 'userdata', 'providers', 'antigravity', 'p1'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.t3', 'userdata', 'providers', 'antigravity', 'stray.txt'), '');
+  const files = antigravityAllConfigFiles({ envReader: () => null, home });
+  assert.deepEqual(files, [
+    path.join(home, '.gemini', 'config', 'mcp_config.json'),
+    path.join(home, '.gemini', 'antigravity-ide', 'mcp_config.json'),
+    path.join(home, '.t3', 'userdata', 'providers', 'antigravity', 'p1', 'config', 'mcp_config.json'),
+  ]);
+  const moved = path.join(home, 'elsewhere');
+  assert.equal(antigravityAllConfigFiles({ envReader: (k) => (k === 'GEMINI_HOME' ? moved : null), home })[0],
+    path.join(moved, 'config', 'mcp_config.json'), 'GEMINI_HOME moves its own list');
 });

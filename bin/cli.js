@@ -19,6 +19,7 @@ import { parseRunArgs, loadRunSpec, resolveSpecArgv, drivableHarnesses, childStd
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, DEFAULT_THRESHOLDS } from '../core/hooks.js';
 import { recordPipedInput } from '../core/piped-input.js';
 import { matchT3Colors, readT3Instances } from '../core/t3colors.js';
+import { CLIENTS as MCP_CLIENTS, activeServers, loadServers, saveServers, addServer, removeServer, resolveServerByName, registerServer, unregisterServer, disableServer, enableServer, registrationMatrix, registeredNames, clientAvailable, syncClientAccountMirrors, parseMcpAddArgs, supportsClient } from '../core/mcp.js';
 import readline from 'node:readline/promises';
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -1359,6 +1360,120 @@ async function main() {
       out('  switchboard notify --test');
       return;
     }
+    case 'mcp': {
+      const sub = args[0] ?? 'list';
+      const reg = loadServers();
+      // Sharing servers across accounts runs before anything reads the lists, the same as
+      // opening the MCP tab, so the terminal and the tray report the same thing. A file it
+      // had to leave alone is said out loud rather than skipped in silence.
+      const share = () => {
+        const res = syncClientAccountMirrors(reg);
+        for (const s of res.skipped) out(`Left alone: ${s.file} (${s.reason})`);
+        return res;
+      };
+      if (sub === 'sync') {
+        const res = share();
+        if (args.includes('--json')) {
+          out(JSON.stringify(res, null, 2));
+          return;
+        }
+        const changed = [...res.claude, ...res.antigravity];
+        out(changed.length ? changed.map((f) => `Updated ${f} (backup kept beside it)`).join('\n') : 'Every list already had every server.');
+        return;
+      }
+      if (sub === 'list' || sub === '--json') {
+        share();
+        const clients = await Promise.all(
+          Object.values(MCP_CLIENTS).map(async (c) => ({ id: c.id, name: c.name, available: await clientAvailable(c.id) })),
+        );
+        const usable = clients.filter((c) => c.available).map((c) => c.id);
+        const rows = registrationMatrix(activeServers(reg, usable), usable);
+        if (args.includes('--json')) {
+          out(JSON.stringify({ clients, servers: rows }, null, 2));
+          return;
+        }
+        out(`Clients: ${clients.map((c) => `${c.id}(${c.available ? 'ready' : 'missing'})`).join(', ')}`);
+        for (const r of rows) {
+          const states = usable.map((id) => `${id}:${r.state[id]}`).join(' ');
+          const target = r.url || (r.command ? `stdio:${r.command}` : '');
+          out(`  ${r.name.padEnd(20)} ${states}  ${target}`);
+        }
+        return;
+      }
+      if (sub === 'add') {
+        const parsed = parseMcpAddArgs(args.slice(1));
+        const server = addServer(reg, { ...parsed, label: parsed.name });
+        saveServers(reg);
+        out(`Added MCP server ${server.name}`);
+        return;
+      }
+      if (sub === 'remove') {
+        const name = args[1];
+        if (!name) throw new Error('usage: switchboard mcp remove <name>');
+        removeServer(reg, name);
+        saveServers(reg);
+        out(`Removed MCP server ${name} from Switchboard registry`);
+        return;
+      }
+      if (sub === 'register') {
+        const name = args[1];
+        const target = args[2] ?? 'all';
+        if (!name) throw new Error('usage: switchboard mcp register <name> [client|all]');
+        const server = resolveServerByName(name, reg);
+        const ids = target === 'all'
+          ? (await Promise.all(Object.keys(MCP_CLIENTS).map(async (id) => ((await clientAvailable(id)) ? id : null)))).filter(Boolean)
+          : [target];
+        // With `all`, one client refusing (Slack outside Claude, a CLI that fails to sign
+        // in) is reported and the rest still get the server; the command then fails, so a
+        // script calling it can tell.
+        const failures = [];
+        for (const id of ids) {
+          if (target === 'all' && registeredNames(id).includes(server.name)) {
+            out(`${id}: already has ${server.name}`);
+            continue;
+          }
+          if (target === 'all' && !supportsClient(server, id)) {
+            out(`${id}: skipped, ${server.name} cannot be used from it`);
+            continue;
+          }
+          try {
+            const res = await registerServer(id, server);
+            out(`${id}: registered ${res.server}`);
+          } catch (e) {
+            if (target !== 'all') throw e;
+            failures.push(`${id}: ${e.message}`);
+          }
+        }
+        share();
+        if (failures.length) throw new Error(failures.join('; '));
+        return;
+      }
+      if (sub === 'unregister') {
+        const name = args[1];
+        const target = args[2] ?? 'all';
+        if (!name) throw new Error('usage: switchboard mcp unregister <name> [client|all]');
+        const ids = target === 'all' ? Object.keys(MCP_CLIENTS) : [target];
+        for (const id of ids) {
+          if (target === 'all' && !registeredNames(id).includes(name)) continue;
+          await unregisterServer(id, { name });
+          out(`${id}: unregistered ${name}`);
+        }
+        return;
+      }
+      if (sub === 'disable') {
+        const res = await disableServer(args[1]);
+        out(`Disabled ${res.name} in ${res.clients.join(', ')}`);
+        for (const f of res.failed) out(`  not changed: ${f}`);
+        return;
+      }
+      if (sub === 'enable') {
+        const res = enableServer(args[1]);
+        out(`Enabled ${res.name} in ${res.clients.join(', ')}`);
+        for (const f of res.failed) out(`  not changed: ${f}`);
+        return;
+      }
+      throw new Error(`unknown mcp subcommand: ${sub}. Use list|add|remove|register|unregister|disable|enable|sync`);
+    }
     default:
       out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|watch|notify|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
@@ -1375,6 +1490,9 @@ async function main() {
       out('  lane-token <laneId> [--remove|--check]   mint, delete or validate the token a lane hands to automation');
       out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
       out('  notify [--webhook <url>] [--command <cmd>] [--threshold <w=pct>] [--test] [--json]   manage notification hooks');
+      out('  mcp [list|add|remove|register|unregister|disable|enable|sync]   manage MCP servers across clients and accounts');
+      out('    mcp add <name> <https url>  |  mcp add <name> [-e KEY=VALUE ...] --stdio <command> [args...]');
+      out('    mcp register <name> [client|all]   mcp unregister <name> [client|all]   mcp disable|enable <name>');
       out('  dry-run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--spec <file>] [--json] [--with-token]   explain which lane would be selected');
       out('  run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');
       out(`  <p> is a harness (${providerList}) or the vendor behind it (anthropic|openai|google)`);

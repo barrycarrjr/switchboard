@@ -159,37 +159,87 @@ For deep-dives into architecture, guides, and full command references, see the *
 ## MCP servers
 
 An MCP server connects an AI client to an outside service such as an issue tracker or an
-error reporter. Every client keeps its own private list, so connecting one service to four
-clients means doing the same job four times, and a new machine repeats all of it.
+error reporter, or to a program on your own machine. Every client keeps its own private
+list, so connecting one service to five clients means doing the same job five times, and a
+new machine repeats all of it.
 
 The MCP tab keeps the list in one place and registers it with each client you have. Claude
-Code, Codex, Junie and VS Code are supported today. "Active servers" shows what is switched
-on right now, with a chip per client, including anything a client was given outside
-Switchboard; "Browse" is a catalogue of public servers with search and categories, and a
-short suggested list at the top of it.
+Code, Codex, Antigravity, Junie and VS Code are supported today. "Active servers" shows what
+is switched on right now, with a chip per client, including anything a client was given
+outside Switchboard; "Browse" is a catalogue of public servers with search and categories,
+and a short suggested list at the top of it.
 
-- Switchboard stores a name and an https address, nothing more. **No token ever passes
-  through it, and it opens no port and proxies nothing.** Each client still signs in for
-  itself and keeps its own credentials, exactly as it does today.
+- A server is either remote (an https address) or local (a program the client starts
+  itself, with optional arguments and environment values, for example `node` and the path
+  to a script). The add form at the foot of the tab takes either: an address starting
+  `https://`, or a command with its arguments in the box beside it. Environment values, and
+  an argument with a space in it, need the terminal (see below).
+- For a remote server, Switchboard stores a name and an https address, nothing more. **No
+  sign-in ever passes through it, and it opens no port and proxies nothing.** Each client
+  still signs in for itself and keeps its own credentials, exactly as it does today. A
+  local server's environment values often hold an API key, so be aware they are kept in
+  `%APPDATA%\Switchboard\mcp.json` and written into each client you add the server to,
+  just as that client would keep them if you set it up there by hand.
+- A local server's command, arguments and environment values may not contain any of
+  `` " ' ` < > | & ; $ ( ) % ^ ``. On Windows the clients' own commands run through the
+  command prompt, and those are the characters that could make a value start a second
+  command. A server whose entry uses one can still be shown and removed here, but has to be
+  set up inside the client itself.
 - Registration delegates to the client's own CLI where one exists, because the config
   formats genuinely conflict and at least one client destroys its whole server list when
   handed a shape it does not expect. Where a file must be edited, a timestamped backup is
   written first and a config that cannot be parsed is refused rather than overwritten.
+- Claude Code and Antigravity each keep more than one list on a machine, and a session
+  reads only one of them, so a server added while one account was in use used to be missing
+  under the next. Switchboard now shares them automatically: every server any of these
+  lists has is added to every other list of the same tool. For Claude Code the lists are the
+  `.claude.json` in the folder `CLAUDE_CONFIG_DIR` points at, the one in your home folder
+  (something may start Claude without that variable set), and the one in each Claude
+  account's folder registered here. For Antigravity they are `~/.gemini/config`,
+  `~/.gemini/antigravity-ide`, and each profile T3 Code keeps under
+  `~/.t3/userdata/providers/antigravity`, each holding an `mcp_config.json`.
+- That sharing runs whenever the MCP tab opens and on `switchboard mcp list`, `register`
+  and `sync`. It only ever adds: an entry already in a list is left exactly as it is, even
+  where another list describes the same name differently, and the one change it makes to an
+  existing Antigravity entry is to add the second address key Antigravity's two readers use,
+  with the entry's own address. Every file is backed up beside itself before it is changed,
+  and only the newest three backups are kept. A file that does not exist yet is not
+  created, and a file that is empty, cannot be read or will not parse is left alone and
+  named in the output of `switchboard mcp sync`. A server switched off here is not shared,
+  so it cannot creep back on from a list that still had it.
 - A chip shows four states: not registered, registered and signed in, registered but not
   signed in, and plain registered for a client that cannot report its sign-in state. A
   tick that meant "signed out and broken" would be worse than no tick, so that last case
   says what it knows rather than guessing.
 - The mark at the left of an active row is a switch for the whole server: one click takes
   it out of every client that has it, and the next click puts it back. Switching off
-  copies each client's own entry out first, so it works for the servers a client starts
-  itself, which Switchboard could otherwise remove but never re-create. Those copies are
-  the client's entry as written, arguments and environment included, because a partial
-  copy could not be put back; they live in `%APPDATA%\Switchboard\mcp.json`, are never
-  shown in the panel, and are not part of an exported configuration. A client that refuses
-  keeps its copy and is named in the message, so the button can be pressed again.
+  copies each client's own entry out first, so it works for servers Switchboard could
+  remove but never re-create. Those copies are the client's entry as written, arguments
+  and environment included, because a partial copy could not be put back; they live in
+  `%APPDATA%\Switchboard\mcp.json`, are never shown in the panel, and are not part of an
+  exported configuration. A client that refuses keeps its copy and is named in the
+  message, so the button can be pressed again.
 - Servers needing an API key are deliberately absent from the catalogue. They cannot work
   without stored secrets, and listing them would offer a server that looks configured and
   fails on first use.
+
+The same is available from a terminal:
+
+```
+switchboard mcp list [--json]                       servers and their state in each client
+switchboard mcp add <name> <https url>              add a remote server to the list
+switchboard mcp add <name> [-e KEY=VALUE ...] --stdio <command> [args...]
+                                                    add a local server; everything after
+                                                    the command is passed to it as typed
+switchboard mcp remove <name>                       take a server off Switchboard's list
+switchboard mcp register <name> [client|all]        give a server to one client, or every one here
+switchboard mcp unregister <name> [client|all]      take it out of one client, or every one
+switchboard mcp disable <name>                      switch it off everywhere, keeping a copy
+switchboard mcp enable <name>                       put it back from that copy
+switchboard mcp sync [--json]                       share servers across accounts now
+```
+
+`<client>` is one of `claude`, `codex`, `antigravity`, `junie` or `vscode`.
 
 ## Install
 
@@ -207,8 +257,10 @@ Apps & Features, and running a newer setup upgrades in place. App data lives in
 The About panel can export the portable part of Switchboard's own configuration to a
 versioned JSON file and import it later: account registrations and active choices,
 preferences, custom app launchers, and custom MCP server definitions. It does not contain
-tokens, vendor credential files, or MCP client sign-ins, and it does not carry the lane
-pool, spend policies or lane tokens, which stay on the machine that set them up. Import
+tokens, vendor credential files, MCP client sign-ins, or the environment values of a local
+MCP server (an import keeps the ones this machine already has for the same server), and
+it does not carry the lane pool, spend policies or lane tokens, which stay on the machine
+that set them up. Import
 validates the complete file and writes a pre-import recovery backup under
 `%APPDATA%\Switchboard\backups` before replacing anything.
 An in-app upgrade writes the same kind of importable backup immediately before its setup

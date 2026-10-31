@@ -138,7 +138,11 @@ function normalizeServers(value) {
     const server = object(raw, `mcpServers[${i}] must be an object`);
     const clean = {
       name: text(server.name, `mcpServers[${i}].name`, 64),
-      url: text(server.url, `mcpServers[${i}].url`, 2048),
+      ...(server.url != null ? { url: text(server.url, `mcpServers[${i}].url`, 2048) } : {}),
+      ...(server.command != null ? { command: text(server.command, `mcpServers[${i}].command`, 512).trim(), transport: 'stdio' } : {}),
+      ...(Array.isArray(server.args) ? { args: server.args.map((a, j) => text(a, `mcpServers[${i}].args[${j}]`, 512)) } : {}),
+      ...(server.env != null ? { env: object(server.env, `mcpServers[${i}].env must be an object`) } : {}),
+      ...(server.note != null ? { note: text(server.note, `mcpServers[${i}].note`, 512).trim() } : {}),
       label: text(server.label ?? server.name, `mcpServers[${i}].label`, 200).trim(),
     };
     assertValidServer(clean);
@@ -214,7 +218,34 @@ export function createSwitchboardConfig({ registry, settings, mcp, activeAccount
       appProfileDirs: settings.appProfileDirs ?? {},
       updateRepo: settings.updateRepo,
     },
-    mcpServers: mcp.servers,
+    mcpServers: mcp.servers.map(withoutEnv),
+  });
+}
+
+/**
+ * A local MCP server's environment values are left out of an export. They are where such
+ * a server keeps its API keys, and an export is a file people copy, attach and keep, which
+ * is why it promises to carry no tokens. The server itself still travels, so a new machine
+ * shows it and only the values need typing in again.
+ */
+function withoutEnv(server) {
+  if (!server || typeof server !== 'object' || server.env === undefined) return server;
+  const { env: _secret, ...rest } = server;
+  return rest;
+}
+
+/**
+ * The server list an import should leave in place. An export carries no environment
+ * values (see withoutEnv), so importing one on the machine it came from, or restoring the
+ * backup taken before an upgrade, would otherwise wipe the values every local server here
+ * was set up with. A server keeps the values held for it here when it is still the same
+ * server: same name, same command.
+ */
+export function keepLocalEnv(imported, current = []) {
+  return imported.map((server) => {
+    if (!server?.command || server.env !== undefined) return server;
+    const here = (current ?? []).find((s) => s?.name === server.name && s?.command === server.command);
+    return here?.env && typeof here.env === 'object' ? { ...server, env: { ...here.env } } : server;
   });
 }
 

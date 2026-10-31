@@ -8,6 +8,7 @@ import {
   CONFIG_VERSION,
   configSummary,
   createSwitchboardConfig,
+  keepLocalEnv,
   parseSwitchboardConfig,
   settingsFromConfig,
 } from '../core/config.js';
@@ -185,4 +186,56 @@ test('an imported color that is a number is refused, not read as digits', () => 
   const config = fixture();
   config.accounts[0].color = 123;
   assert.throws(() => parseSwitchboardConfig(JSON.stringify(config)), /accounts\[0\]\.color/);
+});
+
+// ---- Local (stdio) MCP servers ----
+
+function withServers(servers) {
+  return createSwitchboardConfig({
+    registry: { accounts: [] },
+    settings: { quotaWatch: 'off', usageSources: {}, customApps: [], appOrder: [], updateRepo: null },
+    mcp: { servers },
+    now: new Date('2026-10-31T12:00:00.000Z'),
+  });
+}
+
+test('a local server travels in a config with its command and arguments', () => {
+  const config = withServers([{ name: 'workspace', command: 'node', args: ['X:\mcp\server.mjs', '--port', '3000'], label: 'Workspace', note: 'local' }]);
+  const [server] = parseSwitchboardConfig(JSON.stringify(config)).mcpServers;
+  assert.equal(server.command, 'node');
+  assert.equal(server.transport, 'stdio');
+  assert.deepEqual(server.args, ['X:\mcp\server.mjs', '--port', '3000']);
+  assert.equal(server.note, 'local');
+});
+
+test('an exported config leaves out the environment values a local server keeps its keys in', () => {
+  const config = withServers([{ name: 'workspace', command: 'node', env: { API_KEY: 'not-for-export' }, label: 'Workspace' }]);
+  assert.equal('env' in config.mcpServers[0], false);
+  assert.ok(!JSON.stringify(config).includes('not-for-export'));
+});
+
+test('an imported local server is held to the same checks as one typed in', () => {
+  const run = (server) => () => parseSwitchboardConfig(JSON.stringify({ ...withServers([]), mcpServers: [server] }));
+  assert.throws(run({ name: 'evil', command: 'node & calc', label: 'x' }), /invalid server command/);
+  assert.throws(run({ name: 'evil', command: 'node', args: ['a|b'], label: 'x' }), /invalid server args/);
+  assert.throws(run({ name: 'evil', command: 'node', env: { KEY: '%PATH%' }, label: 'x' }), /invalid server env/);
+  assert.throws(run({ name: 'evil', command: 'node', env: { 'BAD KEY': 'x' }, label: 'x' }), /invalid server env/);
+  assert.throws(run({ name: 'evil', command: 'node', env: ['x'], label: 'x' }), /env must be an object/);
+  assert.throws(run({ name: 'nothing', label: 'x' }), /invalid server url/);
+});
+
+test('an import keeps the environment values this machine already holds for the same server', () => {
+  const current = [
+    { name: 'workspace', command: 'node', env: { API_KEY: 'kept' } },
+    { name: 'moved', command: 'node', env: { API_KEY: 'old' } },
+  ];
+  const imported = [
+    { name: 'workspace', command: 'node', label: 'Workspace' },
+    { name: 'moved', command: 'python', label: 'Moved' },
+    { name: 'remote', url: 'https://mcp.example.test', label: 'Remote' },
+  ];
+  const out = keepLocalEnv(imported, current);
+  assert.deepEqual(out[0].env, { API_KEY: 'kept' });
+  assert.equal(out[1].env, undefined, 'a different command is a different server, so it starts without them');
+  assert.equal(out[2].env, undefined);
 });

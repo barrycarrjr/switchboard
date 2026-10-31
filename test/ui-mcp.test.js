@@ -117,12 +117,17 @@ test('a registered chip says it can be clicked to remove', () => {
 });
 
 // A button that can only fail is worse than a greyed one: Switchboard writes remote https
-// addresses and nothing else, so anything else has to be set up inside the client.
+// addresses, and local commands that pass its checks, so anything else has to be set up
+// inside the client.
 test('a server Switchboard cannot write is greyed out with the reason', () => {
   const { mcpChip } = loadRow();
-  const local = mcpChip({ name: 'unifi-home', command: 'D:\\tools\\unifi.exe', addable: false, state: {} }, CLIENTS[0], () => {});
+  const local = mcpChip({ name: 'unifi-home', command: 'D:\\tools\\unifi.exe & more', addable: false, state: {} }, CLIENTS[0], () => {});
   assert.equal(local.disabled, true);
-  assert.equal(local.title, 'unifi-home is a program the client starts itself, so it has to be set up inside Claude Code.');
+  assert.equal(local.title, 'unifi-home starts a program with characters Switchboard will not put on a command line, so it has to be set up inside Claude Code.');
+
+  const named = mcpChip({ name: 'MCP_DOCKER', command: 'docker', addable: false, state: {} }, CLIENTS[0], () => {});
+  assert.equal(named.title, 'MCP_DOCKER has a name Switchboard does not copy between clients (lowercase letters, digits and hyphens only), so it has to be set up inside Claude Code.',
+    'blaming the command would send someone to fix the wrong thing');
 
   const loopback = mcpChip({ name: 'phpstorm', url: 'http://127.0.0.1:64410/stream', addable: false, state: {} }, CLIENTS[1], () => {});
   assert.equal(loopback.disabled, true);
@@ -223,4 +228,12 @@ test('client ids are reported as the names on their buttons', () => {
   assert.equal(mcpClientNames(['claude', 'codex'], CLIENTS), 'Claude Code and Codex');
   assert.equal(mcpClientNames([], CLIENTS), '');
   assert.equal(mcpClientNames(['junie'], CLIENTS), 'junie', 'a client that is not here is still named, not dropped');
+});
+
+test('the add form sends an https address as a remote server and anything else as a local command', () => {
+  const mcpAddPayload = new Function(`${lift('mcpAddPayload')}\nreturn mcpAddPayload;`)();
+  assert.deepEqual(mcpAddPayload(' tracker ', ' https://mcp.example.com/mcp ', ''), { name: 'tracker', url: 'https://mcp.example.com/mcp', label: 'tracker' });
+  assert.deepEqual(mcpAddPayload('workspace', 'node', '  server.mjs   --port 3000 '), { name: 'workspace', command: 'node', args: ['server.mjs', '--port', '3000'], label: 'workspace' });
+  assert.deepEqual(mcpAddPayload('bare', 'node', ''), { name: 'bare', command: 'node', args: [], label: 'bare' });
+  assert.deepEqual(mcpAddPayload('empty', '', ''), { name: 'empty', url: '', label: 'empty' }, 'nothing typed is reported as a missing address');
 });
