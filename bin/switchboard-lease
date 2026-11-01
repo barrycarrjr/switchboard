@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
-# claude-leased: run Claude Code with a credential leased from the Switchboard broker (contract 1).
+# Reference client for Switchboard's Contract v1 lease broker (Ubuntu / WSL side).
 #
-# Lease, run, report. The broker picks the active healthy lane and hands back a setup token for it; this
-# wrapper puts that token in the environment (never on a command line), runs the real claude with the
-# arguments it was given, and reports the outcome so Switchboard can cool the lane down or fail over.
+# Replaces the claude command for bridges and schedulers: asks the Windows broker on
+# :8318 for a credential lease, runs the real claude with that lease's env for this one
+# process, and reports the outcome so the broker can cool the lane down or mark a revoked
+# setup-token dead. Credentials stay in environment variables and curl stdin; nothing is
+# written to a credential file and nothing is passed on a command line.
 #
-# Environment:
-#   SWITCHBOARD_CLIENT_KEY   required; the sb-key issued on Switchboard's Gateway tab
-#   SWITCHBOARD_BROKER_URL   optional; default: try 127.0.0.1:8318, then the WSL default gateway
-#   SWITCHBOARD_ACCOUNT      optional; pin a lane by account id
-#   CLAUDE_BIN               optional; the real claude (default: the first claude on PATH that is not this file)
-#
-# Exit codes: claude's own; 75 when no lane is healthy (retry later, see stderr); 78 on bad configuration.
+# Env in:
+#   SWITCHBOARD_CLIENT_KEY  optional if saved in ~/.config/switchboard/client-key (or ~/.switchboard-key)
+#   SWITCHBOARD_BROKER_URL  optional; otherwise tries 127.0.0.1:8318 then the WSL default-route host
+#   SWITCHBOARD_ACCOUNT     optional account id hint
+#   CLAUDE_BIN              optional path to the real claude binary (otherwise the next claude on PATH)
 set -u
 
 key="${SWITCHBOARD_CLIENT_KEY:-}"
-[ -n "$key" ] || { echo "claude-leased: SWITCHBOARD_CLIENT_KEY is not set" >&2; exit 78; }
+if [ -z "$key" ]; then
+    for kf in "${XDG_CONFIG_HOME:-$HOME/.config}/switchboard/client-key" "$HOME/.switchboard-key"; do
+        if [ -r "$kf" ]; then
+            IFS= read -r key < "$kf" || true
+            key="${key%$'\r'}"
+            [ -n "$key" ] && break
+        fi
+    done
+fi
+[ -n "$key" ] || { echo "claude-leased: SWITCHBOARD_CLIENT_KEY is not set (and no ~/.config/switchboard/client-key found)" >&2; exit 78; }
 
 self="$(readlink -f "${BASH_SOURCE[0]}")"
 bin="${CLAUDE_BIN:-}"
@@ -35,7 +44,8 @@ call() { # call <method> <url> [json-body]
 }
 
 discover() {
-    if [ -n "${SWITCHBOARD_BROKER_URL:-}" ]; then echo "${SWITCHBOARD_BROKER_URL%/}"; return 0; fi
+    local explicit="${SWITCHBOARD_BROKER_URL:-${SWITCHBOARD_URL:-}}"
+    if [ -n "$explicit" ]; then echo "${explicit%/}"; return 0; fi
     local gw candidate
     gw="$(ip route 2>/dev/null | awk '/default/ {print $3; exit}')"
     local reply code

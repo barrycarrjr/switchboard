@@ -2586,11 +2586,29 @@ async function renderGateway() {
   // 5. Worker / WSL / T3 Quick-Connect Snippet Card
   const { card: snippetCard } = cardShell({
     titleId: 'gw-snippet',
-    title: 'Quick-Connect Environment Snippet',
-    person: 'Point Claude Code, Codex, or T3 Code at Switchboard without copying credential folders',
+    title: 'Quick-Connect Setup (T3 Code, WSL & Workers)',
+    person: 'Point T3 Code, Claude Code, or WSL workers at Switchboard without copying credential folders',
   });
-  const { area: snippetArea } = cardArea(snippetCard, 'Shell / Worker Environment');
   const snippetToken = lastCreatedGatewaySecret?.secret || st.keys?.[0]?.hint || 'sb-key-YOUR_KEY';
+
+  const { area: keyfileArea } = cardArea(snippetCard, 'Option A: One-Time Key File (T3 Code & WSL - zero env vars needed)');
+  const keyfileCmd = `mkdir -p ~/.config/switchboard && printf '%s\\n' '${snippetToken}' > ~/.config/switchboard/client-key && chmod 600 ~/.config/switchboard/client-key`;
+  const keyfileBox = el('div', 'gw-snippet');
+  const keyfileCode = el('span', '', esc(keyfileCmd));
+  keyfileCode.style.wordBreak = 'break-all';
+  keyfileBox.appendChild(keyfileCode);
+  keyfileBox.appendChild(cardButton('Copy', async () => {
+    try {
+      await navigator.clipboard.writeText(keyfileCmd);
+      toast('Copied key file setup command to clipboard.');
+    } catch {
+      toast(keyfileCmd);
+    }
+  }));
+  keyfileArea.appendChild(keyfileBox);
+  keyfileArea.appendChild(el('div', 'muted', `After saving ~/.config/switchboard/client-key once, point T3 Code's Claude Binary path to switchboard-lease and T3 Hub URL to ${st.endpointUrl} (Management Key: your sb-key-...).`));
+
+  const { area: snippetArea } = cardArea(snippetCard, 'Option B: Shell / Worker Environment Variables', 'note-area');
   const snippetText = buildGatewayExportSnippet(st.endpointUrl, snippetToken);
   const snippetBox = el('div', 'gw-snippet');
   const snippetCode = el('span', '', esc(snippetText));
