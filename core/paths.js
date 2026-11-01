@@ -24,6 +24,21 @@ export function mcpFile() {
   return path.join(dataDir(), 'mcp.json');
 }
 
+/** Root directory for Switchboard-managed plugins, skills, rules, and custom agents. */
+export function customizationsDir() {
+  return path.join(dataDir(), 'customizations');
+}
+
+/** Registry file for Switchboard-managed customizations state and stashed items. */
+export function customizationsFile() {
+  return path.join(dataDir(), 'customizations.json');
+}
+
+/** Registry file for low-level provider-agnostic scheduled automations. */
+export function automationsFile() {
+  return path.join(dataDir(), 'automations.json');
+}
+
 /**
  * Write-then-rename so a process killed mid-write (the installer force-closes the
  * running app during an upgrade) can never leave a torn file behind: either the old

@@ -260,6 +260,36 @@ switchboard mcp sync [--json]                       share servers across account
 means all of them. With `--json`, anything Switchboard has to say about a file it left
 alone goes to standard error, so standard output is only the JSON.
 
+## Customizations and automations
+
+The Customizations tab extends that same single-source-of-truth model beyond MCP servers to
+plugins, skills (`SKILL.md`), global rules (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`), custom
+agents, a multi-source marketplace, and provider-agnostic scheduled automations.
+
+- Eligible providers are discovered dynamically from the tools installed or registered on
+  the machine, so newly installed tools (such as Grok or Qwen) appear automatically in the
+  `Providers (active/total)` selector without manual configuration.
+- Skills, rules, and custom agents are stored in `%APPDATA%\Switchboard\customizations` and
+  propagated across every registered account folder of each enabled provider, with
+  timestamped backups before any existing file is updated.
+- The Marketplace view aggregates trusted catalogs from Google Antigravity, Anthropic
+  Claude Code, OpenAI Codex, and the official MCP catalogue, and can also install skills or
+  plugins directly from any GitHub `owner/repo`.
+- Low-level machine automations run scheduled prompts through Switchboard's lane pool so
+  recurring maintenance or audits can fail over across providers automatically.
+
+```
+switchboard customizations [status] [--json]        installed plugins, skills, rules, agents and MCP
+switchboard customizations marketplace [query]      search the trusted multi-source marketplace
+switchboard customizations install <name|owner/repo> [--client <id|all>]
+switchboard customizations skill <enable|disable> <name> [client|all]
+switchboard customizations sync-rule "<text>" [--client <id|all>]
+switchboard automations [list] [--json]             list scheduled provider-agnostic automations
+switchboard automations add "<name>" "<prompt>" [--every <minutes>] [--cwd <dir>]
+switchboard automations run <id>                    execute an automation immediately
+switchboard automations enable|disable|remove <id>
+```
+
 ## Install
 
 1. Go to the [latest release](../../releases/latest) and download

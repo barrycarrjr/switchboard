@@ -300,6 +300,53 @@
   .account-meter .quota-bar{width:100%;height:6px;margin-top:0;background:#e2e5e9;border-radius:3px}
   .account-meter .quota-bar i{border-radius:3px}
   .bar.good i{background:#107c41}
+  .cust-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:6px 0 10px}
+  .cust-pills{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+  .cust-pill{font:inherit;font-size:.78rem;color:var(--muted);background:#fff;border:1px solid var(--line);border-radius:99px;padding:4px 11px;cursor:pointer;transition:all .12s}
+  .cust-pill:hover{border-color:var(--accent);color:var(--accent)}
+  .cust-pill.on{background:var(--accent-soft);border-color:#92bfe5;color:var(--accent);font-weight:600}
+  .cust-search{font:inherit;font-size:.82rem;padding:5px 10px;border:1px solid var(--line);border-radius:6px;min-width:210px;background:#fff}
+  .cust-targets{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-left:auto;position:relative}
+  .cust-badge{display:inline-flex;align-items:center;gap:4px;font-size:.73rem;font-weight:600;border-radius:99px;padding:2px 9px;background:var(--accent-soft);color:var(--accent);border:1px solid #bcd9f5;cursor:pointer;white-space:nowrap}
+  .cust-badge:hover{background:#cfe5fa}
+  .cust-badge.muted{background:#f1f3f6;color:var(--muted);border-color:var(--line);cursor:default}
+  .cust-pop-wrap{position:relative;display:inline-flex}
+  .cust-pop{position:absolute;right:0;top:calc(100% + 5px);background:var(--card);border:1px solid var(--line);border-radius:9px;box-shadow:0 10px 28px rgba(15,25,40,.18);z-index:40;min-width:235px;padding:8px;display:none;flex-direction:column;gap:4px}
+  .cust-pop.open{display:flex}
+  .cust-pop-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 4px 6px;border-bottom:1px solid var(--line);font-size:.74rem;font-weight:600;color:var(--muted)}
+  .cust-pop-actions{display:flex;gap:6px}
+  .cust-pop-item{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;text-align:left;font:inherit;font-size:.81rem;border:none;background:none;padding:5px 8px;border-radius:6px;cursor:pointer;color:var(--ink)}
+  .cust-pop-item:hover{background:#eef2f7}
+  .cust-pop-item:disabled{opacity:.48;cursor:not-allowed}
+  .cust-pop-item.on{font-weight:600;color:var(--accent)}
+  .cust-pop-check{width:16px;height:16px;border-radius:4px;border:1px solid #b8c0cc;display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex:0 0 auto;background:#fff;color:transparent}
+  .cust-pop-item.on .cust-pop-check{background:var(--accent);border-color:var(--accent);color:#fff}
+  .mkt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,330px),1fr));gap:10px;margin:6px 0 14px}
+  .mkt-card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;transition:border-color .14s,box-shadow .14s}
+  .mkt-card:hover{border-color:#92bfe5;box-shadow:0 3px 10px rgba(0,103,192,.07)}
+  .mkt-card.featured{border-color:#b8d8f8;background:linear-gradient(180deg,#f9fcff 0%,#ffffff 48%)}
+  .mkt-card-head{display:flex;align-items:flex-start;gap:10px}
+  .mkt-icon{width:34px;height:34px;border-radius:8px;background:var(--accent-soft);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.88rem;flex:0 0 auto;border:1px solid #cde2f7}
+  .mkt-icon.mcp{background:#e7f6ed;color:#0f7b3d;border-color:#bce3cb}
+  .mkt-icon.skill{background:#f3eafe;color:#6938ef;border-color:#d9c2fc}
+  .mkt-title-wrap{flex:1;min-width:0}
+  .mkt-title{font-weight:600;font-size:.92rem;color:var(--ink);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .mkt-sub{font-size:.73rem;color:var(--muted);margin-top:1px}
+  .mkt-desc{font-size:.8rem;color:#3b424b;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:0}
+  .mkt-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:auto;padding-top:2px}
+  .src-pill{font-size:.68rem;font-weight:600;border-radius:99px;padding:1px 7px;background:#eef2f6;color:#475467;border:1px solid #dde2e8}
+  .src-pill.google{background:#e8f0fe;color:#1967d2;border-color:#c6dafc}
+  .src-pill.anthropic{background:#fdf2ea;color:#b54708;border-color:#f7d5b9}
+  .src-pill.openai{background:#e6f4ea;color:#137333;border-color:#bce3c8}
+  .src-pill.mcp-registry{background:#f0f4f8;color:#344054;border-color:#d0d5dd}
+  .mkt-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid var(--line);padding-top:8px;margin-top:2px}
+  .cust-modal-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.48);z-index:60;display:flex;align-items:center;justify-content:center;padding:18px}
+  .cust-modal{background:var(--card);border-radius:12px;border:1px solid var(--line);box-shadow:0 18px 44px rgba(15,23,42,.24);max-width:640px;width:100%;max-height:84vh;display:flex;flex-direction:column;overflow:hidden}
+  .cust-modal-head{display:flex;align-items:flex-start;gap:12px;padding:16px 18px 12px;border-bottom:1px solid var(--line)}
+  .cust-modal-body{padding:14px 18px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;font-size:.84rem;line-height:1.55}
+  .cust-modal-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 18px;border-top:1px solid var(--line);background:#f9fafb}
+  .cust-sec-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:12px 2px 6px;cursor:pointer;user-select:none}
+  .cust-sec-head .grouphead{margin:0;display:inline-flex;align-items:center;gap:6px}
   @media (min-width:760px){
     /* Lanes and the settings cards read top to bottom, so they never go two-up. */
     .account-grid.one-column{grid-template-columns:minmax(0,1fr)}
@@ -347,7 +394,7 @@
     <button class="tab" data-tab="providers">Providers</button>
     <button class="tab" data-tab="lanes">Lanes</button>
     <button class="tab" data-tab="apps">Apps</button>
-    <button class="tab" data-tab="mcp">MCP</button>
+    <button class="tab" data-tab="mcp">Customizations</button>
     <button class="tab" data-tab="health">Health</button>
     <button class="tab" data-tab="about">About</button>
   </div>
@@ -3259,6 +3306,13 @@ let mcpView = 'active';
 let mcpQuery = '';
 let mcpCategory = '';
 let mcpSearchTimer = null;
+let mktQuery = '';
+let mktSource = 'all';
+let mktKind = 'all';
+let mktSearchTimer = null;
+let custInstalledFilter = 'all';
+let custSkillFilter = 'all';
+let custInstalledQuery = '';
 
 // A tick that means "signed out and broken" is worse than no tick, so registered and
 // working are shown differently wherever the client can tell us which it is.
@@ -3271,7 +3325,12 @@ const MCP_CHIP = {
 
 function mcpSubtabs(onPick) {
   const bar = el('div', 'subtabs');
-  for (const [id, label] of [['active', 'Active servers'], ['browse', 'Browse']]) {
+  for (const [id, label] of [
+    ['active', 'Installed'],
+    ['marketplace', 'Marketplace'],
+    ['browse', 'MCP Catalog'],
+    ['automations', 'Automations'],
+  ]) {
     const b = el('button', 'subtab' + (mcpView === id ? ' on' : ''), label);
     b.addEventListener('click', () => { mcpView = id; onPick(); });
     bar.appendChild(b);
@@ -3439,6 +3498,148 @@ function mcpChip(server, client, onDone) {
   return btn;
 }
 
+function mcpProviderControl(server, clients, onDone) {
+  const wrap = el('div', 'cust-targets');
+  const activeClients = clients.filter((c) => ((server.state && server.state[c.id]) || 'off') !== 'off');
+  const visibleActive = activeClients.slice(0, 3);
+
+  for (const c of visibleActive) {
+    const state = (server.state && server.state[c.id]) || 'on';
+    const look = MCP_CHIP[state] || MCP_CHIP.on;
+    const badge = el('button', 'cust-badge', look.mark + ' ' + esc(c.name));
+    badge.type = 'button';
+    badge.title = look.verb + ' in ' + c.name + '. ' + (c.canRemove ? 'Click to remove.' : 'Remove it from inside ' + c.name + '.');
+    badge.addEventListener('click', async () => {
+      if (!c.canRemove) {
+        toast(c.name + ' has no remove command. Take it out from inside ' + c.name + '.');
+        return;
+      }
+      if (!confirm(mcpRemoveQuestion(server, c))) return;
+      badge.disabled = true;
+      try {
+        await sb.mcpUnregister(c.id, server.name);
+        toast((server.label || server.title || server.name) + ' removed from ' + c.name + '.');
+      } catch (e) {
+        toast(mcpError(e));
+      } finally {
+        onDone();
+      }
+    });
+    wrap.appendChild(badge);
+  }
+
+  if (activeClients.length > 3) {
+    wrap.appendChild(el('span', 'cust-badge muted', '+' + (activeClients.length - 3) + ' more'));
+  }
+
+  const popWrap = el('div', 'cust-pop-wrap');
+  const triggerLabel = 'Providers (' + activeClients.length + '/' + clients.length + ') &#9662;';
+  const trigger = el('button', activeClients.length ? 'btn' : 'btn primary', triggerLabel);
+  trigger.type = 'button';
+  trigger.title = 'Choose which AI providers have ' + (server.label || server.title || server.name) + ' registered';
+
+  const pop = el('div', 'cust-pop');
+  const head = el('div', 'cust-pop-head');
+  head.appendChild(el('span', null, 'MCP Clients (' + clients.length + ')'));
+
+  const writableClients = clients.filter((c) => {
+    const usable = !Array.isArray(server.only) || server.only.includes(c.id);
+    return usable && server.addable !== false;
+  });
+
+  if (writableClients.length > 0) {
+    const actions = el('div', 'cust-pop-actions');
+    const allBtn = el('button', 'linkbtn', 'Enable all');
+    allBtn.type = 'button';
+    allBtn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      allBtn.disabled = true;
+      for (const c of writableClients) {
+        const st = (server.state && server.state[c.id]) || 'off';
+        if (st === 'off') {
+          try { await sb.mcpRegister(c.id, server.name); } catch { /* ignore unsupported */ }
+        }
+      }
+      pop.classList.remove('open');
+      toast('Enabled ' + (server.label || server.title || server.name) + ' across eligible MCP clients.');
+      onDone();
+    });
+    actions.appendChild(allBtn);
+    head.appendChild(actions);
+  }
+  pop.appendChild(head);
+
+  for (const c of clients) {
+    const state = (server.state && server.state[c.id]) || 'off';
+    const on = state !== 'off';
+    const usable = !Array.isArray(server.only) || server.only.includes(c.id);
+    const writable = server.addable !== false;
+    const look = MCP_CHIP[state] || MCP_CHIP.off;
+
+    const itemBtn = el('button', 'cust-pop-item' + (on ? ' on' : ''));
+    itemBtn.type = 'button';
+    itemBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+
+    if ((!usable || !writable) && !on) {
+      itemBtn.disabled = true;
+      itemBtn.title = !usable
+        ? (server.caveat || (server.label || server.name) + ' cannot be used from ' + c.name + '.')
+        : mcpWhyNotAddable(server, c);
+    } else {
+      itemBtn.title = on
+        ? look.verb + '. ' + (c.canRemove ? 'Click to remove.' : 'Remove it from inside ' + c.name + '.')
+        : 'Add ' + server.name + ' to ' + c.name;
+    }
+
+    const left = el('span', null, esc(c.name));
+    const chk = el('span', 'cust-pop-check', on ? look.mark : ((!usable || !writable) ? '&ndash;' : ''));
+    itemBtn.appendChild(left);
+    itemBtn.appendChild(chk);
+
+    itemBtn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      if (itemBtn.disabled) return;
+      if (on && !c.canRemove) {
+        toast(c.name + ' has no remove command. Take it out from inside ' + c.name + '.');
+        return;
+      }
+      if (on && !confirm(mcpRemoveQuestion(server, c))) return;
+      itemBtn.disabled = true;
+      pop.classList.remove('open');
+      try {
+        if (on) {
+          await sb.mcpUnregister(c.id, server.name);
+          toast((server.label || server.title || server.name) + ' removed from ' + c.name + '.');
+        } else {
+          await sb.mcpRegister(c.id, server.name);
+          toast(server.url
+            ? 'Added to ' + c.name + '. Sign in from ' + c.name + ' itself when it first connects.'
+            : 'Added ' + (server.label || server.title || server.name) + ' to ' + c.name + '.');
+        }
+      } catch (e) {
+        toast(mcpError(e));
+      } finally {
+        onDone();
+      }
+    });
+    pop.appendChild(itemBtn);
+  }
+
+  trigger.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const wasOpen = pop.classList.contains('open');
+    if (typeof document.querySelectorAll === 'function') {
+      document.querySelectorAll('.cust-pop.open').forEach((n) => n.classList.remove('open'));
+    }
+    if (!wasOpen) pop.classList.add('open');
+  });
+
+  popWrap.appendChild(trigger);
+  popWrap.appendChild(pop);
+  wrap.appendChild(popWrap);
+  return wrap;
+}
+
 function mcpRow(server, clients, onDone, opts) {
   opts = opts || {};
   const off = Boolean(server.disabled);
@@ -3463,6 +3664,7 @@ function mcpRow(server, clients, onDone, opts) {
   if (server.description) bits.push(esc(server.description.slice(0, 150)));
   else if (server.url) bits.push(esc(server.url));
   else if (server.command) bits.push('Started by the client: ' + esc(server.command));
+  if (server.toolCount > 0) bits.push(server.toolCount + ' tools');
   if (server.note) bits.push(esc(server.note));
   if (server.caveat) bits.push(esc(server.caveat));
   // Browse sorts the suggestions to the top, and saying so is what makes that visible as
@@ -3470,8 +3672,27 @@ function mcpRow(server, clients, onDone, opts) {
   if (opts.showCategory && server.featured) bits.push('suggested');
   if (opts.showCategory && server.category) bits.push(esc(server.category));
   const title = esc(server.label || server.title || server.name);
-  row.appendChild(el('div', 'hm', title + '<span>' + bits.join(' &middot; ') + '</span>'));
-  for (const c of clients) row.appendChild(mcpChip(server, c, onDone));
+  const hm = el('div', 'hm', title + '<span>' + bits.join(' &middot; ') + '</span>');
+  row.appendChild(hm);
+  if (server.toolCount > 0 && typeof sb !== 'undefined' && sb.mcpServerTools) {
+    const toolsBtn = el('button', 'btn', server.toolCount + ' tools');
+    toolsBtn.title = 'Inspect tools exposed by ' + (server.label || server.name);
+    toolsBtn.addEventListener('click', async () => {
+      const existing = hm.querySelector('.mcp-tools-drawer');
+      if (existing) { existing.remove(); return; }
+      try {
+        const tools = (await sb.mcpServerTools(server.name)) || [];
+        const drawer = el('div', 'mcp-tools-drawer');
+        drawer.style.cssText = 'margin-top:6px;padding:6px 8px;background:var(--bg);border:1px solid var(--line);border-radius:6px;font-size:.75rem;max-height:160px;overflow:auto';
+        drawer.innerHTML = tools.map((t) => '<div><b>' + esc(t.name) + '</b>' + (t.description ? ' &middot; ' + esc(t.description.slice(0, 95)) : '') + '</div>').join('');
+        hm.appendChild(drawer);
+      } catch (e) {
+        toast(mcpError(e));
+      }
+    });
+    row.appendChild(toolsBtn);
+  }
+  row.appendChild(mcpProviderControl(server, clients, onDone));
   if (opts.forgettable) {
     const del = el('button', 'btn ghost', 'Forget');
     del.title = 'Remove from Switchboard. Clients already told about it keep their own entry.';
@@ -3484,11 +3705,373 @@ function mcpRow(server, clients, onDone, opts) {
   return row;
 }
 
+/** One provider toggle chip for a Skill or Custom Agent row. */
+function customizationClientChip(item, client, onToggle) {
+  const st = (item.state && item.state[client.id]) || 'off';
+  const on = st === 'on';
+  const suffix = client.accountCount > 1 ? '*' + client.accountCount : '';
+  const label = (on ? MARK.ok + ' ' : '+ ') + esc(client.name + suffix);
+  const btn = el('button', on ? 'btn primary' : 'btn', label);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.title = on
+    ? 'Active in ' + client.name + (client.accountCount > 1 ? ' (' + client.accountCount + ' accounts)' : '') + '. Click to disable.'
+    : 'Enable ' + item.name + ' in ' + client.name + (client.accountCount > 1 ? ' (' + client.accountCount + ' accounts)' : '');
+  btn.addEventListener('click', () => onToggle(client, !on, btn));
+  return btn;
+}
+
+/**
+ * Compact provider target selector: displays active provider badges (up to 3 inline,
+ * plus "+N more") and a single "Providers (active/total) ▾" popover menu with checkboxes
+ * and Enable All / Disable All actions so 11+ providers never form a giant wall of buttons.
+ */
+function customizationProviderControl(item, clients, onToggle, onDone) {
+  const wrap = el('div', 'cust-targets');
+  const activeClients = clients.filter((c) => item.state && item.state[c.id] === 'on');
+  const visibleActive = activeClients.slice(0, 3);
+
+  for (const c of visibleActive) {
+    const suffix = c.accountCount > 1 ? '*' + c.accountCount : '';
+    const badge = el('button', 'cust-badge', MARK.ok + ' ' + esc(c.name + suffix));
+    badge.type = 'button';
+    badge.title = 'Active in ' + c.name + (c.accountCount > 1 ? ' (' + c.accountCount + ' accounts)' : '') + '. Click to disable.';
+    badge.addEventListener('click', async () => {
+      badge.disabled = true;
+      await onToggle(c, false, badge);
+    });
+    wrap.appendChild(badge);
+  }
+
+  if (activeClients.length > 3) {
+    wrap.appendChild(el('span', 'cust-badge muted', '+' + (activeClients.length - 3) + ' more'));
+  }
+
+  const popWrap = el('div', 'cust-pop-wrap');
+  const triggerLabel = 'Providers (' + activeClients.length + '/' + clients.length + ') &#9662;';
+  const trigger = el('button', activeClients.length ? 'btn' : 'btn primary', triggerLabel);
+  trigger.type = 'button';
+  trigger.title = 'Choose which AI providers have ' + (item.title || item.name) + ' enabled';
+
+  const pop = el('div', 'cust-pop');
+  const head = el('div', 'cust-pop-head');
+  head.appendChild(el('span', null, 'Eligible Providers (' + clients.length + ')'));
+
+  const actions = el('div', 'cust-pop-actions');
+  const allBtn = el('button', 'linkbtn', 'Enable all');
+  allBtn.type = 'button';
+  allBtn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    allBtn.disabled = true;
+    for (const c of clients) {
+      if (!item.state || item.state[c.id] !== 'on') {
+        await onToggle(c, true, allBtn, { silent: true });
+      }
+    }
+    pop.classList.remove('open');
+    if (onDone) onDone();
+  });
+  const noneBtn = el('button', 'linkbtn', 'Disable all');
+  noneBtn.type = 'button';
+  noneBtn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    noneBtn.disabled = true;
+    for (const c of clients) {
+      if (item.state && item.state[c.id] === 'on') {
+        await onToggle(c, false, noneBtn, { silent: true });
+      }
+    }
+    pop.classList.remove('open');
+    if (onDone) onDone();
+  });
+  actions.appendChild(allBtn);
+  actions.appendChild(noneBtn);
+  head.appendChild(actions);
+  pop.appendChild(head);
+
+  for (const c of clients) {
+    const on = Boolean(item.state && item.state[c.id] === 'on');
+    const suffix = c.accountCount > 1 ? '*' + c.accountCount : '';
+    const itemBtn = el('button', 'cust-pop-item' + (on ? ' on' : ''));
+    itemBtn.type = 'button';
+    itemBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    const left = el('span', null, esc(c.name + suffix));
+    const chk = el('span', 'cust-pop-check', on ? MARK.ok : '');
+    itemBtn.appendChild(left);
+    itemBtn.appendChild(chk);
+    itemBtn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      itemBtn.disabled = true;
+      pop.classList.remove('open');
+      await onToggle(c, !on, itemBtn);
+    });
+    pop.appendChild(itemBtn);
+  }
+
+  trigger.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const wasOpen = pop.classList.contains('open');
+    if (typeof document.querySelectorAll === 'function') {
+      document.querySelectorAll('.cust-pop.open').forEach((n) => n.classList.remove('open'));
+    }
+    if (!wasOpen) pop.classList.add('open');
+  });
+
+  popWrap.appendChild(trigger);
+  popWrap.appendChild(pop);
+  wrap.appendChild(popWrap);
+  return wrap;
+}
+
+/** One row for an installed Skill (`SKILL.md`). */
+function customizationSkillRow(skill, clients, onDone) {
+  const anyOn = clients.some((c) => skill.state && skill.state[c.id] === 'on');
+  const level = anyOn ? 'ok' : 'info';
+  const row = el('div', 'hc ' + level);
+  row.appendChild(el('div', 'hi', anyOn ? MARK.ok : 'i'));
+  const bits = [];
+  bits.push('/' + esc(skill.name));
+  if (skill.builtin) bits.push('built-in');
+  if (skill.description) bits.push(esc(skill.description.slice(0, 140)));
+  row.appendChild(el('div', 'hm', esc(skill.title || skill.name) + '<span>' + bits.join(' &middot; ') + '</span>'));
+  row.appendChild(customizationProviderControl(skill, clients, async (client, nextEnabled, btn, opts) => {
+    btn.disabled = true;
+    try {
+      await sb.customizationsSetSkill(skill.name, client.id, nextEnabled);
+      if (!opts || !opts.silent) {
+        toast((nextEnabled ? 'Enabled ' : 'Disabled ') + '/' + skill.name + ' in ' + client.name + '.');
+      }
+    } catch (e) {
+      toast(mcpError(e));
+    } finally {
+      if (!opts || !opts.silent) onDone();
+    }
+  }, onDone));
+  return row;
+}
+
+/** Source badge label helper for Marketplace cards. */
+function marketplaceSourceLabel(src) {
+  if (src === 'google') return 'Google Antigravity';
+  if (src === 'anthropic') return 'Anthropic Claude';
+  if (src === 'openai') return 'OpenAI Codex';
+  if (src === 'mcp-registry') return 'MCP Registry';
+  return src;
+}
+
+/** One polished card for a Marketplace catalog item (Plugin, Skill, or MCP Server). */
+function customizationMarketplaceRow(item, onInstall, onDetails) {
+  const isMcp = String(item.kind || '').startsWith('mcp');
+  const isSkill = item.kind === 'skill';
+  const card = el('div', 'mkt-card' + (item.featured ? ' featured' : ''));
+
+  const head = el('div', 'mkt-card-head');
+  const iconCls = isMcp ? 'mkt-icon mcp' : isSkill ? 'mkt-icon skill' : 'mkt-icon';
+  const initials = String(item.title || item.label || item.name || 'P').trim().slice(0, 2).toUpperCase();
+  head.appendChild(el('div', iconCls, esc(initials)));
+
+  const titleWrap = el('div', 'mkt-title-wrap');
+  const titleText = esc(item.title || item.label || item.name);
+  const titleLine = el('div', 'mkt-title', titleText);
+  if (item.featured) {
+    titleLine.appendChild(el('span', 'badge', 'Featured'));
+  }
+  titleWrap.appendChild(titleLine);
+
+  const subBits = [esc(item.kind || 'plugin')];
+  if (item.category) subBits.push(esc(item.category));
+  if (item.author) subBits.push('by ' + esc(item.author));
+  if (item.sources && item.sources.length) subBits.push('trusted: ' + esc(item.sources.join(' + ')));
+  titleWrap.appendChild(el('div', 'mkt-sub', subBits.join(' &middot; ')));
+  head.appendChild(titleWrap);
+  card.appendChild(head);
+
+  if (item.description) {
+    card.appendChild(el('p', 'mkt-desc', esc(item.description.slice(0, 180))));
+  }
+
+  const badges = el('div', 'mkt-badges');
+  for (const src of (item.sources || [])) {
+    badges.appendChild(el('span', 'src-pill ' + esc(src), esc(marketplaceSourceLabel(src))));
+  }
+  if (item.skills && item.skills.length) {
+    badges.appendChild(el('span', 'src-pill', item.skills.length + (item.skills.length === 1 ? ' skill' : ' skills')));
+  }
+  card.appendChild(badges);
+
+  const foot = el('div', 'mkt-foot');
+  const detailsBtn = el('button', 'btn', 'Details');
+  detailsBtn.type = 'button';
+  detailsBtn.title = 'Inspect overview, included skills, and target providers for ' + (item.title || item.name);
+  detailsBtn.addEventListener('click', () => {
+    if (onDetails) onDetails(item);
+  });
+
+  const btn = el('button', 'btn primary', isMcp ? 'Add MCP' : 'Install');
+  btn.type = 'button';
+  btn.title = isMcp
+    ? 'Add ' + item.name + ' to MCP servers'
+    : 'Install ' + item.name + ' and sync its skills across your active AI providers';
+  btn.addEventListener('click', () => onInstall(item, btn));
+
+  foot.appendChild(btn);
+  foot.appendChild(detailsBtn);
+  card.appendChild(foot);
+  return card;
+}
+
+/** Rich Overview Modal for any Marketplace item with per-provider installation checkboxes. */
+function openMarketplaceOverviewModal(item, mcpClients, custClients, onInstalled) {
+  const existing = $('#custOverviewModal');
+  if (existing) existing.remove();
+
+  const isMcp = String(item.kind || '').startsWith('mcp');
+  const targetPool = isMcp ? mcpClients.filter((c) => c.available) : custClients;
+  const selectedIds = new Set(targetPool.map((c) => c.id));
+
+  const backdrop = el('div', 'cust-modal-backdrop');
+  backdrop.id = 'custOverviewModal';
+  const modal = el('div', 'cust-modal');
+
+  const head = el('div', 'cust-modal-head');
+  const initials = String(item.title || item.label || item.name || 'P').trim().slice(0, 2).toUpperCase();
+  head.appendChild(el('div', isMcp ? 'mkt-icon mcp' : 'mkt-icon', esc(initials)));
+  const headText = el('div', 'mkt-title-wrap');
+  headText.appendChild(el('div', 'mkt-title', esc(item.title || item.label || item.name) + (item.version ? ' <span class="mkt-sub">v' + esc(item.version) + '</span>' : '')));
+  const metaBits = [esc(item.kind || 'plugin')];
+  if (item.author) metaBits.push('Author: ' + esc(item.author));
+  if (item.category) metaBits.push('Category: ' + esc(item.category));
+  headText.appendChild(el('div', 'mkt-sub', metaBits.join(' &middot; ')));
+  head.appendChild(headText);
+  const closeBtn = el('button', 'btn ghost', '&#10005;');
+  closeBtn.addEventListener('click', () => backdrop.remove());
+  head.appendChild(closeBtn);
+  modal.appendChild(head);
+
+  const body = el('div', 'cust-modal-body');
+  if (item.sources && item.sources.length) {
+    const srcRow = el('div', 'mkt-badges');
+    for (const src of item.sources) {
+      srcRow.appendChild(el('span', 'src-pill ' + esc(src), 'Verified: ' + esc(marketplaceSourceLabel(src))));
+    }
+    body.appendChild(srcRow);
+  }
+
+  body.appendChild(el('div', null, esc(item.description || 'No additional description provided.')));
+
+  if (item.skills && item.skills.length) {
+    const skBox = el('div');
+    skBox.appendChild(el('div', 'grouphead', 'Included Skills (' + item.skills.length + ')'));
+    const skChips = el('div', 'cust-pills');
+    for (const s of item.skills) {
+      skChips.appendChild(el('span', 'cust-badge muted', '/' + esc(s)));
+    }
+    skBox.appendChild(skChips);
+    body.appendChild(skBox);
+  }
+
+  if (item.suggestedPrompts && item.suggestedPrompts.length) {
+    const prBox = el('div');
+    prBox.appendChild(el('div', 'grouphead', 'Suggested Workflows'));
+    for (const p of item.suggestedPrompts) {
+      prBox.appendChild(el('div', 'qnote', '&bull; ' + esc(p)));
+    }
+    body.appendChild(prBox);
+  }
+
+  if (item.url || item.command || item.repository) {
+    const techBox = el('div', 'qnote');
+    if (item.url) techBox.innerHTML += '<div><b>Endpoint:</b> ' + esc(item.url) + '</div>';
+    if (item.command) techBox.innerHTML += '<div><b>Command:</b> ' + esc(item.command) + '</div>';
+    if (item.repository) {
+      const repoBtn = el('button', 'linkbtn', 'Open Repository (' + esc(item.repository) + ')');
+      repoBtn.addEventListener('click', () => sb.openExternal(item.repository));
+      techBox.appendChild(repoBtn);
+    }
+    body.appendChild(techBox);
+  }
+
+  const targetBox = el('div');
+  targetBox.appendChild(el('div', 'grouphead', 'Install Into Providers (' + targetPool.length + ' eligible)'));
+  const targetPills = el('div', 'cust-pills');
+  for (const c of targetPool) {
+    const suffix = c.accountCount > 1 ? ' (' + c.accountCount + ' accts)' : '';
+    const pill = el('button', 'cust-pill on', MARK.ok + ' ' + esc(c.name + suffix));
+    pill.type = 'button';
+    pill.addEventListener('click', () => {
+      if (selectedIds.has(c.id)) {
+        selectedIds.delete(c.id);
+        pill.className = 'cust-pill';
+        pill.innerHTML = '+ ' + esc(c.name + suffix);
+      } else {
+        selectedIds.add(c.id);
+        pill.className = 'cust-pill on';
+        pill.innerHTML = MARK.ok + ' ' + esc(c.name + suffix);
+      }
+    });
+    targetPills.appendChild(pill);
+  }
+  targetBox.appendChild(targetPills);
+  body.appendChild(targetBox);
+  modal.appendChild(body);
+
+  const foot = el('div', 'cust-modal-foot');
+  const cancelBtn = el('button', 'btn', 'Cancel');
+  cancelBtn.addEventListener('click', () => backdrop.remove());
+  const installBtn = el('button', 'btn primary', isMcp ? 'Add MCP Server to Selected' : 'Install to Selected Providers');
+  installBtn.addEventListener('click', async () => {
+    const chosen = [...selectedIds];
+    if (!chosen.length) {
+      toast('Select at least one provider first.');
+      return;
+    }
+    installBtn.disabled = true;
+    installBtn.textContent = 'Installing...';
+    try {
+      if (isMcp) {
+        for (const id of chosen) {
+          try { await sb.mcpRegister(id, item.name); } catch { /* skip unsupported */ }
+        }
+        toast('Added MCP server ' + (item.title || item.name) + ' to ' + chosen.length + ' providers.');
+      } else {
+        const res = await sb.customizationsInstall({
+          target: item.name,
+          clients: chosen,
+        });
+        toast('Installed ' + (item.title || res.name) + ' across ' + (res.clients || []).length + ' providers.');
+      }
+      backdrop.remove();
+      if (onInstalled) onInstalled();
+    } catch (e) {
+      toast(mcpError(e));
+      installBtn.disabled = false;
+      installBtn.textContent = isMcp ? 'Add MCP Server to Selected' : 'Install to Selected Providers';
+    }
+  });
+  foot.appendChild(cancelBtn);
+  foot.appendChild(installBtn);
+  modal.appendChild(foot);
+  backdrop.appendChild(modal);
+  backdrop.addEventListener('click', (ev) => {
+    if (ev.target === backdrop) backdrop.remove();
+  });
+  document.body.appendChild(backdrop);
+}
+
+// Close any open provider popovers when clicking elsewhere in the window.
+document.addEventListener('click', () => {
+  document.querySelectorAll('.cust-pop.open').forEach((n) => n.classList.remove('open'));
+});
+
 async function renderMcp() {
   const seq = beginRender('mcp');
   const realPanel = $('#tab-mcp');
-  realPanel.innerHTML = '<div class="empty">Loading&hellip;</div>';
-  const state = await sb.mcpState();
+  if (!realPanel.children.length) {
+    realPanel.innerHTML = '<div class="empty">Loading customizations&hellip;</div>';
+  }
+  const [state, cust] = await Promise.all([
+    sb.mcpState(),
+    sb.customizationsState ? sb.customizationsState().catch(() => null) : Promise.resolve(null),
+  ]);
   if (!isCurrentRender('mcp', seq)) return;
   const servers = state.servers;
   const clients = state.clients;
@@ -3498,6 +4081,7 @@ async function renderMcp() {
   panel.appendChild(mcpSubtabs(renderMcp));
   const usable = clients.filter((c) => c.available);
   const missing = clients.filter((c) => !c.available);
+  const custClients = (cust && Array.isArray(cust.clients) ? cust.clients : usable).filter((c) => c.available);
 
   if (mcpView === 'browse') {
     realPanel.replaceChildren(...panel.childNodes);
@@ -3505,65 +4089,399 @@ async function renderMcp() {
     return;
   }
 
-  if (!usable.length) panel.appendChild(el('div', 'empty', 'No supported client found on this machine.'));
-
-  // With suggestions moved to Browse, this list is empty on a machine that has never
-  // registered anything, so it has to say where to go rather than showing a blank page.
-  if (!servers.length && usable.length) {
-    const row = el('div', 'hc info');
-    row.appendChild(el('div', 'hi', 'i'));
-    row.appendChild(el('div', 'hm', 'No servers switched on<span>Nothing is registered with a client yet. Browse the catalogue to add one, or add your own below.</span>'));
-    const go = el('button', 'btn primary', 'Browse');
-    go.addEventListener('click', () => { mcpView = 'browse'; renderMcp(); });
-    row.appendChild(go);
-    panel.appendChild(row);
+  if (mcpView === 'marketplace') {
+    realPanel.replaceChildren(...panel.childNodes);
+    await renderCustomizationsMarketplace(realPanel, usable, custClients);
+    return;
   }
 
-  const localNames = new Set(local.map((s) => s.name));
-  for (const s of servers) {
-    panel.appendChild(mcpRow(s, usable, renderMcp, { forgettable: localNames.has(s.name), togglable: true }));
+  if (mcpView === 'automations') {
+    realPanel.replaceChildren(...panel.childNodes);
+    await renderCustomizationsAutomations(realPanel);
+    return;
   }
 
-  // Clients you do not have are listed rather than hidden: it shows what is possible.
-  for (const c of missing) {
-    const row = el('div', 'hc info');
-    row.appendChild(el('div', 'hi', 'i'));
-    row.appendChild(el('div', 'hm', esc(c.name) + '<span>Not installed on this machine.</span>'));
-    if (c.site) {
-      const get = el('button', 'btn', 'Get it');
-      get.addEventListener('click', () => sb.openExternal(c.site));
-      row.appendChild(get);
+  // Dynamic Provider Eligibility summary strip
+  if (custClients.length) {
+    const strip = el('div', 'hc info');
+    strip.appendChild(el('div', 'hi', MARK.ok));
+    const names = custClients.map((c) => esc(c.name) + (c.accountCount > 1 ? ' (' + c.accountCount + ' accts)' : '')).join(' &middot; ');
+    strip.appendChild(el('div', 'hm', 'Eligible AI Providers (' + custClients.length + ')<span>' + names + ' &middot; Any new provider or account you add to Switchboard automatically appears here.</span>'));
+    const browseBtn = el('button', 'btn primary', 'Open Marketplace');
+    browseBtn.addEventListener('click', () => { mcpView = 'marketplace'; renderMcp(); });
+    strip.appendChild(browseBtn);
+    panel.appendChild(strip);
+  }
+
+  const pluginsList = (cust && Array.isArray(cust.plugins)) ? cust.plugins : [];
+  const skillsList = (cust && Array.isArray(cust.skills)) ? cust.skills : [];
+  const rulesList = (cust && cust.rules && Array.isArray(cust.rules.instructionFiles)) ? cust.rules.instructionFiles : [];
+  const agentsList = (cust && Array.isArray(cust.agents)) ? cust.agents : [];
+
+  // Section Filter & Quick Search Toolbar so 35+ skills never bury Rules, Agents, or MCP Servers
+  const toolbar = el('div', 'cust-toolbar');
+  const pills = el('div', 'cust-pills');
+  for (const [secId, secLabel] of [
+    ['all', 'All Installed'],
+    ['plugins', 'Plugins (' + pluginsList.length + ')'],
+    ['skills', 'Skills (' + skillsList.length + ')'],
+    ['rules', 'Rules & Agents (' + (rulesList.length + agentsList.length) + ')'],
+    ['mcp', 'MCP Servers (' + servers.length + ')'],
+  ]) {
+    const pBtn = el('button', 'cust-pill' + (custInstalledFilter === secId ? ' on' : ''), secLabel);
+    pBtn.type = 'button';
+    pBtn.addEventListener('click', () => {
+      custInstalledFilter = secId;
+      renderMcp();
+    });
+    pills.appendChild(pBtn);
+  }
+  toolbar.appendChild(pills);
+
+  const searchIn = el('input', 'cust-search');
+  searchIn.placeholder = 'Filter installed skills, plugins, rules, or MCPs...';
+  searchIn.value = custInstalledQuery;
+  searchIn.addEventListener('input', () => {
+    custInstalledQuery = searchIn.value;
+    renderMcp();
+  });
+  toolbar.appendChild(searchIn);
+  panel.appendChild(toolbar);
+
+  const qLower = custInstalledQuery.trim().toLowerCase();
+  const matchesQuery = (text) => !qLower || String(text || '').toLowerCase().includes(qLower);
+
+  // 1. Installed Plugins section
+  if (custInstalledFilter === 'all' || custInstalledFilter === 'plugins') {
+    const filteredPlugins = pluginsList.filter((p) => matchesQuery([p.name, p.title, p.description, ...(p.skills || [])].join(' ')));
+    panel.appendChild(el('div', 'grouphead', 'Plugins (' + filteredPlugins.length + ')'));
+    if (!filteredPlugins.length) {
+      const emptyPlug = el('div', 'hc info');
+      emptyPlug.appendChild(el('div', 'hi', 'i'));
+      emptyPlug.appendChild(el('div', 'hm', 'No plugins match<span>Install official Google Antigravity, Anthropic Claude, or OpenAI Codex plugins from the Marketplace.</span>'));
+      panel.appendChild(emptyPlug);
     }
-    panel.appendChild(row);
+    for (const p of filteredPlugins) {
+      const row = el('div', 'hc ok');
+      row.appendChild(el('div', 'hi', MARK.ok));
+      const bits = ['v' + esc(p.version || '1.0.0')];
+      if (p.skills && p.skills.length) bits.push('skills: ' + esc(p.skills.join(', ')));
+      if (p.description) bits.push(esc(p.description.slice(0, 140)));
+      row.appendChild(el('div', 'hm', esc(p.title || p.name) + '<span>' + bits.join(' &middot; ') + '</span>'));
+      row.appendChild(customizationProviderControl(p, custClients, async (client, nextEnabled, btn, opts) => {
+        btn.disabled = true;
+        try {
+          for (const sk of (p.skills || [])) {
+            await sb.customizationsSetSkill(sk, client.id, nextEnabled);
+          }
+          if (!opts || !opts.silent) {
+            toast((nextEnabled ? 'Enabled ' : 'Disabled ') + (p.title || p.name) + ' in ' + client.name + '.');
+          }
+        } catch (e) {
+          toast(mcpError(e));
+        } finally {
+          if (!opts || !opts.silent) renderMcp();
+        }
+      }, renderMcp));
+      panel.appendChild(row);
+    }
   }
 
-  const foot = el('div', 'healthfoot');
-  foot.style.flexWrap = 'wrap';
-  foot.style.gap = '6px';
-  const nameIn = el('input');
-  nameIn.placeholder = 'name (e.g. my-tracker)';
-  nameIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 140px;min-width:120px;max-width:100%';
-  const urlIn = el('input');
-  urlIn.placeholder = 'https://.../mcp, or a local command such as node';
-  urlIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 180px;min-width:140px;max-width:100%';
-  const argsIn = el('input');
-  argsIn.placeholder = 'arguments for a local command (optional)';
-  argsIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 140px;min-width:120px;max-width:100%';
-  const add = el('button', 'btn primary', 'Add server');
-  add.addEventListener('click', async () => {
+  // 2. Installed Skills & Slash Commands section
+  if (custInstalledFilter === 'all' || custInstalledFilter === 'skills') {
+    const filteredSkills = skillsList.filter((s) => {
+      if (custSkillFilter === 'custom' && s.builtin) return false;
+      if (custSkillFilter === 'builtin' && !s.builtin) return false;
+      return matchesQuery([s.name, s.title, s.description].join(' '));
+    });
+
+    const skHead = el('div', 'cust-sec-head');
+    skHead.appendChild(el('div', 'grouphead', 'Skills & Slash Commands (' + filteredSkills.length + ')'));
+    const skSubPills = el('div', 'cust-pills');
+    for (const [fId, fLabel] of [
+      ['all', 'All (' + skillsList.length + ')'],
+      ['custom', 'Custom / Global (' + skillsList.filter((s) => !s.builtin).length + ')'],
+      ['builtin', 'Built-in (' + skillsList.filter((s) => s.builtin).length + ')'],
+    ]) {
+      const b = el('button', 'cust-pill' + (custSkillFilter === fId ? ' on' : ''), fLabel);
+      b.type = 'button';
+      b.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        custSkillFilter = fId;
+        renderMcp();
+      });
+      skSubPills.appendChild(b);
+    }
+    skHead.appendChild(skSubPills);
+    panel.appendChild(skHead);
+
+    for (const s of filteredSkills) {
+      panel.appendChild(customizationSkillRow(s, custClients, renderMcp));
+    }
+
+    const skillFoot = el('div', 'healthfoot');
+    skillFoot.style.flexWrap = 'wrap';
+    skillFoot.style.gap = '6px';
+    const sName = el('input');
+    sName.placeholder = 'skill slug (e.g. code-audit)';
+    sName.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 130px';
+    const sDesc = el('input');
+    sDesc.placeholder = 'description / instructions summary';
+    sDesc.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:2 1 200px';
+    const sAdd = el('button', 'btn', '+ Create Skill across providers');
+    sAdd.addEventListener('click', async () => {
+      try {
+        await sb.customizationsSaveSkill({
+          name: sName.value,
+          description: sDesc.value,
+          body: '# ' + sName.value + '\n\n' + sDesc.value + '\n',
+          clients: custClients.map((c) => c.id),
+        });
+        toast('Created skill /' + sName.value.trim() + ' across ' + custClients.length + ' providers.');
+        renderMcp();
+      } catch (e) {
+        toast(mcpError(e));
+      }
+    });
+    skillFoot.appendChild(sName);
+    skillFoot.appendChild(sDesc);
+    skillFoot.appendChild(sAdd);
+    panel.appendChild(skillFoot);
+  }
+
+  // 3. Global Rules & Custom Agents section
+  if (custInstalledFilter === 'all' || custInstalledFilter === 'rules') {
+    const filteredRules = rulesList.filter((rf) => matchesQuery([rf.clientName, rf.fileName, rf.preview, rf.path].join(' ')));
+    panel.appendChild(el('div', 'grouphead', 'Global Rules (' + filteredRules.length + ' provider instruction files)'));
+    for (const rf of filteredRules) {
+      const row = el('div', 'hc ' + (rf.exists ? 'ok' : 'info'));
+      row.appendChild(el('div', 'hi', rf.exists ? MARK.ok : 'i'));
+      const summary = rf.exists
+        ? rf.sizeBytes + ' bytes' + (rf.preview ? ' &middot; ' + esc(rf.preview.slice(0, 110)) : '')
+        : 'Not created yet in ' + esc(rf.path);
+      row.appendChild(el('div', 'hm', esc(rf.clientName) + ' (' + esc(rf.fileName) + ')<span>' + summary + '</span>'));
+      const openBtn = el('button', 'btn', 'Open folder');
+      openBtn.addEventListener('click', () => sb.openPath(rf.path));
+      row.appendChild(openBtn);
+      panel.appendChild(row);
+    }
+
+    const filteredAgents = agentsList.filter((a) => matchesQuery([a.name, a.title, a.description].join(' ')));
+    if (filteredAgents.length) {
+      panel.appendChild(el('div', 'grouphead', 'Custom Agents (' + filteredAgents.length + ')'));
+      for (const a of filteredAgents) {
+        const row = el('div', 'hc ok');
+        row.appendChild(el('div', 'hi', MARK.ok));
+        row.appendChild(el('div', 'hm', esc(a.title || a.name) + '<span>model: ' + esc(a.model || 'inherit') + (a.description ? ' &middot; ' + esc(a.description) : '') + '</span>'));
+        row.appendChild(customizationProviderControl(a, custClients, async (client, nextEnabled, btn, opts) => {
+          btn.disabled = true;
+          try {
+            await sb.customizationsSetAgent(a.name, client.id, nextEnabled);
+            if (!opts || !opts.silent) {
+              toast((nextEnabled ? 'Enabled ' : 'Disabled ') + 'agent ' + a.name + ' in ' + client.name + '.');
+            }
+          } catch (e) {
+            toast(mcpError(e));
+          } finally {
+            if (!opts || !opts.silent) renderMcp();
+          }
+        }, renderMcp));
+        panel.appendChild(row);
+      }
+    }
+  }
+
+  // 4. Active MCP Servers section
+  if (custInstalledFilter === 'all' || custInstalledFilter === 'mcp') {
+    const filteredServers = servers.filter((s) => matchesQuery([s.name, s.label, s.title, s.description, s.url, s.command].join(' ')));
+    panel.appendChild(el('div', 'grouphead', 'MCP Servers (' + filteredServers.length + ')'));
+    if (!usable.length) panel.appendChild(el('div', 'empty', 'No supported client found on this machine.'));
+
+    if (!filteredServers.length && usable.length) {
+      const row = el('div', 'hc info');
+      row.appendChild(el('div', 'hi', 'i'));
+      row.appendChild(el('div', 'hm', 'No servers switched on<span>Nothing is registered with a client yet. Browse the catalogue to add one, or add your own below.</span>'));
+      const go = el('button', 'btn primary', 'Browse');
+      go.addEventListener('click', () => { mcpView = 'browse'; renderMcp(); });
+      row.appendChild(go);
+      panel.appendChild(row);
+    }
+
+    const localNames = new Set(local.map((s) => s.name));
+    for (const s of filteredServers) {
+      panel.appendChild(mcpRow(s, usable, renderMcp, { forgettable: localNames.has(s.name), togglable: true }));
+    }
+
+    for (const c of missing) {
+      const row = el('div', 'hc info');
+      row.appendChild(el('div', 'hi', 'i'));
+      row.appendChild(el('div', 'hm', esc(c.name) + '<span>Not installed on this machine.</span>'));
+      if (c.site) {
+        const get = el('button', 'btn', 'Get it');
+        get.addEventListener('click', () => sb.openExternal(c.site));
+        row.appendChild(get);
+      }
+      panel.appendChild(row);
+    }
+
+    const foot = el('div', 'healthfoot');
+    foot.style.flexWrap = 'wrap';
+    foot.style.gap = '6px';
+    const nameIn = el('input');
+    nameIn.placeholder = 'name (e.g. my-tracker)';
+    nameIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 140px;min-width:120px;max-width:100%';
+    const urlIn = el('input');
+    urlIn.placeholder = 'https://.../mcp, or a local command such as node';
+    urlIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 180px;min-width:140px;max-width:100%';
+    const argsIn = el('input');
+    argsIn.placeholder = 'arguments for a local command (optional)';
+    argsIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 140px;min-width:120px;max-width:100%';
+    const add = el('button', 'btn primary', 'Add server');
+    add.addEventListener('click', async () => {
+      try {
+        await sb.mcpAdd(mcpAddPayload(nameIn.value, urlIn.value, argsIn.value));
+        renderMcp();
+      } catch (e) {
+        toast(e.message || String(e));
+      }
+    });
+    foot.appendChild(nameIn);
+    foot.appendChild(urlIn);
+    foot.appendChild(argsIn);
+    foot.appendChild(add);
+    panel.appendChild(foot);
+  }
+
+  realPanel.replaceChildren(...panel.childNodes);
+  if (qLower) {
+    const nextSearch = realPanel.querySelector('.cust-search');
+    if (nextSearch) {
+      nextSearch.focus();
+      nextSearch.setSelectionRange(nextSearch.value.length, nextSearch.value.length);
+    }
+  }
+}
+
+async function renderCustomizationsMarketplace(panel, mcpClients, custClients) {
+  const ghBar = el('div', 'healthfoot');
+  ghBar.style.flexWrap = 'wrap';
+  ghBar.style.gap = '6px';
+  ghBar.style.marginBottom = '10px';
+  const ghInput = el('input');
+  ghInput.placeholder = 'Install any Skill or Plugin from GitHub (e.g. owner/repo or https://github.com/...)';
+  ghInput.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 240px;background:#fff';
+  const ghBtn = el('button', 'btn primary', 'Install from GitHub');
+  ghBtn.addEventListener('click', async () => {
+    const spec = ghInput.value.trim();
+    if (!spec) { toast('Enter a GitHub owner/repo or URL first.'); return; }
+    ghBtn.disabled = true;
+    ghBtn.textContent = 'Installing...';
     try {
-      await sb.mcpAdd(mcpAddPayload(nameIn.value, urlIn.value, argsIn.value));
+      const res = await sb.customizationsInstall({
+        target: spec,
+        clients: custClients.map((c) => c.id),
+      });
+      toast('Installed ' + res.name + ' across ' + (res.clients || []).length + ' providers.');
+      mcpView = 'active';
       renderMcp();
     } catch (e) {
-      toast(e.message || String(e));
+      toast(mcpError(e));
+      ghBtn.disabled = false;
+      ghBtn.textContent = 'Install from GitHub';
     }
   });
-  foot.appendChild(nameIn);
-  foot.appendChild(urlIn);
-  foot.appendChild(argsIn);
-  foot.appendChild(add);
-  panel.appendChild(foot);
-  realPanel.replaceChildren(...panel.childNodes);
+  ghBar.appendChild(ghInput);
+  ghBar.appendChild(ghBtn);
+  panel.appendChild(ghBar);
+
+  const filters = el('div', 'mcpfilters');
+  const q = el('input');
+  q.placeholder = 'Search trusted plugins, skills, and MCP servers...';
+  q.value = mktQuery;
+  const srcSelect = el('select');
+  for (const [val, label] of [
+    ['all', 'All Trusted Sources'],
+    ['google', 'Google Antigravity'],
+    ['anthropic', 'Anthropic Claude'],
+    ['openai', 'OpenAI Codex'],
+    ['mcp-registry', 'Official MCP Registry'],
+  ]) {
+    srcSelect.appendChild(new Option(label, val));
+  }
+  srcSelect.value = mktSource;
+
+  const kindSelect = el('select');
+  for (const [val, label] of [
+    ['all', 'All Types'],
+    ['plugin', 'Plugins'],
+    ['skill', 'Skills'],
+    ['mcp', 'MCP Servers'],
+  ]) {
+    kindSelect.appendChild(new Option(label, val));
+  }
+  kindSelect.value = mktKind;
+
+  filters.appendChild(q);
+  filters.appendChild(srcSelect);
+  filters.appendChild(kindSelect);
+  panel.appendChild(filters);
+
+  const count = el('div', 'mcpcount', 'Loading trusted catalogs...');
+  panel.appendChild(count);
+  const grid = el('div', 'mkt-grid');
+  panel.appendChild(grid);
+
+  const paint = async () => {
+    const seq = beginRender('custmkt');
+    const data = await sb.customizationsMarketplace({
+      query: mktQuery,
+      source: mktSource,
+      kind: mktKind,
+    });
+    if (!isCurrentRender('custmkt', seq)) return;
+    count.textContent = data.matched + ' of ' + data.total + ' trusted items from Google Antigravity, Anthropic Claude, OpenAI Codex, and Official MCP Registry';
+    grid.replaceChildren(...(data.items || []).map((item) => customizationMarketplaceRow(
+      item,
+      async (picked, btn) => {
+        btn.disabled = true;
+        btn.textContent = 'Installing...';
+        try {
+          if (String(picked.kind || '').startsWith('mcp')) {
+            const targetClients = mcpClients.filter((c) => c.available);
+            for (const c of targetClients) {
+              try { await sb.mcpRegister(c.id, picked.name); } catch { /* skip unsupported */ }
+            }
+            toast('Added MCP server ' + (picked.title || picked.name) + '.');
+          } else {
+            const res = await sb.customizationsInstall({
+              target: picked.name,
+              clients: custClients.map((c) => c.id),
+            });
+            toast('Installed ' + (picked.title || res.name) + ' across ' + (res.clients || []).length + ' providers.');
+          }
+          mcpView = 'active';
+          renderMcp();
+        } catch (e) {
+          toast(mcpError(e));
+          btn.disabled = false;
+          btn.textContent = 'Install';
+        }
+      },
+      (picked) => openMarketplaceOverviewModal(picked, mcpClients, custClients, () => {
+        mcpView = 'active';
+        renderMcp();
+      }),
+    )));
+  };
+
+  q.addEventListener('input', () => {
+    mktQuery = q.value;
+    clearTimeout(mktSearchTimer);
+    mktSearchTimer = setTimeout(paint, 120);
+  });
+  srcSelect.addEventListener('change', () => { mktSource = srcSelect.value; paint(); });
+  kindSelect.addEventListener('change', () => { mktKind = kindSelect.value; paint(); });
+  await paint();
 }
 
 async function renderMcpBrowse(panel, clients) {
@@ -3589,8 +4507,6 @@ async function renderMcpBrowse(panel, clients) {
       for (const c of data.categories) cat.appendChild(new Option(c.name + ' (' + c.count + ')', c.name));
       cat.value = mcpCategory;
     }
-    // The whole catalogue is sent, so this is a plain count and never an apology for a
-    // cap. It used to read "Showing 60 of 64 matches" with an empty search box.
     const filtered = Boolean(mcpQuery.trim() || mcpCategory);
     count.textContent = filtered
       ? data.matched + ' of ' + data.total + ' servers match'
@@ -3601,10 +4517,112 @@ async function renderMcpBrowse(panel, clients) {
   q.addEventListener('input', () => {
     mcpQuery = q.value;
     clearTimeout(mcpSearchTimer);
-    mcpSearchTimer = setTimeout(paint, 180);
+    mcpSearchTimer = setTimeout(paint, 120);
   });
   cat.addEventListener('change', () => { mcpCategory = cat.value; paint(); });
   await paint();
+}
+
+async function renderCustomizationsAutomations(panel) {
+  const note = el('div', 'hc info');
+  note.appendChild(el('div', 'hi', 'i'));
+  note.appendChild(el('div', 'hm', 'Low-level Provider-Agnostic Automations<span>Switchboard runs machine-level scheduled prompts through your failover lane pool so recurring maintenance or cross-provider audits never depend on a single vendor daemon.</span>'));
+  panel.appendChild(note);
+
+  let data = { automations: [], presets: [] };
+  if (sb.automationsState) {
+    try { data = await sb.automationsState(); } catch { /* ignore */ }
+  }
+  const list = data.automations || [];
+  panel.appendChild(el('div', 'grouphead', 'Scheduled Routines (' + list.length + ')'));
+  if (!list.length) {
+    const empty = el('div', 'hc info');
+    empty.appendChild(el('div', 'hi', 'i'));
+    empty.appendChild(el('div', 'hm', 'No low-level automations scheduled yet<span>Add a recurring maintenance prompt or cross-provider audit below.</span>'));
+    panel.appendChild(empty);
+  }
+  for (const a of list) {
+    const row = el('div', 'hc ' + (a.enabled ? 'ok' : 'off'));
+    const tog = el('button', 'hi', a.enabled ? MARK.ok : '&ndash;');
+    tog.title = a.enabled ? 'Enabled. Click to pause.' : 'Paused. Click to enable.';
+    tog.addEventListener('click', async () => {
+      try {
+        await sb.automationsToggle(a.id, !a.enabled);
+        renderMcp();
+      } catch (e) {
+        toast(mcpError(e));
+      }
+    });
+    row.appendChild(tog);
+    const bits = ['every ' + a.intervalMinutes + 'm'];
+    if (a.cwd) bits.push(esc(a.cwd));
+    bits.push(esc(a.prompt.slice(0, 110)));
+    if (a.lastSummary) bits.push(esc(a.lastSummary));
+    row.appendChild(el('div', 'hm', esc(a.name) + '<span>' + bits.join(' &middot; ') + '</span>'));
+    const runBtn = el('button', 'btn', 'Run now');
+    runBtn.addEventListener('click', async () => {
+      try {
+        await sb.automationsRun(a.id);
+        toast('Triggered automation "' + a.name + '".');
+        renderMcp();
+      } catch (e) {
+        toast(mcpError(e));
+      }
+    });
+    row.appendChild(runBtn);
+    const delBtn = el('button', 'btn ghost', 'Remove');
+    delBtn.addEventListener('click', async () => {
+      if (!confirm('Remove automation "' + a.name + '"?')) return;
+      try {
+        await sb.automationsRemove(a.id);
+        renderMcp();
+      } catch (e) {
+        toast(mcpError(e));
+      }
+    });
+    row.appendChild(delBtn);
+    panel.appendChild(row);
+  }
+
+  const foot = el('div', 'healthfoot');
+  foot.style.flexWrap = 'wrap';
+  foot.style.gap = '6px';
+  const nameIn = el('input');
+  nameIn.placeholder = 'routine name (e.g. Daily MCP & Skill Sync)';
+  nameIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:1 1 150px';
+  const promptIn = el('input');
+  promptIn.placeholder = 'prompt to execute via Switchboard lane pool';
+  promptIn.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;flex:2 1 220px';
+  const intSelect = el('select');
+  intSelect.style.cssText = 'font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px';
+  for (const p of (data.presets && data.presets.length ? data.presets : [
+    { minutes: 60, label: 'Every hour' },
+    { minutes: 360, label: 'Every 6 hours' },
+    { minutes: 1440, label: 'Daily (24h)' },
+    { minutes: 10080, label: 'Weekly (7d)' },
+  ])) {
+    intSelect.appendChild(new Option(p.label, String(p.minutes)));
+  }
+  intSelect.value = '1440';
+  const addBtn = el('button', 'btn primary', '+ Add Automation');
+  addBtn.addEventListener('click', async () => {
+    try {
+      await sb.automationsAdd({
+        name: nameIn.value,
+        prompt: promptIn.value,
+        intervalMinutes: Number(intSelect.value) || 1440,
+      });
+      toast('Added automation "' + nameIn.value.trim() + '".');
+      renderMcp();
+    } catch (e) {
+      toast(mcpError(e));
+    }
+  });
+  foot.appendChild(nameIn);
+  foot.appendChild(promptIn);
+  foot.appendChild(intSelect);
+  foot.appendChild(addBtn);
+  panel.appendChild(foot);
 }
 
 // ---- Self-update surface: the version number is the button. ----

@@ -20,7 +20,7 @@ export function validRepoSlug(slug) {
 }
 
 async function gh(args, execFn) {
-  return execFn('gh', args, { windowsHide: true, timeout: 60000, shell: process.platform === 'win32' });
+  return execFn('gh', args, { windowsHide: true, timeout: 60000 });
 }
 
 function classifyGhError(e) {

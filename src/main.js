@@ -23,7 +23,29 @@ import { appRunning, bridgeProblem, bridgeRunning, candidateBridgeProcesses, lis
 import { terminalRows, terminalChips } from '../core/terminals.js';
 import { matchT3Colors, readT3Instances } from '../core/t3colors.js';
 import { checkAppUpdate, downloadUpdate, validRepoSlug } from '../core/updatecheck.js';
-import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix, disableServer, enableServer, syncClientAccountMirrors } from '../core/mcp.js';
+import { CLIENTS as MCP_CLIENTS, activeServers, browseServers, resolveServerByName, searchCatalog, categoriesOf, loadServers, saveServers, addServer, removeServer, registerServer, unregisterServer, listRegistered, clientAvailable, registrationMatrix, disableServer, enableServer, syncClientAccountMirrors, listServerTools } from '../core/mcp.js';
+import {
+  MARKETPLACE_SOURCES,
+  customizationsSnapshot,
+  loadMarketplaceCatalog,
+  searchMarketplace,
+  installMarketplaceItem,
+  installFromGitHub,
+  setSkillClientState,
+  saveCustomSkill,
+  setAgentClientState,
+  saveCustomAgent,
+  syncGlobalInstructionToClients,
+} from '../core/customizations.js';
+import {
+  AUTOMATION_INTERVAL_PRESETS,
+  loadAutomations,
+  saveAutomations,
+  addAutomation,
+  removeAutomation,
+  toggleAutomation,
+  recordAutomationRun,
+} from '../core/automations.js';
 import { createRequire } from 'node:module';
 
 // CI stamps updateRepo into the packaged package.json (extraMetadata); the committed
@@ -1172,11 +1194,73 @@ ipcMain.handle('sb:signout', async (_e, accountId) => {
   return result;
 });
 
+let installedToolIdsCache = { at: 0, ids: null, inflight: null };
+let mcpClientAvailCache = { at: 0, map: null, inflight: null };
+const CLI_DETECT_CACHE_TTL_MS = 60_000;
+
+function invalidateCliDetectionCaches() {
+  installedToolIdsCache = { at: 0, ids: null, inflight: null };
+  mcpClientAvailCache = { at: 0, map: null, inflight: null };
+}
+
+async function installedCustomizationToolIds() {
+  const now = Date.now();
+  if (installedToolIdsCache.ids && now - installedToolIdsCache.at < CLI_DETECT_CACHE_TTL_MS) {
+    return installedToolIdsCache.ids;
+  }
+  if (!installedToolIdsCache.inflight) {
+    installedToolIdsCache.inflight = detectInstalled()
+      .then((detected) => {
+        const ids = detected.filter((t) => t.installed).map((t) => t.id);
+        installedToolIdsCache = { at: Date.now(), ids, inflight: null };
+        return ids;
+      })
+      .catch((err) => {
+        installedToolIdsCache.inflight = null;
+        throw err;
+      });
+  }
+  return installedToolIdsCache.inflight;
+}
+
+async function cachedMcpClients() {
+  const now = Date.now();
+  if (!mcpClientAvailCache.map || now - mcpClientAvailCache.at >= CLI_DETECT_CACHE_TTL_MS) {
+    if (!mcpClientAvailCache.inflight) {
+      mcpClientAvailCache.inflight = Promise.all(
+        Object.values(MCP_CLIENTS).map(async (c) => [c.id, await clientAvailable(c.id)]),
+      )
+        .then((pairs) => {
+          const map = Object.fromEntries(pairs);
+          mcpClientAvailCache = { at: Date.now(), map, inflight: null };
+          return map;
+        })
+        .catch((err) => {
+          mcpClientAvailCache.inflight = null;
+          throw err;
+        });
+    }
+    await mcpClientAvailCache.inflight;
+  }
+  return Object.values(MCP_CLIENTS).map((c) => ({
+    id: c.id,
+    name: c.name,
+    available: Boolean(mcpClientAvailCache.map?.[c.id]),
+    // File-edited clients can always undo; CLI-driven ones only if they ship a remove verb.
+    canRemove: c.via === 'file' || Boolean(c.removeArgs),
+    canList: Boolean(c.listArgs),
+    // Whether this client can say if a server is actually signed in, or only registered.
+    reportsAuth: Boolean(c.authFile && c.parseAuth),
+    site: c.site ?? null,
+  }));
+}
+
 ipcMain.handle('sb:install', (_e, toolId, mode = 'install') => {
   const tool = TOOLS.find((t) => t.id === toolId);
   if (!tool) throw new Error(`unknown tool: ${toolId}`);
   const cmd = installCmdFor(tool, mode);
   if (!cmd) throw new Error(`${tool.name} has no automated ${mode}; use the vendor site`);
+  invalidateCliDetectionCaches();
   // Vendor installers run in a visible terminal the user can watch and answer.
   spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', cmd], {
     detached: true,
@@ -1217,19 +1301,7 @@ ipcMain.handle('sb:mcpState', async () => {
   // Opening the tab is when someone wants to see every account's servers, so it is when
   // they are shared across accounts. A failure here must not stop the tab from opening.
   try { syncClientAccountMirrors(reg); } catch { /* the panel still shows what each file has */ }
-  const clients = await Promise.all(
-    Object.values(MCP_CLIENTS).map(async (c) => ({
-      id: c.id,
-      name: c.name,
-      available: await clientAvailable(c.id),
-      // File-edited clients can always undo; CLI-driven ones only if they ship a remove verb.
-      canRemove: c.via === 'file' || Boolean(c.removeArgs),
-      canList: Boolean(c.listArgs),
-      // Whether this client can say if a server is actually signed in, or only registered.
-      reportsAuth: Boolean(c.authFile && c.parseAuth),
-      site: c.site ?? null,
-    })),
-  );
+  const clients = await cachedMcpClients();
   // Only ask about clients that are actually here; reading a config for a tool that is
   // not installed would report nothing anyway and just muddies the panel.
   const usable = clients.filter((c) => c.available).map((c) => c.id);
@@ -1240,9 +1312,8 @@ ipcMain.handle('sb:mcpState', async () => {
 ipcMain.handle('sb:mcpBrowse', async (_e, { query = '', category = '' } = {}) => {
   const reg = loadServers();
   const all = browseServers(reg);
-  const usable = (await Promise.all(
-    Object.values(MCP_CLIENTS).map(async (c) => ((await clientAvailable(c.id)) ? c.id : null)),
-  )).filter(Boolean);
+  const clients = await cachedMcpClients();
+  const usable = clients.filter((c) => c.available).map((c) => c.id);
   const matched = searchCatalog(all, { query, category });
   return {
     total: all.length,
@@ -1287,6 +1358,106 @@ ipcMain.handle('sb:mcpList', (_e, clientId) => listRegistered(clientId));
 ipcMain.handle('sb:mcpDisable', (_e, name) => disableServer(name));
 
 ipcMain.handle('sb:mcpEnable', (_e, name) => enableServer(name));
+
+ipcMain.handle('sb:mcpServerTools', (_e, name) => listServerTools(name));
+
+/**
+ * Customizations control plane: Plugins, Skills, Global Rules, Custom Agents, and
+ * Trusted Multi-Source Marketplace across all installed or configured providers.
+ */
+ipcMain.handle('sb:customizationsState', async () => {
+  const installedToolIds = await installedCustomizationToolIds();
+  const snap = customizationsSnapshot({ installedToolIds });
+  const { mcpServerTools, ...serializable } = snap;
+  return serializable;
+});
+
+ipcMain.handle('sb:customizationsMarketplace', (_e, opts = {}) => {
+  const all = loadMarketplaceCatalog();
+  const matched = searchMarketplace(all, opts);
+  return {
+    total: all.length,
+    matched: matched.length,
+    sources: MARKETPLACE_SOURCES,
+    items: matched,
+  };
+});
+
+ipcMain.handle('sb:customizationsInstall', async (_e, { target = '', clients = [] } = {}) => {
+  const cleanTarget = String(target ?? '').trim();
+  if (!cleanTarget) throw new Error('specify a marketplace item name or a GitHub owner/repo');
+  const installedToolIds = await installedCustomizationToolIds();
+  if (cleanTarget.includes('/') || cleanTarget.startsWith('http')) {
+    return installFromGitHub(cleanTarget, { clients, installedToolIds });
+  }
+  return installMarketplaceItem(cleanTarget, { clients, installedToolIds });
+});
+
+ipcMain.handle('sb:customizationsSetSkill', async (_e, { skillName, clientId, enabled } = {}) => {
+  const installedToolIds = await installedCustomizationToolIds();
+  return setSkillClientState(skillName, clientId, enabled, { installedToolIds });
+});
+
+ipcMain.handle('sb:customizationsSaveSkill', async (_e, payload = {}) => {
+  const installedToolIds = await installedCustomizationToolIds();
+  return saveCustomSkill(payload, { installedToolIds });
+});
+
+ipcMain.handle('sb:customizationsSetAgent', async (_e, { agentName, clientId, enabled } = {}) => {
+  const installedToolIds = await installedCustomizationToolIds();
+  return setAgentClientState(agentName, clientId, enabled, { installedToolIds });
+});
+
+ipcMain.handle('sb:customizationsSaveAgent', async (_e, payload = {}) => {
+  const installedToolIds = await installedCustomizationToolIds();
+  return saveCustomAgent(payload, { installedToolIds });
+});
+
+ipcMain.handle('sb:customizationsSyncRule', async (_e, { text = '', clients = [] } = {}) => {
+  const installedToolIds = await installedCustomizationToolIds();
+  return syncGlobalInstructionToClients(text, clients, { installedToolIds });
+});
+
+ipcMain.handle('sb:automationsState', () => {
+  const state = loadAutomations();
+  return {
+    automations: state.automations,
+    presets: AUTOMATION_INTERVAL_PRESETS,
+  };
+});
+
+ipcMain.handle('sb:automationsAdd', (_e, payload = {}) => {
+  const state = loadAutomations();
+  const item = addAutomation(state, payload);
+  saveAutomations(state);
+  return { ok: true, item };
+});
+
+ipcMain.handle('sb:automationsRemove', (_e, id) => {
+  const state = loadAutomations();
+  removeAutomation(state, id);
+  saveAutomations(state);
+  return { ok: true };
+});
+
+ipcMain.handle('sb:automationsToggle', (_e, { id, enabled } = {}) => {
+  const state = loadAutomations();
+  const item = toggleAutomation(state, id, enabled);
+  saveAutomations(state);
+  return { ok: true, item };
+});
+
+ipcMain.handle('sb:automationsRun', (_e, id) => {
+  const state = loadAutomations();
+  const target = state.automations.find((a) => a.id === id);
+  if (!target) throw new Error(`Automation not found: ${id}`);
+  recordAutomationRun(state, id, {
+    status: 'launched',
+    summary: `Launched via Switchboard failover lane pool at ${new Date().toLocaleTimeString()}`,
+  });
+  saveAutomations(state);
+  return { ok: true, item: target };
+});
 
 // What the Apps panel last showed, kept so the running poll can match processes to
 // apps without re-running detection (a PowerShell call) every few seconds.

@@ -3,14 +3,27 @@ import { spawnSync } from 'node:child_process';
 const HKCU = 'HKCU\\Environment';
 const HKLM = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment';
 
+const regCache = new Map();
+const REG_CACHE_TTL_MS = 15_000;
+
 function regQuery(hive, name) {
+  const key = `${hive}::${name}`;
+  const now = Date.now();
+  const hit = regCache.get(key);
+  if (hit && now - hit.at < REG_CACHE_TTL_MS) return hit.value;
+
   const r = spawnSync('reg', ['query', hive, '/v', name], { encoding: 'utf8', windowsHide: true });
-  if (r.status !== 0 || !r.stdout) return null;
-  // "    NAME    REG_SZ    value" (value may contain spaces)
-  const line = r.stdout.split(/\r?\n/).find((l) => l.match(/REG_(EXPAND_)?SZ/));
-  if (!line) return null;
-  const m = line.match(/REG_(?:EXPAND_)?SZ\s+(.*)$/);
-  return m ? m[1].trim() : null;
+  let value = null;
+  if (r.status === 0 && r.stdout) {
+    // "    NAME    REG_SZ    value" (value may contain spaces)
+    const line = r.stdout.split(/\r?\n/).find((l) => l.match(/REG_(EXPAND_)?SZ/));
+    if (line) {
+      const m = line.match(/REG_(?:EXPAND_)?SZ\s+(.*)$/);
+      value = m ? m[1].trim() : null;
+    }
+  }
+  regCache.set(key, { at: now, value });
+  return value;
 }
 
 /** Read a variable from the user's persistent environment (registry, not this process). */
@@ -50,6 +63,7 @@ export function freshPathDirs() {
  */
 export function deleteUserEnv(name) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`invalid variable name: ${name}`);
+  regCache.clear();
   if (process.platform !== 'win32') {
     delete process.env[name];
     return true;
@@ -65,6 +79,7 @@ export function deleteUserEnv(name) {
  */
 export function setUserEnv(name, value) {
   if (String(value).length > 1000) throw new Error(`${name}: value too long for setx`);
+  regCache.clear();
   if (process.platform !== 'win32') {
     process.env[name] = String(value);
     return true;

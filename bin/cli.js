@@ -20,6 +20,22 @@ import { checkThresholds, dispatchNotification, buildNotificationPayload, format
 import { recordPipedInput } from '../core/piped-input.js';
 import { matchT3Colors, readT3Instances } from '../core/t3colors.js';
 import { CLIENTS as MCP_CLIENTS, activeServers, loadServers, saveServers, addServer, removeServer, resolveServerByName, registerServer, unregisterServer, disableServer, enableServer, registrationMatrix, registeredNames, clientAvailable, syncClientAccountMirrors, parseMcpAddArgs, supportsClient } from '../core/mcp.js';
+import {
+  customizationsSnapshot,
+  loadMarketplaceCatalog,
+  searchMarketplace,
+  installMarketplaceItem,
+  installFromGitHub,
+  setSkillClientState,
+  setAgentClientState,
+} from '../core/customizations.js';
+import {
+  loadAutomations,
+  saveAutomations,
+  addAutomation,
+  removeAutomation,
+  toggleAutomation,
+} from '../core/automations.js';
 import readline from 'node:readline/promises';
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -1583,8 +1599,143 @@ async function main() {
       }
       throw new Error(`unknown mcp subcommand: ${sub}. Use list|add|remove|register|unregister|disable|enable|sync`);
     }
+    case 'customizations':
+    case 'skills':
+    case 'plugins': {
+      const sub = args[0] ?? 'list';
+      const installedIds = (await detectInstalled()).filter((t) => t.installed).map((t) => t.id);
+
+      if (sub === 'list' || sub === '--json') {
+        const snap = customizationsSnapshot({ installedToolIds: installedIds });
+        if (args.includes('--json')) {
+          const { mcpServerTools, ...serializable } = snap;
+          out(JSON.stringify(serializable, null, 2));
+          return;
+        }
+        const avail = snap.clients.filter((c) => c.available);
+        out(`Eligible Providers (${avail.length}): ${avail.map((c) => `${c.id}${c.accountCount > 1 ? `*${c.accountCount}` : ''}`).join(', ')}`);
+        out(`Installed Plugins (${snap.plugins.length}):`);
+        for (const p of snap.plugins) {
+          const active = avail.filter((c) => p.state[c.id] === 'on').map((c) => c.id).join(', ') || 'off';
+          out(`  ${p.name.padEnd(28)} [${active}]  ${p.description.slice(0, 72)}`);
+        }
+        out(`Installed Skills (${snap.skills.length}):`);
+        for (const s of snap.skills) {
+          const active = avail.filter((c) => s.state[c.id] === 'on').map((c) => c.id).join(', ') || 'off';
+          out(`  ${(`/${s.name}`).padEnd(28)} [${active}]  ${s.description.slice(0, 72)}`);
+        }
+        out(`Global Rules (${snap.rules.instructionFiles.length} provider files, ${snap.rules.snippets.length} snippets):`);
+        for (const r of snap.rules.instructionFiles) {
+          out(`  ${(`${r.clientId}:${r.fileName}`).padEnd(28)} ${r.exists ? `${r.sizeBytes}B` : 'missing'}`);
+        }
+        out(`Custom Agents (${snap.agents.length}):`);
+        for (const a of snap.agents) {
+          const active = avail.filter((c) => a.state[c.id] === 'on').map((c) => c.id).join(', ') || 'off';
+          out(`  ${a.name.padEnd(28)} [${active}]  model=${a.model}`);
+        }
+        out(`Trusted Marketplace Catalog: ${snap.marketplaceCount} items available`);
+        return;
+      }
+
+      if (sub === 'marketplace' || sub === 'browse') {
+        const query = args.slice(1).filter((a) => !a.startsWith('--')).join(' ');
+        const items = searchMarketplace(loadMarketplaceCatalog(), { query });
+        if (args.includes('--json')) {
+          out(JSON.stringify(items, null, 2));
+          return;
+        }
+        out(`Marketplace (${items.length} matching items):`);
+        for (const item of items.slice(0, 40)) {
+          const badges = (item.sources ?? []).join('+');
+          out(`  ${item.name.padEnd(30)} [${item.kind} | ${badges}]  ${(item.description || '').slice(0, 65)}`);
+        }
+        return;
+      }
+
+      if (sub === 'install') {
+        const target = args[1];
+        if (!target) throw new Error('usage: switchboard customizations install <name|owner/repo> [client|all]');
+        const clientArg = args[2];
+        const clients = clientArg && clientArg !== 'all' ? [clientArg] : [];
+        if (target.includes('/') || target.startsWith('http')) {
+          const res = await installFromGitHub(target, { clients, installedToolIds: installedIds });
+          out(`Installed ${res.name} from ${res.repository} into ${res.clients.join(', ')}`);
+        } else {
+          const res = installMarketplaceItem(target, { clients, installedToolIds: installedIds });
+          out(`Installed ${res.name} (${res.kind}) into ${res.clients.join(', ')}`);
+        }
+        return;
+      }
+
+      if (sub === 'enable-skill' || sub === 'disable-skill') {
+        const skillName = args[1];
+        const clientId = args[2];
+        if (!skillName || !clientId) {
+          throw new Error(`usage: switchboard customizations ${sub} <skillName> <clientId>`);
+        }
+        const enabled = sub === 'enable-skill';
+        const res = setSkillClientState(skillName, clientId, enabled, { installedToolIds: installedIds });
+        out(`${enabled ? 'Enabled' : 'Disabled'} skill /${res.skill} for ${res.client}`);
+        return;
+      }
+
+      if (sub === 'enable-agent' || sub === 'disable-agent') {
+        const agentName = args[1];
+        const clientId = args[2];
+        if (!agentName || !clientId) {
+          throw new Error(`usage: switchboard customizations ${sub} <agentName> <clientId>`);
+        }
+        const enabled = sub === 'enable-agent';
+        const res = setAgentClientState(agentName, clientId, enabled, { installedToolIds: installedIds });
+        out(`${enabled ? 'Enabled' : 'Disabled'} agent ${res.agent} for ${res.client}`);
+        return;
+      }
+
+      throw new Error(`unknown customizations subcommand: ${sub}. Use list|marketplace|install|enable-skill|disable-skill|enable-agent|disable-agent`);
+    }
+    case 'automations': {
+      const sub = args[0] ?? 'list';
+      const state = loadAutomations();
+      if (sub === 'list' || sub === '--json') {
+        if (args.includes('--json')) {
+          out(JSON.stringify(state.automations, null, 2));
+          return;
+        }
+        out(`Automations (${state.automations.length} low-level provider-agnostic routines):`);
+        for (const a of state.automations) {
+          out(`  ${a.enabled ? '*' : '-'} ${a.id.padEnd(26)} every ${a.intervalMinutes}m  ${a.name}  [${a.lastStatus || 'never-run'}]`);
+        }
+        return;
+      }
+      if (sub === 'add') {
+        const name = args[1];
+        const prompt = args[2];
+        const intervalMinutes = Number(args[3]) || 1440;
+        const item = addAutomation(state, { name, prompt, intervalMinutes });
+        saveAutomations(state);
+        out(`Added automation ${item.id} (${item.name}, every ${item.intervalMinutes}m)`);
+        return;
+      }
+      if (sub === 'remove') {
+        const id = args[1];
+        if (!id) throw new Error('usage: switchboard automations remove <id>');
+        removeAutomation(state, id);
+        saveAutomations(state);
+        out(`Removed automation ${id}`);
+        return;
+      }
+      if (sub === 'toggle') {
+        const id = args[1];
+        if (!id) throw new Error('usage: switchboard automations toggle <id>');
+        const item = toggleAutomation(state, id);
+        saveAutomations(state);
+        out(`Automation ${item.id} is now ${item.enabled ? 'enabled' : 'disabled'}`);
+        return;
+      }
+      throw new Error(`unknown automations subcommand: ${sub}. Use list|add|remove|toggle`);
+    }
     default:
-      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|watch|notify|mcp|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|watch|notify|mcp|customizations|automations|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> [folder]   leave out the folder for a brand-new account`);
@@ -1602,6 +1753,8 @@ async function main() {
       out('  mcp [list|add|remove|register|unregister|disable|enable|sync]   manage MCP servers across clients and accounts');
       out('    mcp add <name> <https url>  |  mcp add <name> [-e KEY=VALUE ...] --stdio <command> [args...]');
       out('    mcp register <name> [client|all]   mcp unregister <name> [client|all]   mcp disable|enable <name>');
+      out('  customizations [list|marketplace|install|enable-skill|disable-skill]   manage plugins, skills, rules, agents & MCPs');
+      out('  automations [list|add|remove|toggle]   manage low-level provider-agnostic scheduled routines');
       out('  dry-run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--spec <file>] [--json] [--with-token]   explain which lane would be selected');
       out('  run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');
       out(`  <p> is a harness (${providerList}) or the vendor behind it (anthropic|openai|google)`);

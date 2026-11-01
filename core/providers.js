@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { freshPathDirs } from './env.js';
 import { agyUpdateClaim, markAgyCheckDone } from './agy-updates.js';
+import { cliLaunch } from './cli-launch.js';
 
 const run = promisify(execFile);
 
@@ -107,7 +108,8 @@ async function whichPath(bin) {
 
 async function binVersion(bin, args) {
   try {
-    const { stdout } = await run(bin, args, { windowsHide: true, timeout: 8000, shell: process.platform === 'win32' });
+    const launch = cliLaunch(bin, args);
+    const { stdout } = await run(launch.file, launch.args, { windowsHide: true, timeout: 8000, ...launch.options });
     const lines = stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     // Some tools print warnings before the version; prefer the line that has one.
     return lines.find((l) => /\d+\.\d+/.test(l)) || lines[0] || null;
@@ -217,7 +219,9 @@ export async function checkUpdate(tool, installedVersion, state = {}) {
     }
     if (tool.install.via === 'npm') {
       const pkg = tool.install.cmd.split(/\s+/).pop();
-      const { stdout } = await run('npm', ['view', pkg, 'version'], { windowsHide: true, timeout: 15000, shell: process.platform === 'win32' });
+      const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+      const launch = cliLaunch(npmBin, ['view', pkg, 'version']);
+      const { stdout } = await run(launch.file, launch.args, { windowsHide: true, timeout: 15000, ...launch.options });
       const latest = stdout.trim();
       const newer = isNewerVersion(latest, installedVersion);
       return { updateAvailable: newer, latest: newer ? latest : null };

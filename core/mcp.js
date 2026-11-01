@@ -868,7 +868,19 @@ function client(clientId) {
   return c;
 }
 
-const execOpts = { windowsHide: true, timeout: 60000, shell: process.platform === 'win32' };
+const execOpts = { windowsHide: true, timeout: 60000 };
+
+function runMcpCli(bin, rawArgs) {
+  if (process.platform === 'win32') {
+    const quoted = quoteWinShellArgs([bin, ...rawArgs], 'win32').join(' ');
+    return run('cmd.exe', ['/d', '/s', '/v:off', '/c', `"${quoted}"`], {
+      ...execOpts,
+      shell: false,
+      windowsVerbatimArguments: true,
+    });
+  }
+  return run(bin, rawArgs, { ...execOpts, shell: false });
+}
 
 /**
  * Arguments as cmd.exe must see them. With `shell` set, Node joins the arguments with
@@ -898,7 +910,7 @@ export async function clientAvailable(clientId) {
   }
   const finder = process.platform === 'win32' ? 'where' : 'which';
   try {
-    await run(finder, [c.bin], execOpts);
+    await run(finder, [c.bin], { windowsHide: true, timeout: 4000 });
     return true;
   } catch {
     return false;
@@ -1114,13 +1126,13 @@ export async function registerServer(clientId, server) {
   // so anything this call created is taken back out before the error is reported.
   const wasThere = registeredNames(c.id).includes(server.name);
   try {
-    const { stdout, stderr } = await run(c.bin, quoteWinShellArgs(c.addArgs(server)), execOpts);
+    const { stdout, stderr } = await runMcpCli(c.bin, c.addArgs(server));
     if (c.entry) addToClientMirrorFiles(c.id, server.name, c.entry(server));
     return { ok: true, client: c.id, server: server.name, output: `${stdout ?? ''}${stderr ?? ''}`.trim() };
   } catch (e) {
     if (!wasThere && registeredNames(c.id).includes(server.name) && c.removeArgs) {
       try {
-        await run(c.bin, quoteWinShellArgs(c.removeArgs(server)), execOpts);
+        await runMcpCli(c.bin, c.removeArgs(server));
       } catch { /* best effort: the reported failure matters more than a tidy rollback */ }
     }
     const err = new Error(`${c.name} could not add ${server.name}: ${cleanCliError(e?.stderr || e?.message || e)}`);
@@ -1146,7 +1158,7 @@ export async function unregisterServer(clientId, server) {
   if (!c.removeArgs) throw new Error(`${c.name} has no remove command.`);
   let cliOut = '';
   try {
-    const { stdout, stderr } = await run(c.bin, quoteWinShellArgs(c.removeArgs(server)), execOpts);
+    const { stdout, stderr } = await runMcpCli(c.bin, c.removeArgs(server));
     cliOut = `${stdout ?? ''}${stderr ?? ''}`.trim();
   } catch (e) {
     // The CLI only sees the active account's list, and fails when the server lives in
@@ -1270,6 +1282,124 @@ export function authorizedUrls(clientId) {
 }
 
 /**
+ * Classify how a server runs so the UI can distinguish zero-daemon remote or stdio
+ * servers from Docker-backed servers that require Docker Desktop to be running.
+ */
+export function serverRuntime(server) {
+  if (server?.runtime) return server.runtime;
+  if (server?.url) return 'remote';
+  const cmd = String(server?.command ?? '').trim().toLowerCase();
+  if (cmd === 'docker' || cmd.endsWith('/docker') || cmd.endsWith('\\docker.exe') || cmd === 'docker.exe') {
+    return 'docker';
+  }
+  if (cmd) return 'stdio';
+  return 'unknown';
+}
+
+/**
+ * Fast, zero-process check for whether the local Docker daemon socket or named pipe is
+ * present. Used to warn when a Docker-tier MCP server is selected while Docker is stopped.
+ */
+export function isDockerAvailable({ platform = process.platform, home = os.homedir(), fsImpl = fs } = {}) {
+  try {
+    if (platform === 'win32') return Boolean(fsImpl.existsSync('\\\\.\\pipe\\docker_engine'));
+    return Boolean(
+      fsImpl.existsSync('/var/run/docker.sock')
+      || fsImpl.existsSync(path.join(home, '.docker', 'run', 'docker.sock')),
+    );
+  } catch {
+    return false;
+  }
+}
+
+let serverToolsCache = { home: '', at: 0, map: null };
+const SERVER_TOOLS_CACHE_TTL_MS = 30_000;
+
+function getServerToolsIndex(home) {
+  const now = Date.now();
+  if (serverToolsCache.map && serverToolsCache.home === home && now - serverToolsCache.at < SERVER_TOOLS_CACHE_TTL_MS) {
+    return serverToolsCache.map;
+  }
+  const index = new Map();
+  const recordDir = (serverName, dirPath) => {
+    if (!serverName) return;
+    if (!index.has(serverName)) index.set(serverName, []);
+    index.get(serverName).push(dirPath);
+  };
+
+  const geminiMcpRoot = path.join(home, '.gemini', 'antigravity', 'mcp');
+  try {
+    for (const d of fs.readdirSync(geminiMcpRoot, { withFileTypes: true })) {
+      if (d.isDirectory()) recordDir(d.name, path.join(geminiMcpRoot, d.name));
+    }
+  } catch { /* no gemini mcp cache */ }
+
+  const t3Root = path.join(home, '.t3', 'userdata', 'providers', 'antigravity');
+  try {
+    for (const prof of fs.readdirSync(t3Root, { withFileTypes: true })) {
+      if (!prof.isDirectory()) continue;
+      const brainRoot = path.join(t3Root, prof.name, 'antigravity-acp', 'brain');
+      if (!fs.existsSync(brainRoot)) continue;
+      for (const b of fs.readdirSync(brainRoot, { withFileTypes: true })) {
+        if (!b.isDirectory()) continue;
+        const mcpRoot = path.join(brainRoot, b.name, 'mcp');
+        if (!fs.existsSync(mcpRoot)) continue;
+        for (const s of fs.readdirSync(mcpRoot, { withFileTypes: true })) {
+          if (s.isDirectory()) recordDir(s.name, path.join(mcpRoot, s.name));
+        }
+      }
+    }
+  } catch { /* no T3 brain directories */ }
+
+  const parsedByServer = new Map();
+  for (const [sName, dirs] of index.entries()) {
+    const byName = new Map();
+    for (const dir of dirs) {
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        const fallbackName = entry.name.slice(0, -5);
+        if (byName.has(fallbackName)) continue;
+        try {
+          const raw = JSON.parse(fs.readFileSync(path.join(dir, entry.name), 'utf8'));
+          const toolName = typeof raw?.name === 'string' && raw.name ? raw.name : fallbackName;
+          const desc = typeof raw?.description === 'string'
+            ? raw.description.trim().split(/\r?\n/)[0].slice(0, 180)
+            : '';
+          byName.set(toolName, { name: toolName, description: desc });
+        } catch {
+          byName.set(fallbackName, { name: fallbackName, description: '' });
+        }
+      }
+      if (byName.size > 0) break;
+    }
+    const tools = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+    parsedByServer.set(sName, { count: tools.length, tools });
+  }
+
+  if (home === os.homedir()) {
+    serverToolsCache = { home, at: now, map: parsedByServer };
+  }
+  return parsedByServer;
+}
+
+/**
+ * Inspect cached tool schemas for an MCP server on disk (written by Antigravity or ACP
+ * brain sessions) so Switchboard can show tool counts and tool descriptions without
+ * spawning the server itself.
+ */
+export function listServerTools(serverName, { home = os.homedir() } = {}) {
+  if (!serverName || typeof serverName !== 'string') return { count: 0, tools: [] };
+  const idx = getServerToolsIndex(home);
+  return idx.get(serverName) ?? { count: 0, tools: [] };
+}
+
+/**
  * State for every known server against every client, in one pass. Each cell is one of:
  *   'off'        not registered
  *   'on'         registered, and this client cannot report whether it is signed in
@@ -1279,6 +1409,7 @@ export function authorizedUrls(clientId) {
 export function registrationMatrix(servers, clientIds = Object.keys(CLIENTS), read = {}) {
   const readNames = read.names ?? registeredNames;
   const readAuth = read.auth ?? authorizedUrls;
+  const readTools = read.tools ?? ((name) => listServerTools(name).count);
   const names = {};
   const auth = {};
   for (const id of clientIds) {
@@ -1288,6 +1419,8 @@ export function registrationMatrix(servers, clientIds = Object.keys(CLIENTS), re
   }
   return servers.map((s) => ({
     ...s,
+    runtime: serverRuntime(s),
+    toolCount: s.toolCount ?? readTools(s.name),
     // Whether Switchboard could put this server into another client: a remote https
     // address, or a local command that passes the same checks as one typed in. A loopback
     // http address is shown where it is and offered nowhere else.
@@ -1308,7 +1441,7 @@ export async function listRegistered(clientId) {
   const c = client(clientId);
   if (!c.listArgs) return { client: c.id, supported: false, output: '' };
   try {
-    const { stdout, stderr } = await run(c.bin, c.listArgs(), { ...execOpts, timeout: 120000 });
+    const { stdout, stderr } = await runMcpCli(c.bin, c.listArgs());
     return { client: c.id, supported: true, output: `${stdout ?? ''}${stderr ?? ''}`.trim() };
   } catch (e) {
     return { client: c.id, supported: true, output: '', error: String(e?.message ?? e) };

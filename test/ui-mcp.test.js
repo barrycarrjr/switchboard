@@ -57,8 +57,8 @@ const CLIENTS = [
   { id: 'codex', name: 'Codex', canRemove: true },
 ];
 
-const rowParts = ['MARK', 'MCP_CHIP', 'mcpWhyNotAddable', 'mcpDisableQuestion', 'mcpClientNames', 'mcpError', 'mcpToggle', 'mcpChip', 'mcpRow'];
-const loadRow = () => load(rowParts, ['mcpRow', 'mcpChip', 'mcpWhyNotAddable', 'mcpToggle', 'mcpClientNames', 'mcpDisableQuestion']);
+const rowParts = ['MARK', 'MCP_CHIP', 'mcpWhyNotAddable', 'mcpRemoveQuestion', 'mcpDisableQuestion', 'mcpClientNames', 'mcpError', 'mcpToggle', 'mcpChip', 'mcpProviderControl', 'mcpRow'];
+const loadRow = () => load(rowParts, ['mcpRow', 'mcpChip', 'mcpProviderControl', 'mcpWhyNotAddable', 'mcpToggle', 'mcpClientNames', 'mcpDisableQuestion', 'mcpRemoveQuestion']);
 
 /** The words a row shows, buttons included. */
 function readRow(row) {
@@ -237,3 +237,45 @@ test('the add form sends an https address as a remote server and anything else a
   assert.deepEqual(mcpAddPayload('bare', 'node', ''), { name: 'bare', command: 'node', args: [], label: 'bare' });
   assert.deepEqual(mcpAddPayload('empty', '', ''), { name: 'empty', url: '', label: 'empty' }, 'nothing typed is reported as a missing address');
 });
+
+test('mcpRow displays discovered toolCount when present', () => {
+  const { mcpRow } = loadRow();
+  const row = mcpRow({ name: 'home-assistant', url: 'https://ha.example.com/api/mcp', toolCount: 72, addable: true, state: { claude: 'ready' } }, CLIENTS, () => {});
+  assert.ok(readRow(row).text.includes('72 tools'));
+});
+
+test('customizationSkillRow and customizationMarketplaceRow render compact provider popover and rich marketplace cards', () => {
+  const custParts = [...rowParts, 'customizationClientChip', 'customizationProviderControl', 'customizationSkillRow', 'marketplaceSourceLabel', 'customizationMarketplaceRow'];
+  const { customizationSkillRow, customizationMarketplaceRow } = load(custParts, ['customizationSkillRow', 'customizationMarketplaceRow']);
+  const dynClients = [
+    { id: 'claude', name: 'Claude Code', accountCount: 2 },
+    { id: 'grok', name: 'Grok CLI', accountCount: 1 },
+  ];
+  const skillRow = customizationSkillRow(
+    { name: 'frontend-design', title: 'Frontend Design', description: 'UI polish', state: { claude: 'on', grok: 'off' } },
+    dynClients,
+    () => {},
+  );
+  const skillOut = readRow(skillRow);
+  assert.ok(skillOut.text.includes('/frontend-design'));
+  const targetsWrap = skillRow.children[2];
+  assert.equal(targetsWrap.className, 'cust-targets');
+  assert.ok(targetsWrap.children[0].innerHTML.includes('Claude Code*2'));
+  const popWrap = targetsWrap.children[1];
+  assert.ok(popWrap.children[0].innerHTML.includes('Providers (1/2)'));
+
+  const mktCard = customizationMarketplaceRow({
+    name: 'chrome-devtools-plugin',
+    title: 'Chrome DevTools',
+    kind: 'plugin',
+    featured: true,
+    sources: ['google', 'anthropic'],
+    category: 'browser',
+    description: 'Live Chrome inspection.',
+  }, () => {});
+  assert.ok(mktCard.className.includes('mkt-card'));
+  const foot = mktCard.children[mktCard.children.length - 1];
+  assert.equal(foot.children[0].innerHTML, 'Install');
+  assert.equal(foot.children[1].innerHTML, 'Details');
+});
+
