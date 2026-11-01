@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { dataDir, writeJsonAtomic } from './paths.js';
 import { protectSecret, unprotectSecret, isEncrypted } from './vault.js';
+import { normalizeGatewaySettings } from './gateway-keys.js';
 
 export const WATCH_MODES = ['off', 'notify', 'auto'];
 
@@ -22,6 +23,11 @@ const DEFAULTS = {
   // NOT on the lane objects: `switchboard lanes --json` and the tray IPC print
   // settings.lanes verbatim, and a secret filed there would ride along.
   laneTokens: {},
+  // Local pass-through gateway listener settings and issued client keys.
+  // Like laneTokens, gatewayKeys[id].token is encrypted at rest with core/vault.js and
+  // omitted from exported configs.
+  gateway: { enabled: false, port: 8318, scope: 'localhost-wsl' },
+  gatewayKeys: {},
   // The last time Switchboard ran `agy update` on Antigravity's behalf, and what it
   // found: { at, alreadyLatest, version, message }. Switchboard does that job because
   // the CLI doing it for itself puts a command window on screen (core/agy-updates.js).
@@ -35,24 +41,49 @@ export function settingsFile() {
   return path.join(dataDir(), 'settings.json');
 }
 
+function protectTokenMap(map) {
+  const out = {};
+  for (const [k, v] of Object.entries(map)) {
+    if (v && typeof v === 'object' && v.unreadable && typeof v.sealed === 'string') {
+      // Written back exactly as it was read, so a token this process could not open is
+      // never lost by a save. See unprotectSettings.
+      const { sealed, unreadable, ...rest } = v;
+      out[k] = { ...rest, token: sealed };
+    } else if (v && typeof v === 'object' && typeof v.token === 'string' && !isEncrypted(v.token)) {
+      out[k] = { ...v, token: protectSecret(v.token) };
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function unprotectTokenMap(map) {
+  for (const [k, v] of Object.entries(map)) {
+    if (v && typeof v === 'object' && typeof v.token === 'string' && isEncrypted(v.token)) {
+      const plain = unprotectSecret(v.token);
+      if (plain == null) {
+        // Encrypted in a way this process cannot open: by another scheme, or under a
+        // different user name, computer name or home folder (the key is derived from
+        // those). The encrypted text is never passed off as the token, which would hand
+        // automation garbage and get a good token marked dead by its first check. It is
+        // kept aside so a save writes it back unchanged, and Health says to mint again.
+        map[k] = { ...v, token: null, sealed: v.token, unreadable: true };
+      } else {
+        v.token = plain;
+      }
+    }
+  }
+}
+
 export function protectSettings(settings) {
   if (!settings || typeof settings !== 'object') return settings;
   const clone = { ...settings };
   if (clone.laneTokens && typeof clone.laneTokens === 'object' && !Array.isArray(clone.laneTokens)) {
-    const protectedLaneTokens = {};
-    for (const [k, v] of Object.entries(clone.laneTokens)) {
-      if (v && typeof v === 'object' && v.unreadable && typeof v.sealed === 'string') {
-        // Written back exactly as it was read, so a token this process could not open is
-        // never lost by a save. See unprotectSettings.
-        const { sealed, unreadable, ...rest } = v;
-        protectedLaneTokens[k] = { ...rest, token: sealed };
-      } else if (v && typeof v === 'object' && typeof v.token === 'string' && !isEncrypted(v.token)) {
-        protectedLaneTokens[k] = { ...v, token: protectSecret(v.token) };
-      } else {
-        protectedLaneTokens[k] = v;
-      }
-    }
-    clone.laneTokens = protectedLaneTokens;
+    clone.laneTokens = protectTokenMap(clone.laneTokens);
+  }
+  if (clone.gatewayKeys && typeof clone.gatewayKeys === 'object' && !Array.isArray(clone.gatewayKeys)) {
+    clone.gatewayKeys = protectTokenMap(clone.gatewayKeys);
   }
   return clone;
 }
@@ -60,21 +91,10 @@ export function protectSettings(settings) {
 export function unprotectSettings(settings) {
   if (!settings || typeof settings !== 'object') return settings;
   if (settings.laneTokens && typeof settings.laneTokens === 'object' && !Array.isArray(settings.laneTokens)) {
-    for (const [k, v] of Object.entries(settings.laneTokens)) {
-      if (v && typeof v === 'object' && typeof v.token === 'string' && isEncrypted(v.token)) {
-        const plain = unprotectSecret(v.token);
-        if (plain == null) {
-          // Encrypted in a way this process cannot open: by another scheme, or under a
-          // different user name, computer name or home folder (the key is derived from
-          // those). The encrypted text is never passed off as the token, which would hand
-          // automation garbage and get a good token marked dead by its first check. It is
-          // kept aside so a save writes it back unchanged, and Health says to mint again.
-          settings.laneTokens[k] = { ...v, token: null, sealed: v.token, unreadable: true };
-        } else {
-          v.token = plain;
-        }
-      }
-    }
+    unprotectTokenMap(settings.laneTokens);
+  }
+  if (settings.gatewayKeys && typeof settings.gatewayKeys === 'object' && !Array.isArray(settings.gatewayKeys)) {
+    unprotectTokenMap(settings.gatewayKeys);
   }
   return settings;
 }
@@ -95,9 +115,12 @@ export function loadSettings(file = settingsFile()) {
     if (typeof merged.cooldowns !== 'object' || merged.cooldowns === null) merged.cooldowns = {};
     if (typeof merged.laneTokens !== 'object' || merged.laneTokens === null || Array.isArray(merged.laneTokens)) {
       merged.laneTokens = {};
-    } else {
-      unprotectSettings(merged);
     }
+    if (typeof merged.gatewayKeys !== 'object' || merged.gatewayKeys === null || Array.isArray(merged.gatewayKeys)) {
+      merged.gatewayKeys = {};
+    }
+    unprotectSettings(merged);
+    merged.gateway = normalizeGatewaySettings(merged.gateway);
     if (typeof merged.agyUpdate !== 'object' || merged.agyUpdate === null || Array.isArray(merged.agyUpdate)) merged.agyUpdate = null;
     if (typeof merged.notifyWebhookUrl === 'string' && merged.notifyWebhookUrl.trim()) {
       try {
@@ -132,7 +155,13 @@ export function loadSettings(file = settingsFile()) {
     }
     return merged;
   } catch {
-    return { ...DEFAULTS };
+    return {
+      ...DEFAULTS,
+      gateway: { ...DEFAULTS.gateway },
+      gatewayKeys: {},
+      laneTokens: {},
+      thresholds: { ...DEFAULTS.thresholds },
+    };
   }
 }
 

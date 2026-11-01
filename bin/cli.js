@@ -36,6 +36,8 @@ import {
   removeAutomation,
   toggleAutomation,
 } from '../core/automations.js';
+import { createGatewayServer } from '../core/gateway.js';
+import { createGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS } from '../core/gateway-keys.js';
 import readline from 'node:readline/promises';
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -1734,8 +1736,118 @@ async function main() {
       }
       throw new Error(`unknown automations subcommand: ${sub}. Use list|add|remove|toggle`);
     }
+    case 'gateway': {
+      const sub = args[0] ?? 'status';
+      const asJson = args.includes('--json');
+      const gwServer = createGatewayServer();
+      if (sub === 'status' || sub === '--json') {
+        const st = await gwServer.status();
+        if (asJson) {
+          out(JSON.stringify(st, null, 2));
+          return;
+        }
+        out(`Gateway: ${st.enabled ? 'enabled' : 'disabled'} (${st.endpointUrl})`);
+        out(`  Scope: ${GATEWAY_SCOPE_LABELS[st.scope] ?? st.scope}`);
+        out(`  Claude route: ${st.routes.claude.primary ? `${st.routes.claude.primary.accountLabel} (+${st.routes.claude.standbyCount} standby)` : 'no signed-in account'}`);
+        out(`  Codex route:  ${st.routes.codex.primary ? `${st.routes.codex.primary.accountLabel} (+${st.routes.codex.standbyCount} standby)` : 'no signed-in account'}`);
+        out(`  Issued keys:  ${st.keys.length}`);
+        return;
+      }
+      if (sub === 'scope') {
+        const wanted = args[1];
+        if (!wanted) throw new Error('usage: switchboard gateway scope <localhost|localhost-wsl|lan>');
+        const clean = normalizeGatewayScope(wanted);
+        const s = loadSettings();
+        s.gateway = { ...normalizeGatewaySettings(s.gateway), scope: clean };
+        saveSettings(s);
+        out(`Gateway scope set to ${clean} (${GATEWAY_SCOPE_LABELS[clean]})`);
+        return;
+      }
+      if (sub === 'port') {
+        const wanted = args[1];
+        if (!wanted) throw new Error('usage: switchboard gateway port <1024-65535>');
+        const clean = normalizeGatewayPort(wanted);
+        const s = loadSettings();
+        s.gateway = { ...normalizeGatewaySettings(s.gateway), port: clean };
+        saveSettings(s);
+        out(`Gateway port set to ${clean}`);
+        return;
+      }
+      if (sub === 'enable' || sub === 'disable') {
+        const enabled = sub === 'enable';
+        const s = loadSettings();
+        s.gateway = { ...normalizeGatewaySettings(s.gateway), enabled };
+        saveSettings(s);
+        out(`Gateway ${enabled ? 'enabled' : 'disabled'} in settings.`);
+        return;
+      }
+      if (sub === 'serve' || sub === 'start') {
+        const s = loadSettings();
+        s.gateway = { ...normalizeGatewaySettings(s.gateway), enabled: true };
+        saveSettings(s);
+        const st = await gwServer.start();
+        out(`Switchboard Gateway listening on ${st.endpointUrl} (scope: ${st.scope}). Press Ctrl+C to stop.`);
+        await new Promise((resolve) => {
+          process.once('SIGINT', resolve);
+          process.once('SIGTERM', resolve);
+        });
+        await gwServer.stop();
+        return;
+      }
+      throw new Error(`unknown gateway subcommand: ${sub}. Use status|serve|enable|disable|scope|port`);
+    }
+    case 'keys': {
+      const sub = args[0] ?? 'list';
+      const asJson = args.includes('--json');
+      if (sub === 'list' || sub === '--json') {
+        const keys = listGatewayKeys(loadSettings());
+        if (asJson) {
+          out(JSON.stringify(keys, null, 2));
+          return;
+        }
+        if (keys.length === 0) {
+          out('No gateway client keys issued. Create one: switchboard keys create <label> [--scope localhost|localhost-wsl|lan]');
+          return;
+        }
+        for (const k of keys) {
+          out(`  ${k.id.padEnd(24)} ${k.hint.padEnd(22)} [${k.scope}]  ${k.label}  (${k.requestsToday} req today)`);
+        }
+        return;
+      }
+      if (sub === 'create' || sub === 'add') {
+        const rest = args.slice(1);
+        let scope = undefined;
+        const labelParts = [];
+        for (let i = 0; i < rest.length; i += 1) {
+          if (rest[i] === '--scope') {
+            scope = rest[i + 1];
+            i += 1;
+          } else if (rest[i] !== '--json') {
+            labelParts.push(rest[i]);
+          }
+        }
+        const label = labelParts.join(' ').trim();
+        const { settings, key, secret } = createGatewayKey(loadSettings(), { label, scope });
+        saveSettings(settings);
+        if (asJson) {
+          out(JSON.stringify({ key, secret }, null, 2));
+          return;
+        }
+        out(`Created client key ${key.id} (${key.label}, scope: ${key.scope})`);
+        out(`  Secret (copy now, shown once): ${secret}`);
+        return;
+      }
+      if (sub === 'revoke' || sub === 'remove') {
+        const keyId = args[1];
+        if (!keyId) throw new Error('usage: switchboard keys revoke <id>');
+        saveSettings(revokeGatewayKey(loadSettings(), keyId));
+        out(`Revoked client key ${keyId}`);
+        return;
+      }
+      throw new Error(`unknown keys subcommand: ${sub}. Use list|create|revoke`);
+    }
     default:
-      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|watch|notify|mcp|customizations|automations|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|gateway|keys|watch|notify|mcp|customizations|automations|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> [folder]   leave out the folder for a brand-new account`);
@@ -1748,6 +1860,8 @@ async function main() {
       out('  quota                       per-account usage');
       out('  lanes [...]                 the failover pool: list, add, remove, order, budget');
       out('  lane-token <laneId> [--remove|--check]   mint, delete or validate the token a lane hands to automation');
+      out('  gateway [status|serve|enable|disable|scope|port]   manage the local pass-through API gateway');
+      out('  keys [list|create|revoke]   manage client keys (sb-key-...) for the gateway');
       out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
       out('  notify [--webhook <url>] [--command <cmd>] [--threshold <w=pct>] [--test] [--json]   manage notification hooks');
       out('  mcp [list|add|remove|register|unregister|disable|enable|sync]   manage MCP servers across clients and accounts');

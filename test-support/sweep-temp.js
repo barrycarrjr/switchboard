@@ -44,6 +44,7 @@ export const PREFIXES = [
   'sb-dt-no-id-',
   'sb-empty-',
   'sb-f-',
+  'sb-gw-',
   'sb-failover-',
   'sb-handoff-appdata-',
   'sb-hook-',
