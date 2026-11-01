@@ -32,7 +32,7 @@ function* sourceFiles(dir) {
     if (['node_modules', 'dist', '.git', 'build', 'assets'].includes(entry.name)) continue;
     const p = path.join(dir, entry.name);
     if (entry.isDirectory()) yield* sourceFiles(p);
-    else if (/\.(js|cjs|mjs|html|json|md)$/.test(entry.name)) yield p;
+    else if (/\.(js|cjs|mjs|sh|html|json|md)$/.test(entry.name) || (!path.extname(entry.name) && path.basename(dir) === 'bin')) yield p;
   }
 }
 

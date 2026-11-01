@@ -62,11 +62,14 @@ import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
+import { createGatewayServer } from '../core/gateway.js';
+import { createGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let win = null;
 let tray = null;
 let quitting = false;
+const gatewayServer = createGatewayServer();
 
 // One instance only: a second launch fronts the existing window.
 if (!app.requestSingleInstanceLock()) {
@@ -916,6 +919,12 @@ app.whenReady().then(async () => {
 
   createWindow();
 
+  if (loadSettings().gateway?.enabled) {
+    gatewayServer.start().catch((err) => {
+      console.error('gateway startup error', err);
+    });
+  }
+
   refreshTrayFacts();
 
   // Quota watch: first pass shortly after startup, then every five minutes. Each pass
@@ -937,7 +946,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => { /* stay in the tray */ });
-app.on('before-quit', () => { quitting = true; });
+app.on('before-quit', () => { quitting = true; gatewayServer.stop().catch(() => {}); });
 
 // ---- IPC: the renderer only ever talks to the core through these. ----
 
@@ -2017,6 +2026,80 @@ ipcMain.handle('sb:testNotify', async () => {
     resetsAt: Date.now() + 2 * 3600 * 1000,
   });
   return dispatchNotification(s, payload);
+});
+
+ipcMain.handle('sb:gatewayState', async () => {
+  return gatewayServer.status();
+});
+
+ipcMain.handle('sb:gatewayToggle', async (_e, enabled) => {
+  try {
+    const s = loadSettings();
+    const gw = normalizeGatewaySettings(s.gateway);
+    gw.enabled = Boolean(enabled);
+    s.gateway = gw;
+    saveSettings(s);
+    const status = gw.enabled ? await gatewayServer.start() : await gatewayServer.stop();
+    return { ok: true, status };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle('sb:gatewaySetScope', async (_e, scope) => {
+  try {
+    const clean = normalizeGatewayScope(scope);
+    const s = loadSettings();
+    const gw = normalizeGatewaySettings(s.gateway);
+    gw.scope = clean;
+    s.gateway = gw;
+    saveSettings(s);
+    const status = gatewayServer.isRunning() || gw.enabled
+      ? await gatewayServer.start({ scope: clean })
+      : await gatewayServer.status();
+    return { ok: true, status };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle('sb:gatewaySetPort', async (_e, port) => {
+  try {
+    const clean = normalizeGatewayPort(port);
+    const s = loadSettings();
+    const gw = normalizeGatewaySettings(s.gateway);
+    gw.port = clean;
+    s.gateway = gw;
+    saveSettings(s);
+    const status = gatewayServer.isRunning() || gw.enabled
+      ? await gatewayServer.start({ port: clean })
+      : await gatewayServer.status();
+    return { ok: true, status };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle('sb:gatewayCreateKey', async (_e, { label, scope } = {}) => {
+  try {
+    const { settings, key, secret } = createGatewayKey(loadSettings(), { label, scope });
+    saveSettings(settings);
+    const status = await gatewayServer.status();
+    return { ok: true, key, secret, status };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle('sb:gatewayRevokeKey', async (_e, keyId) => {
+  try {
+    const next = revokeGatewayKey(loadSettings(), keyId);
+    saveSettings(next);
+    const status = await gatewayServer.status();
+    return { ok: true, status };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
 });
 
 ipcMain.handle('sb:openPath', (_e, p) => shell.openPath(p));
