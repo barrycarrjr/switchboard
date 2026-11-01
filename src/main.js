@@ -62,7 +62,7 @@ import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
-import { createGatewayServer } from '../core/gateway.js';
+import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway.js';
 import { createGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -2084,8 +2084,38 @@ ipcMain.handle('sb:gatewayCreateKey', async (_e, { label, scope } = {}) => {
   try {
     const { settings, key, secret } = createGatewayKey(loadSettings(), { label, scope });
     saveSettings(settings);
+    let provisioned = null;
+    if (key.scope === 'localhost' || key.scope === 'localhost-wsl') {
+      try {
+        provisioned = await provisionLocalAndWslClient({
+          token: secret,
+          leaseScriptPath: path.join(here, '..', 'bin', 'switchboard-lease'),
+        });
+      } catch {
+        provisioned = null;
+      }
+    }
     const status = await gatewayServer.status();
-    return { ok: true, key, secret, status };
+    return { ok: true, key, secret, provisioned, status };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle('sb:gatewayInstallClient', async (_e, keyId = null) => {
+  try {
+    const settings = loadSettings();
+    const map = settings?.gatewayKeys ?? {};
+    const entries = Object.values(map).filter((e) => e && typeof e.token === 'string' && !e.unreadable);
+    const target = keyId ? map[keyId] : entries[0];
+    if (!target || typeof target.token !== 'string') {
+      return { ok: false, error: 'No active client key found. Generate a client key first.' };
+    }
+    const res = await provisionLocalAndWslClient({
+      token: target.token,
+      leaseScriptPath: path.join(here, '..', 'bin', 'switchboard-lease'),
+    });
+    return { ...res, keyLabel: target.label };
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
   }

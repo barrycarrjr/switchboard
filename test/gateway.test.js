@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
 import { createGatewayKey } from '../core/gateway-keys.js';
-import { createGatewayServer } from '../core/gateway.js';
+import { createGatewayServer, parseWslDistroList, provisionLocalAndWslClient } from '../core/gateway.js';
 
 const SETUP_PREFIX = ['sk', 'ant', 'oat01'].join('-') + '-';
 
@@ -387,5 +387,62 @@ test('broker serves read-only T3 Hub /v0/management/* endpoints from local cache
     assert.equal(fx.getSettings().cooldowns['lane-claude-1'], undefined);
   } finally {
     await broker.stop();
+  }
+});
+
+test('provisionLocalAndWslClient writes local client-key and pipes key + wrapper to WSL distros without exposing secrets on argv', async () => {
+  const dir = tempDir('sb-gw-');
+  const fakeScript = path.join(dir, 'switchboard-lease');
+  fs.writeFileSync(fakeScript, '#!/usr/bin/env bash\necho ok\n', 'utf8');
+
+  const utf16List = Buffer.from('Ubuntu\r\ndocker-desktop\r\nDebian\r\n', 'utf16le');
+  assert.deepEqual(parseWslDistroList(utf16List), ['Ubuntu', 'Debian']);
+
+  const calls = [];
+  const fakeSpawn = (file, args) => {
+    const stdinChunks = [];
+    const handlers = {};
+    const stdoutHandlers = [];
+    const child = {
+      stdin: {
+        write: (c) => stdinChunks.push(Buffer.from(c)),
+        end: () => {
+          const stdinText = Buffer.concat(stdinChunks).toString('utf8');
+          calls.push({ file, args, stdinText });
+          setImmediate(() => {
+            if (args.includes('--list')) {
+              for (const fn of stdoutHandlers) fn(utf16List);
+            } else if (args.join(' ').includes('printf')) {
+              for (const fn of stdoutHandlers) fn(Buffer.from('/home/testuser/.local/bin/switchboard-lease', 'utf8'));
+            }
+            handlers.close?.(0);
+          });
+        },
+      },
+      stdout: { on: (ev, fn) => { if (ev === 'data') stdoutHandlers.push(fn); } },
+      stderr: { on: () => {} },
+      on: (ev, fn) => { handlers[ev] = fn; },
+      kill: () => {},
+    };
+    return child;
+  };
+
+  const secret = 'sb-key-0123456789abcdef0123456789abcdef01234567';
+  const res = await provisionLocalAndWslClient({
+    token: secret,
+    leaseScriptPath: fakeScript,
+    homeDir: dir,
+    platform: 'win32',
+    spawnImpl: fakeSpawn,
+  });
+
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.wslDistros, ['Ubuntu', 'Debian']);
+  assert.equal(res.wslBinaryPath, '/home/testuser/.local/bin/switchboard-lease');
+  assert.equal(fs.readFileSync(res.localKeyPath, 'utf8'), secret + '\n');
+
+  // Verify the secret never appeared in any spawned command arguments
+  for (const call of calls) {
+    assert.ok(!call.args.join(' ').includes(secret));
   }
 });

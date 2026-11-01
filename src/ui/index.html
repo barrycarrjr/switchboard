@@ -2572,11 +2572,14 @@ async function renderGateway() {
       return;
     }
     lastCreatedGatewaySecret = { id: res.key.id, label: res.key.label, secret: res.secret };
+    const wslNote = res.provisioned?.wslDistros?.length
+      ? ` and auto-installed to WSL (${res.provisioned.wslDistros.join(', ')})`
+      : (res.provisioned?.ok ? ' and saved to ~/.config/switchboard/client-key' : '');
     try {
       await navigator.clipboard.writeText(res.secret);
-      toast(`Created key for "${res.key.label}" and copied secret to clipboard.`);
+      toast(`Created key for "${res.key.label}"${wslNote}. Copied secret to clipboard.`);
     } catch {
-      toast(`Created key for "${res.key.label}".`);
+      toast(`Created key for "${res.key.label}"${wslNote}.`);
     }
     renderGateway();
   }, { primary: true }));
@@ -2587,28 +2590,43 @@ async function renderGateway() {
   const { card: snippetCard } = cardShell({
     titleId: 'gw-snippet',
     title: 'Quick-Connect Setup (T3 Code, WSL & Workers)',
-    person: 'Point T3 Code, Claude Code, or WSL workers at Switchboard without copying credential folders',
+    person: 'One-click install writes ~/.config/switchboard/client-key and ~/.local/bin/switchboard-lease automatically',
   });
   const snippetToken = lastCreatedGatewaySecret?.secret || st.keys?.[0]?.hint || 'sb-key-YOUR_KEY';
 
-  const { area: keyfileArea } = cardArea(snippetCard, 'Option A: One-Time Key File (T3 Code & WSL - zero env vars needed)');
-  const keyfileCmd = `mkdir -p ~/.config/switchboard && printf '%s\\n' '${snippetToken}' > ~/.config/switchboard/client-key && chmod 600 ~/.config/switchboard/client-key`;
-  const keyfileBox = el('div', 'gw-snippet');
-  const keyfileCode = el('span', '', esc(keyfileCmd));
-  keyfileCode.style.wordBreak = 'break-all';
-  keyfileBox.appendChild(keyfileCode);
-  keyfileBox.appendChild(cardButton('Copy', async () => {
+  const { area: keyfileArea } = cardArea(snippetCard, 'One-Click Local & WSL Setup (T3 Code & WSL)');
+  const installRow = el('div', '');
+  installRow.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px';
+  installRow.appendChild(cardButton('Install Key & Wrapper to Local + WSL', async () => {
+    const res = await sb.gatewayInstallClient(lastCreatedGatewaySecret?.id || st.keys?.[0]?.id || null);
+    if (!res?.ok) {
+      toast('Could not install client key: ' + (res?.error || 'unknown error'));
+      return;
+    }
+    const distros = res.wslDistros?.length ? ` + WSL (${res.wslDistros.join(', ')})` : '';
+    toast(`Installed key ("${res.keyLabel}") and switchboard-lease to Windows${distros}.`);
+  }, { primary: true }));
+  installRow.appendChild(cardButton('Copy WSL Binary Path', async () => {
+    const p = '~/.local/bin/switchboard-lease';
     try {
-      await navigator.clipboard.writeText(keyfileCmd);
-      toast('Copied key file setup command to clipboard.');
+      await navigator.clipboard.writeText(p);
+      toast('Copied ~/.local/bin/switchboard-lease to clipboard.');
     } catch {
-      toast(keyfileCmd);
+      toast(p);
     }
   }));
-  keyfileArea.appendChild(keyfileBox);
-  keyfileArea.appendChild(el('div', 'muted', `After saving ~/.config/switchboard/client-key once, point T3 Code's Claude Binary path to switchboard-lease and T3 Hub URL to ${st.endpointUrl} (Management Key: your sb-key-...).`));
+  installRow.appendChild(cardButton('Copy Hub URL', async () => {
+    try {
+      await navigator.clipboard.writeText(st.endpointUrl);
+      toast('Copied T3 Hub URL to clipboard.');
+    } catch {
+      toast(st.endpointUrl);
+    }
+  }));
+  keyfileArea.appendChild(installRow);
+  keyfileArea.appendChild(el('div', 'muted', `Generating a Localhost/WSL key (or clicking Install above) automatically saves ~/.config/switchboard/client-key and installs ~/.local/bin/switchboard-lease inside WSL. In T3 Code, set Claude Binary path to ~/.local/bin/switchboard-lease and T3 Hub URL to ${st.endpointUrl}.`));
 
-  const { area: snippetArea } = cardArea(snippetCard, 'Option B: Shell / Worker Environment Variables', 'note-area');
+  const { area: snippetArea } = cardArea(snippetCard, 'Remote LAN Worker Environment Snippet', 'note-area');
   const snippetText = buildGatewayExportSnippet(st.endpointUrl, snippetToken);
   const snippetBox = el('div', 'gw-snippet');
   const snippetCode = el('span', '', esc(snippetText));

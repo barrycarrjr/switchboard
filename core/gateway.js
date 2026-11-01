@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -1700,5 +1701,142 @@ export function createGatewayServer({
     status,
     isRunning: () => Boolean(server),
     events: () => [...events],
+  };
+}
+
+function runPipedCommand(file, args, stdinBuffer, spawnImpl = spawn, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let settled = false;
+    const child = spawnImpl(file, args, {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill(); } catch { /* ignore */ }
+      reject(new Error(`${file} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.stdout?.on('data', (chunk) => {
+      stdout = Buffer.concat([stdout, Buffer.from(chunk)]);
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr = Buffer.concat([stderr, Buffer.from(chunk)]);
+    });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+
+    if (stdinBuffer && stdinBuffer.length > 0) {
+      child.stdin.write(stdinBuffer);
+    }
+    child.stdin.end();
+  });
+}
+
+export function parseWslDistroList(rawBuffer) {
+  if (!rawBuffer || rawBuffer.length === 0) return [];
+  const text = rawBuffer.includes(0)
+    ? rawBuffer.toString('utf16le')
+    : rawBuffer.toString('utf8');
+  return text
+    .replace(/\uFEFF/g, '')
+    .replace(/\0/g, '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && !/^docker-desktop(-data)?$/i.test(s));
+}
+
+/**
+ * One-click provisioning of the Switchboard client key and `switchboard-lease` wrapper:
+ * - Writes `~/.config/switchboard/client-key` (mode 0600) in the local user home directory.
+ * - On Windows with WSL installed, writes `~/.config/switchboard/client-key` (mode 0600)
+ *   and `~/.local/bin/switchboard-lease` (mode 0755) inside each non-Docker WSL distro,
+ *   streaming the key over stdin so it never appears on a command line.
+ */
+export async function provisionLocalAndWslClient({
+  token,
+  leaseScriptPath,
+  homeDir = os.homedir(),
+  platform = process.platform,
+  spawnImpl = spawn,
+} = {}) {
+  const cleanToken = String(token ?? '').trim();
+  if (!cleanToken.startsWith('sb-key-')) {
+    throw new Error('A valid sb-key-... client token is required to provision local & WSL clients.');
+  }
+
+  const localConfigDir = path.join(homeDir, '.config', 'switchboard');
+  const localKeyPath = path.join(localConfigDir, 'client-key');
+  fs.mkdirSync(localConfigDir, { recursive: true });
+  fs.writeFileSync(localKeyPath, cleanToken + '\n', { encoding: 'utf8', mode: 0o600 });
+
+  let leaseScript = '';
+  if (leaseScriptPath && fs.existsSync(leaseScriptPath)) {
+    leaseScript = fs.readFileSync(leaseScriptPath, 'utf8').replace(/\r\n/g, '\n');
+  }
+
+  const wslDistros = [];
+  const wslBinaryPaths = [];
+
+  if (platform === 'win32') {
+    let distros = [];
+    try {
+      const listRes = await runPipedCommand('wsl.exe', ['--list', '--quiet'], null, spawnImpl, 5000);
+      if (listRes.code === 0) {
+        distros = parseWslDistroList(listRes.stdout);
+      }
+    } catch {
+      distros = [];
+    }
+
+    for (const distro of distros) {
+      try {
+        const keyRes = await runPipedCommand(
+          'wsl.exe',
+          ['-d', distro, '--', 'bash', '-c', 'mkdir -p ~/.config/switchboard && umask 077 && cat > ~/.config/switchboard/client-key'],
+          Buffer.from(cleanToken + '\n', 'utf8'),
+          spawnImpl,
+          8000,
+        );
+        if (keyRes.code !== 0) continue;
+
+        if (leaseScript) {
+          const binRes = await runPipedCommand(
+            'wsl.exe',
+            ['-d', distro, '--', 'bash', '-c', 'mkdir -p ~/.local/bin && cat > ~/.local/bin/switchboard-lease && chmod 755 ~/.local/bin/switchboard-lease && printf "%s" "$HOME/.local/bin/switchboard-lease"'],
+            Buffer.from(leaseScript, 'utf8'),
+            spawnImpl,
+            8000,
+          );
+          if (binRes.code === 0) {
+            const p = binRes.stdout.toString('utf8').trim();
+            if (p && !wslBinaryPaths.includes(p)) wslBinaryPaths.push(p);
+          }
+        }
+        wslDistros.push(distro);
+      } catch {
+        // best-effort per distro
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    localKeyPath,
+    wslDistros,
+    wslBinaryPath: wslBinaryPaths[0] || '~/.local/bin/switchboard-lease',
   };
 }
