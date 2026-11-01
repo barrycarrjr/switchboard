@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -54,6 +55,7 @@ export function routeVendorForPath(urlPath) {
   if (clean === '/v1/switchboard/status' || clean === '/v1/switchboard/routes') return 'status';
   if (clean === '/v1/lease') return 'lease';
   if (clean === '/v1/lease/report') return 'report';
+  if (clean.startsWith('/v0/management/')) return 'management';
   if (
     clean === '/v1/messages'
     || clean.startsWith('/v1/messages/')
@@ -611,6 +613,215 @@ export function applyLeaseReport(settings, report = {}, now = Date.now()) {
   throw new Error(`unknown report outcome "${outcome}". Expected ok, exhausted, rate-limited, auth-failed, or error`);
 }
 
+function decodeJwtPayload(jwt) {
+  if (typeof jwt !== 'string') return null;
+  const parts = jwt.split('.');
+  if (parts.length < 2) return null;
+  try {
+    return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read non-secret display metadata (email, workspace id, plan type) from an account's local
+ * config folder for the read-only /v0/management/auth-files T3 Hub adapter.
+ */
+export function readAccountManagementMeta(account, readFile = fs.readFileSync) {
+  if (!account?.home) {
+    return { email: account?.label || account?.id || 'unknown', planType: null, workspaceId: null };
+  }
+  if (account.provider === 'claude') {
+    try {
+      const parsed = JSON.parse(readFile(path.join(account.home, '.claude.json'), 'utf8'));
+      const oauth = parsed?.oauthAccount ?? {};
+      const email = typeof oauth.emailAddress === 'string' && oauth.emailAddress.trim()
+        ? oauth.emailAddress.trim()
+        : (account.label || account.id);
+      return { email, planType: null, workspaceId: null };
+    } catch {
+      return { email: account.label || account.id, planType: null, workspaceId: null };
+    }
+  }
+  if (account.provider === 'codex') {
+    try {
+      const parsed = JSON.parse(readFile(path.join(account.home, 'auth.json'), 'utf8'));
+      const tokens = parsed?.tokens ?? {};
+      const idClaims = decodeJwtPayload(tokens.id_token) ?? {};
+      const accessClaims = decodeJwtPayload(tokens.access_token) ?? {};
+      const authClaim = idClaims['https://api.openai.com/auth']
+        ?? accessClaims['https://api.openai.com/auth']
+        ?? {};
+      const profileClaim = accessClaims['https://api.openai.com/profile'] ?? {};
+      const email = (typeof idClaims.email === 'string' && idClaims.email.trim())
+        || (typeof profileClaim.email === 'string' && profileClaim.email.trim())
+        || account.label
+        || account.id;
+      const workspaceId = (typeof authClaim.chatgpt_account_id === 'string' && authClaim.chatgpt_account_id.trim())
+        || (typeof tokens.account_id === 'string' && tokens.account_id.trim())
+        || null;
+      const planType = (typeof authClaim.chatgpt_plan_type === 'string' && authClaim.chatgpt_plan_type.trim())
+        || null;
+      return { email, planType, workspaceId };
+    } catch {
+      return { email: account.label || account.id, planType: null, workspaceId: null };
+    }
+  }
+  return { email: account.label || account.id, planType: null, workspaceId: null };
+}
+
+/**
+ * Build the /v0/management/auth-files response payload from Switchboard's local registry.
+ * Purely read-only metadata; no credentials or tokens are ever included.
+ */
+export function buildManagementAuthFiles({
+  registry = loadRegistry(),
+  now = Date.now(),
+  readFile = fs.readFileSync,
+} = {}) {
+  const files = [];
+  for (const acc of registry?.accounts ?? []) {
+    if (acc.provider !== 'claude' && acc.provider !== 'codex') continue;
+    const login = accountLoginState(acc, now);
+    const meta = readAccountManagementMeta(acc, readFile);
+    const entry = {
+      id: acc.id,
+      auth_index: acc.id,
+      provider: acc.provider,
+      email: meta.email || acc.label || acc.id,
+      disabled: login?.signedIn === false,
+    };
+    if (acc.provider === 'codex' && (meta.workspaceId || meta.planType)) {
+      entry.id_token = {
+        ...(meta.workspaceId ? { chatgpt_account_id: meta.workspaceId } : {}),
+        ...(meta.planType ? { plan_type: meta.planType, chatgpt_plan_type: meta.planType } : {}),
+      };
+    }
+    files.push(entry);
+  }
+  return { files };
+}
+
+function toIsoStringOrNull(value) {
+  const ms = toEpochMs(value);
+  return typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function toEpochSecondsOrNull(value) {
+  const ms = toEpochMs(value);
+  return typeof ms === 'number' && Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+/**
+ * Synthesize a /v0/management/api-call response purely from Switchboard's own local quota
+ * cache (sharedProviderQuota / lastSharedQuota), without proxying or spoofing upstream calls.
+ */
+export async function handleManagementApiCall({
+  authIndex,
+  url,
+  registry = loadRegistry(),
+  settings = loadSettings(),
+  now = Date.now(),
+  fetchImpl = fetch,
+  readFile = fs.readFileSync,
+} = {}) {
+  const cleanId = String(authIndex ?? '').trim();
+  const targetUrl = String(url ?? '').trim();
+  const acc = (registry?.accounts ?? []).find((a) => a.id === cleanId);
+  if (!acc) {
+    return {
+      status_code: 404,
+      body: JSON.stringify({ error: `Unknown account "${cleanId}"` }),
+    };
+  }
+
+  if (targetUrl.includes('/backend-api/wham/rate-limit-reset-credits')) {
+    return {
+      status_code: 200,
+      body: JSON.stringify({ credits: [] }),
+    };
+  }
+
+  let quota = lastSharedQuota(acc.id);
+  if (!quota && PROVIDERS[acc.provider]?.quota) {
+    quota = await sharedProviderQuota(acc, {
+      fetchImpl,
+      usageSource: settings?.usageSources?.[acc.id] ?? null,
+      now,
+    });
+  }
+
+  const windows = Array.isArray(quota?.windows) ? quota.windows : [];
+  const sessionWin = windows.find((w) => w.key === 'session');
+  const weekWin = windows.find((w) => w.key === 'week');
+
+  if (acc.provider === 'claude' || targetUrl.includes('/api/oauth/usage')) {
+    const fiveHour = sessionWin && sessionWin.usedPercent != null
+      ? { utilization: Number(sessionWin.usedPercent), resets_at: toIsoStringOrNull(sessionWin.resetsAt) }
+      : null;
+    const sevenDay = weekWin && weekWin.usedPercent != null
+      ? { utilization: Number(weekWin.usedPercent), resets_at: toIsoStringOrNull(weekWin.resetsAt) }
+      : null;
+    const limits = [];
+    for (const w of windows) {
+      if (!w || typeof w.key !== 'string' || !w.key.startsWith('week_') || w.usedPercent == null) continue;
+      const modelDisplay = w.key === 'week_sonnet'
+        ? 'Sonnet'
+        : w.key === 'week_opus'
+          ? 'Opus'
+          : (w.label || w.key.replace(/^week_/, ''));
+      limits.push({
+        kind: 'weekly_scoped',
+        percent: Number(w.usedPercent),
+        resets_at: toIsoStringOrNull(w.resetsAt),
+        scope: { model: { display_name: modelDisplay } },
+      });
+    }
+    return {
+      status_code: 200,
+      body: JSON.stringify({
+        five_hour: fiveHour,
+        seven_day: sevenDay,
+        limits,
+      }),
+    };
+  }
+
+  if (acc.provider === 'codex' || targetUrl.includes('/backend-api/wham/usage')) {
+    const meta = readAccountManagementMeta(acc, readFile);
+    const primaryWindow = sessionWin && sessionWin.usedPercent != null
+      ? {
+        used_percent: Number(sessionWin.usedPercent),
+        reset_at: toEpochSecondsOrNull(sessionWin.resetsAt),
+        limit_window_seconds: 18000,
+      }
+      : null;
+    const secondaryWindow = weekWin && weekWin.usedPercent != null
+      ? {
+        used_percent: Number(weekWin.usedPercent),
+        reset_at: toEpochSecondsOrNull(weekWin.resetsAt),
+        limit_window_seconds: 604800,
+      }
+      : null;
+    return {
+      status_code: 200,
+      body: JSON.stringify({
+        plan_type: meta.planType || 'plus',
+        rate_limit: {
+          primary_window: primaryWindow,
+          secondary_window: secondaryWindow,
+        },
+      }),
+    };
+  }
+
+  return {
+    status_code: 400,
+    body: JSON.stringify({ error: `Unsupported management api-call URL "${targetUrl}"` }),
+  };
+}
+
 /**
  * Extract the caller's presented sb-key-... token from x-api-key or Authorization: Bearer.
  */
@@ -1082,6 +1293,105 @@ export function createGatewayServer({
       }
     }
 
+    // 4b. Read-only T3 Hub management adapter (/v0/management/*)
+    // Serves account list and cached quota snapshots locally without proxying upstream calls.
+    if (routeKind === 'management') {
+      const cleanPath = urlPath.split('?')[0];
+      const registry = getRegistry();
+
+      if (cleanPath === '/v0/management/auth-files' && method === 'GET') {
+        const payload = buildManagementAuthFiles({ registry, now });
+        pushEvent({
+          time: now,
+          keyId: verification.key.id,
+          keyLabel: verification.key.label,
+          remoteAddress,
+          method,
+          path: cleanPath,
+          userAgent,
+          vendor: null,
+          accountId: null,
+          accountLabel: null,
+          laneId: null,
+          failoverFromLaneId: null,
+          status: 200,
+          outcome: `T3 Hub (${payload.files.length} accounts)`,
+        });
+        return sendJson(res, 200, payload);
+      }
+
+      if (cleanPath === '/v0/management/api-call' && method === 'POST') {
+        let bodyObj;
+        try {
+          const rawBody = await readRequestBody(req, 64 * 1024);
+          bodyObj = parseJsonBody(rawBody);
+        } catch (err) {
+          return sendJson(res, err.status || 400, {
+            ok: false,
+            error: { type: 'invalid_request_error', message: String(err.message || err) },
+          });
+        }
+        const apiRes = await handleManagementApiCall({
+          authIndex: bodyObj.auth_index,
+          url: bodyObj.url,
+          registry,
+          settings,
+          now,
+          fetchImpl,
+        });
+        const acc = (registry?.accounts ?? []).find((a) => a.id === bodyObj.auth_index);
+        pushEvent({
+          time: now,
+          keyId: verification.key.id,
+          keyLabel: verification.key.label,
+          remoteAddress,
+          method,
+          path: cleanPath,
+          userAgent,
+          vendor: acc?.provider ?? null,
+          accountId: acc?.id ?? null,
+          accountLabel: acc?.label ?? bodyObj.auth_index ?? null,
+          accountColor: acc?.color ?? null,
+          laneId: null,
+          failoverFromLaneId: null,
+          status: 200,
+          outcome: `T3 Hub quota (${acc?.label ?? bodyObj.auth_index ?? 'account'})`,
+        });
+        return sendJson(res, 200, apiRes);
+      }
+
+      if (cleanPath === '/v0/management/reset-quota' && method === 'POST') {
+        let bodyObj = {};
+        try {
+          const rawBody = await readRequestBody(req, 64 * 1024);
+          bodyObj = parseJsonBody(rawBody);
+        } catch {
+          bodyObj = {};
+        }
+        const targetAccId = String(bodyObj.auth_index ?? '').trim();
+        const latest = getSettings();
+        const nextCooldowns = { ...(latest.cooldowns ?? {}) };
+        let cleared = 0;
+        for (const lane of latest.lanes ?? []) {
+          if (!targetAccId || lane.accountId === targetAccId) {
+            if (nextCooldowns[lane.id] != null) {
+              delete nextCooldowns[lane.id];
+              cleared += 1;
+            }
+          }
+        }
+        if (cleared > 0) {
+          setSettings({ ...latest, cooldowns: nextCooldowns });
+        }
+        return sendJson(res, 200, { ok: true, cleared });
+      }
+
+      return sendJson(res, 404, {
+        ok: false,
+        error: { type: 'not_found_error', message: `Unknown management endpoint "${cleanPath}"` },
+      });
+    }
+
     // 5. Metered-only pass-through (/v1/messages for claude, /v1/responses for codex).
     // Subscription lanes are never proxied here so consumer OAuth headers are never rewritten.
     const vendor = routeKind;
@@ -1391,5 +1701,142 @@ export function createGatewayServer({
     status,
     isRunning: () => Boolean(server),
     events: () => [...events],
+  };
+}
+
+function runPipedCommand(file, args, stdinBuffer, spawnImpl = spawn, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let settled = false;
+    const child = spawnImpl(file, args, {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill(); } catch { /* ignore */ }
+      reject(new Error(`${file} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.stdout?.on('data', (chunk) => {
+      stdout = Buffer.concat([stdout, Buffer.from(chunk)]);
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr = Buffer.concat([stderr, Buffer.from(chunk)]);
+    });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+
+    if (stdinBuffer && stdinBuffer.length > 0) {
+      child.stdin.write(stdinBuffer);
+    }
+    child.stdin.end();
+  });
+}
+
+export function parseWslDistroList(rawBuffer) {
+  if (!rawBuffer || rawBuffer.length === 0) return [];
+  const text = rawBuffer.includes(0)
+    ? rawBuffer.toString('utf16le')
+    : rawBuffer.toString('utf8');
+  return text
+    .replace(/\uFEFF/g, '')
+    .replace(/\0/g, '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && !/^docker-desktop(-data)?$/i.test(s));
+}
+
+/**
+ * One-click provisioning of the Switchboard client key and `switchboard-lease` wrapper:
+ * - Writes `~/.config/switchboard/client-key` (mode 0600) in the local user home directory.
+ * - On Windows with WSL installed, writes `~/.config/switchboard/client-key` (mode 0600)
+ *   and `~/.local/bin/switchboard-lease` (mode 0755) inside each non-Docker WSL distro,
+ *   streaming the key over stdin so it never appears on a command line.
+ */
+export async function provisionLocalAndWslClient({
+  token,
+  leaseScriptPath,
+  homeDir = os.homedir(),
+  platform = process.platform,
+  spawnImpl = spawn,
+} = {}) {
+  const cleanToken = String(token ?? '').trim();
+  if (!cleanToken.startsWith('sb-key-')) {
+    throw new Error('A valid sb-key-... client token is required to provision local & WSL clients.');
+  }
+
+  const localConfigDir = path.join(homeDir, '.config', 'switchboard');
+  const localKeyPath = path.join(localConfigDir, 'client-key');
+  fs.mkdirSync(localConfigDir, { recursive: true });
+  fs.writeFileSync(localKeyPath, cleanToken + '\n', { encoding: 'utf8', mode: 0o600 });
+
+  let leaseScript = '';
+  if (leaseScriptPath && fs.existsSync(leaseScriptPath)) {
+    leaseScript = fs.readFileSync(leaseScriptPath, 'utf8').replace(/\r\n/g, '\n');
+  }
+
+  const wslDistros = [];
+  const wslBinaryPaths = [];
+
+  if (platform === 'win32') {
+    let distros = [];
+    try {
+      const listRes = await runPipedCommand('wsl.exe', ['--list', '--quiet'], null, spawnImpl, 5000);
+      if (listRes.code === 0) {
+        distros = parseWslDistroList(listRes.stdout);
+      }
+    } catch {
+      distros = [];
+    }
+
+    for (const distro of distros) {
+      try {
+        const keyRes = await runPipedCommand(
+          'wsl.exe',
+          ['-d', distro, '--', 'bash', '-c', 'mkdir -p ~/.config/switchboard && umask 077 && cat > ~/.config/switchboard/client-key'],
+          Buffer.from(cleanToken + '\n', 'utf8'),
+          spawnImpl,
+          8000,
+        );
+        if (keyRes.code !== 0) continue;
+
+        if (leaseScript) {
+          const binRes = await runPipedCommand(
+            'wsl.exe',
+            ['-d', distro, '--', 'bash', '-c', 'mkdir -p ~/.local/bin && cat > ~/.local/bin/switchboard-lease && chmod 755 ~/.local/bin/switchboard-lease && printf "%s" "$HOME/.local/bin/switchboard-lease"'],
+            Buffer.from(leaseScript, 'utf8'),
+            spawnImpl,
+            8000,
+          );
+          if (binRes.code === 0) {
+            const p = binRes.stdout.toString('utf8').trim();
+            if (p && !wslBinaryPaths.includes(p)) wslBinaryPaths.push(p);
+          }
+        }
+        wslDistros.push(distro);
+      } catch {
+        // best-effort per distro
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    localKeyPath,
+    wslDistros,
+    wslBinaryPath: wslBinaryPaths[0] || '~/.local/bin/switchboard-lease',
   };
 }
