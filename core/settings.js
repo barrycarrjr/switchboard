@@ -5,8 +5,10 @@ import { protectSecret, unprotectSecret, isEncrypted } from './vault.js';
 import { normalizeGatewaySettings } from './gateway-keys.js';
 
 export const WATCH_MODES = ['off', 'notify', 'auto'];
+export const THEME_MODES = ['system', 'light', 'dark'];
 
 const DEFAULTS = {
+  theme: 'system',            // system | light | dark
   quotaWatch: 'off',          // off | notify | auto
   usageSources: {},           // accountId -> Claude Desktop profile folder
   lastAutoSwitchAt: 0,
@@ -35,6 +37,9 @@ const DEFAULTS = {
   notifyWebhookUrl: null,     // URL to POST notification events to (e.g. Slack webhook)
   notifyCommand: null,        // Shell command to run on notification events
   thresholds: { session: 80, week: 85 }, // windowKey -> percentage
+  trayHoverFlyout: false,     // Open Tray Quota Flyout on 600ms dwell hover in addition to left-click
+  flyoutBounds: null,         // { x, y, width, height } remembered when the user moves or resizes the Usage Monitor
+  flyoutPinned: false,        // Keep the Usage Monitor pinned open across focus changes and restarts
 };
 
 export function settingsFile() {
@@ -103,6 +108,7 @@ export function loadSettings(file = settingsFile()) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     const merged = { ...DEFAULTS, ...parsed };
+    if (!THEME_MODES.includes(merged.theme)) merged.theme = 'system';
     if (!WATCH_MODES.includes(merged.quotaWatch)) merged.quotaWatch = 'off';
     if (typeof merged.usageSources !== 'object' || merged.usageSources === null) merged.usageSources = {};
     if (!Array.isArray(merged.customApps)) merged.customApps = [];
@@ -149,6 +155,7 @@ export function loadSettings(file = settingsFile()) {
       }
       merged.thresholds = Object.keys(clean).length ? clean : { session: 80, week: 85 };
     }
+    merged.trayHoverFlyout = Boolean(merged.trayHoverFlyout);
     const b = merged.windowBounds;
     if (!b || typeof b.width !== 'number' || typeof b.height !== 'number' || b.width < 380 || b.height < 400) {
       merged.windowBounds = null;

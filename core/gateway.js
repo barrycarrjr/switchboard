@@ -988,7 +988,16 @@ export function createGatewayServer({
   const events = [];
 
   function pushEvent(ev) {
-    events.unshift(ev);
+    const scope = ev.scope ?? (ev.remoteAddress ? classifyRemoteAddress(ev.remoteAddress) : 'local');
+    let accountColor = ev.accountColor ?? null;
+    if (!accountColor && ev.accountId) {
+      try {
+        const reg = getRegistry();
+        const acc = (reg?.accounts ?? []).find((a) => a.id === ev.accountId);
+        accountColor = acc?.color ?? null;
+      } catch {}
+    }
+    events.unshift({ ...ev, scope, accountColor });
     if (events.length > MAX_EVENTS) events.length = MAX_EVENTS;
   }
 

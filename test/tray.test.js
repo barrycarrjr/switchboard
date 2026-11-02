@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { colorDotBitmap, trayModel, trayTooltip, accountNote, accountUsage, whenBack, WATCH_MODES, TOOLTIP_LIMIT, antigravityMenuUsage, antigravityTooltipLines, parseAntigravityWindows } from '../core/tray.js';
+import { colorDotBitmap, trayModel, trayTooltip, trayFlyoutModel, accountNote, accountUsage, whenBack, WATCH_MODES, TOOLTIP_LIMIT, antigravityMenuUsage, antigravityTooltipLines, parseAntigravityWindows } from '../core/tray.js';
 
 /**
  * The tray menu is the part of Switchboard most people see most days, and until the rows
@@ -628,3 +628,140 @@ test('an account with no color still takes a dot-sized space once a neighbour ha
   const rows = model({ accounts: ACCOUNTS.map((a) => (a.id === 'claude-default' ? { ...a, color: '#2563eb' } : a)) });
   assert.ok(kinds(rows, 'account').every((r) => r.provider), 'each row says which tool it belongs to, so space is kept per tool');
 });
+
+test('trayFlyoutModel returns read-only accounts in automatic failover order with 5h and 7d progress bars', () => {
+  const quotas = {
+    'claude-default': { windows: [{ key: 'session', usedPercent: 21, resetsAt: NOW + 2 * HOUR }, { key: 'week', usedPercent: 6, resetsAt: NOW + 6 * DAY }] },
+    'claude-account-2': { windows: [{ key: 'session', usedPercent: 14, resetsAt: NOW + HOUR }, { key: 'week', usedPercent: 84, resetsAt: NOW + 3 * HOUR }] },
+  };
+  const signedIn = { 'claude-default': true, 'claude-account-2': true, 'codex-default': true };
+  const flyout = trayFlyoutModel({
+    providers: PROVIDERS,
+    accounts: ACCOUNTS.map((a) => (a.id === 'claude-account-2' ? { ...a, color: '#2563eb' } : a)),
+    activeIds: { claude: 'claude-account-2', codex: 'codex-default' },
+    lanes: LANES,
+    quotas,
+    signedIn,
+    watchMode: 'auto',
+    alsoSignedIn: [{ name: 'Antigravity', who: 'test-account, Pro', signedIn: true }],
+    antigravityQuota: {
+      source: 'live',
+      windows: [
+        { key: 'gemini-5h', label: 'Gemini (5h)', usedPercent: 19 },
+        { key: 'gemini-week', label: 'Gemini (weekly)', usedPercent: 1 },
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(flyout.providers.length, 2);
+  const claude = flyout.providers[0];
+  assert.equal(claude.id, 'claude');
+  assert.equal(claude.how, 'soonest weekly reset first');
+  assert.deepEqual(claude.accounts.map((a) => a.id), ['claude-account-2', 'claude-default']);
+  assert.deepEqual(claude.accounts.map((a) => a.rank), [1, 2]);
+  assert.equal(claude.accounts[0].badge, 'CURRENT');
+  assert.equal(claude.accounts[0].color, '#2563eb');
+  assert.equal(claude.accounts[0].session.usedPercent, 14);
+  assert.equal(claude.accounts[0].week.usedPercent, 84);
+  assert.ok(flyout.antigravity);
+  assert.equal(flyout.antigravity.who, 'test-account, Pro');
+  assert.equal(flyout.antigravity.windows.length, 2);
+  assert.equal(flyout.antigravity.windows[0].label, 'Gemini 5h');
+});
+
+test('trayFlyoutModel badges 100%-used accounts as OUT OF QUOTA instead of NEARLY OUT', () => {
+  const quotas = {
+    'claude-default': { windows: [{ key: 'session', usedPercent: 0, resetsAt: NOW + 2 * HOUR }, { key: 'week', usedPercent: 100, resetsAt: NOW + 2 * HOUR }] },
+    'claude-account-2': { windows: [{ key: 'session', usedPercent: 14, resetsAt: NOW + HOUR }, { key: 'week', usedPercent: 63, resetsAt: NOW + 3 * HOUR }] },
+  };
+  const flyout = trayFlyoutModel({
+    providers: PROVIDERS,
+    accounts: ACCOUNTS,
+    activeIds: { claude: 'claude-account-2', codex: 'codex-default' },
+    lanes: LANES,
+    quotas,
+    signedIn: { 'claude-default': true, 'claude-account-2': true, 'codex-default': true },
+    watchMode: 'auto',
+    now: NOW,
+  });
+  const claude = flyout.providers.find((p) => p.id === 'claude');
+  const exhausted = claude.accounts.find((a) => a.id === 'claude-default');
+  assert.equal(exhausted.badge, 'OUT OF QUOTA');
+  assert.match(exhausted.note, /^out/);
+});
+
+test('when 600ms dwell hover flyout is enabled, the native hover tooltip is suppressed', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
+  assert.match(main, /tray\.setToolTip\(loadSettings\(\)\.trayHoverFlyout \|\| flyoutOpen \? '' : trayTooltip\(inputs\)\)/);
+  assert.match(main, /tray\.setToolTip\(loadSettings\(\)\.trayHoverFlyout \? '' : trayTooltip\(startupTray\)\)/);
+});
+
+test('the Usage Monitor window is resizable, movable, maximizable, pinnable across close, and remembers its bounds in settings across restarts', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
+  const settings = fs.readFileSync(path.join(root, 'core', 'settings.js'), 'utf8');
+  const usageMonitorHtml = fs.readFileSync(path.join(root, 'src', 'ui', 'usage-monitor.html'), 'utf8');
+  assert.match(settings, /flyoutBounds:\s*null/);
+  assert.match(settings, /flyoutPinned:\s*false/);
+  assert.match(main, /resizable:\s*true/);
+  assert.match(main, /movable:\s*true/);
+  assert.match(main, /maximizable:\s*true/);
+  assert.match(main, /flyoutWin\.on\('resize',\s*rememberFlyoutBounds\)/);
+  assert.match(main, /flyoutWin\.on\('move',\s*rememberFlyoutBounds\)/);
+  assert.match(main, /settings\.flyoutBounds\s*=\s*\{\s*x:\s*b\.x,\s*y:\s*b\.y,\s*width:\s*b\.width,\s*height:\s*b\.height\s*\}/);
+  assert.match(main, /if \(action === 'close'\) \{\s*\/\/[^\n]*\s*\/\/[^\n]*\s*hideFlyout\(\{ force: true \}\);\s*return \{ ok: true \};\s*\}/);
+  assert.match(usageMonitorHtml, /id="btnPin"/);
+  assert.match(usageMonitorHtml, /id="btnMin"/);
+  assert.match(usageMonitorHtml, /id="btnMax"/);
+  assert.match(usageMonitorHtml, /id="btnClose"/);
+  const items = model();
+  const monitorItem = items.find((r) => r.label === 'Usage Monitor');
+  assert.ok(monitorItem, 'right-click menu includes Usage Monitor');
+  assert.equal(monitorItem.action, 'open:flyout');
+});
+
+test('main window and Usage Monitor share Light / Dark / System theme and green/amber/red usage bars, and Health & Settings has 4 nested subtabs', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const settings = fs.readFileSync(path.join(root, 'core', 'settings.js'), 'utf8');
+  const indexHtml = fs.readFileSync(path.join(root, 'src', 'ui', 'index.html'), 'utf8');
+  const usageMonitorHtml = fs.readFileSync(path.join(root, 'src', 'ui', 'usage-monitor.html'), 'utf8');
+
+  assert.match(settings, /THEME_MODES = \['system', 'light', 'dark'\]/);
+  assert.match(indexHtml, /id="themeSwitcher"/);
+  assert.match(indexHtml, /data-theme-mode="light"/);
+  assert.match(indexHtml, /data-theme-mode="dark"/);
+  assert.match(indexHtml, /data-theme-mode="system"/);
+
+  assert.match(
+    indexHtml,
+    /const HEALTH_SUBTABS = \[\s*\['health', 'Doctor'\],\s*\['provider-status', 'Provider Status'\],\s*\['settings', 'Settings'\],\s*\['about', 'About'\],\s*\];/,
+  );
+  assert.match(indexHtml, /id="tab-health"/);
+  assert.match(indexHtml, /id="tab-provider-status"/);
+  assert.match(indexHtml, /id="tab-settings"/);
+  assert.match(indexHtml, /id="tab-about"/);
+
+  assert.match(usageMonitorHtml, /<title>Usage Monitor<\/title>/);
+  assert.match(usageMonitorHtml, /function applyFlyoutTheme\(info\)/);
+  assert.match(usageMonitorHtml, /function bindAccountHover\(el, text\)/);
+  assert.match(usageMonitorHtml, /function attachRowResizer\(group, getGroups\)/);
+  assert.match(usageMonitorHtml, /--bar-good: #107c41;/);
+  assert.match(usageMonitorHtml, /--bar-warn: #d99a00;/);
+  assert.match(usageMonitorHtml, /--bar-hot: #d13438;/);
+  assert.match(usageMonitorHtml, /\.meter-left\.good \{ color: var\(--bar-good\); \}/);
+  assert.match(usageMonitorHtml, /\.meter-left\.warn \{ color: var\(--bar-warn\); \}/);
+  assert.match(usageMonitorHtml, /\.meter-left\.hot \{ color: var\(--bar-hot\); \}/);
+  assert.match(usageMonitorHtml, /\.meter-name \{\s*color: var\(--ink\);/);
+  assert.match(usageMonitorHtml, /grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 320px\), 1fr\)\)/);
+  assert.match(usageMonitorHtml, /<strong>\$\{pct\}%<\/strong> used/);
+  assert.match(usageMonitorHtml, /return ' &middot; Resets ' \+ esc\(timeStr\);/);
+});
+
+
+
+
+
+
+

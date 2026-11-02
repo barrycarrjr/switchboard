@@ -357,6 +357,7 @@ export function trayModel({
     modes: WATCH_MODES.map(([id, label]) => ({ id, label, checked: watchMode === id })),
   });
   rows.push({ kind: 'separator' });
+  rows.push({ kind: 'command', label: 'Usage Monitor', action: 'open:flyout' });
   rows.push({ kind: 'command', label: 'Open Switchboard', action: 'open:accounts' });
   rows.push({ kind: 'command', label: 'Run health checks', action: 'open:health' });
   rows.push({ kind: 'command', label: 'About Switchboard', action: 'open:about' });
@@ -561,3 +562,206 @@ export function colorDotBitmap(hex, size = 16, { keepSpace = false } = {}) {
   }
   return { buffer, width: size, height: size };
 }
+
+/**
+ * Structured data model for the Tray Quota Flyout window.
+ *
+ * Strictly read-only for accounts: clicking an account in the flyout never switches
+ * the default (which would fight automatic lane failover). Accounts are listed in the
+ * exact failover order (`accountUseOrder`) when `followsLanes` is active, or active-first
+ * otherwise, with their session (5h) and weekly (7d) quota progress bars and reset times.
+ */
+export function trayFlyoutModel({
+  providers = [],
+  accounts = [],
+  activeIds = {},
+  notes = {},
+  alsoSignedIn = [],
+  watchMode = 'off',
+  lanes = [],
+  quotas = {},
+  signedIn = {},
+  cooldowns = {},
+  overrideBlocking = false,
+  strandedProviders = [],
+  update = null,
+  now = Date.now(),
+  locale = undefined,
+  antigravityQuota = null,
+} = {}) {
+  const warnings = trayWarnings({ accounts, overrideBlocking, strandedProviders, update });
+  const modeEntry = WATCH_MODES.find(([id]) => id === watchMode) ?? WATCH_MODES[0];
+
+  const extractWindow = (snapshot, kind) => {
+    if (!readable(snapshot)) return null;
+    const windows = Array.isArray(snapshot?.windows) ? snapshot.windows : [];
+    const match = windows.find((w) => {
+      if (w?.key === kind) return true;
+      const raw = `${w?.label ?? ''} ${w?.key ?? ''}`.toLowerCase();
+      if (kind === 'session') return raw.includes('5h') || raw.includes('5-hour') || raw.includes('session');
+      if (kind === 'week') return raw.includes('week') || raw.includes('7d') || raw.includes('7-day');
+      return false;
+    });
+    const usedVal = pct(snapshot, kind);
+    if (usedVal == null || !Number.isFinite(Number(usedVal))) return null;
+    const usedPercent = Math.max(0, Math.min(100, Math.round(Number(usedPercentOr(usedVal)))));
+    const resetsAt = match?.resetsAt ?? null;
+    return {
+      usedPercent,
+      resetsAt,
+      resetLabel: resetsAt ? whenBack(resetsAt, now, { locale }) : null,
+    };
+  };
+
+  function usedPercentOr(v) {
+    return Number(v);
+  }
+
+  const providerGroups = [];
+  for (const provider of providers) {
+    const followsLanes = defaultFollowsLanes({ quotaWatch: watchMode, lanes }, provider.id);
+    const mine = followsLanes
+      ? accountUseOrder(accounts, lanes, provider.id, { now, quotas, loginStates: loginStatesFrom(signedIn), cooldowns }, activeIds[provider.id] ?? null)
+      : accounts
+          .filter((a) => a.provider === provider.id)
+          .sort((a, b) => Number(activeIds[provider.id] === b.id) - Number(activeIds[provider.id] === a.id));
+    if (!mine.length) continue;
+
+    const byReset = followsLanes && ranksByReset({ quotaWatch: watchMode, lanes }, provider.id, accounts);
+    const how = !PROVIDERS[provider.id]?.quota
+      ? 'no usage reading'
+      : followsLanes
+        ? (byReset ? 'soonest weekly reset first' : 'set by lane order')
+        : 'manual default';
+    const activeAcct = mine.find((a) => a.id === activeIds[provider.id]) ?? mine[0] ?? null;
+    const pluralAcct = `${mine.length} account${mine.length === 1 ? '' : 's'}`;
+    const summary = activeAcct
+      ? `New sessions use: ${activeAcct.label}${followsLanes ? (byReset ? ', picked by soonest weekly reset' : ', set by lane order') : ''} \u00b7 ${pluralAcct}`
+      : pluralAcct;
+
+    const extractWindows = (snapshot) => {
+      if (!readable(snapshot)) return [];
+      const rawWindows = Array.isArray(snapshot?.windows) ? snapshot.windows : [];
+      const measured = rawWindows
+        .filter((w) => w && w.key !== 'extra' && !/extra\s*usage/i.test(w.label || '') && w.usedPercent != null && Number.isFinite(Number(w.usedPercent)))
+        .map((w) => {
+          const usedPercent = Math.max(0, Math.min(100, Math.round(Number(w.usedPercent))));
+          const resetsAt = w.resetsAt ?? null;
+          const fullLabel = w.label || (w.key === 'session' ? '5 hours' : w.key === 'week' ? 'Week' : w.key || 'Usage');
+          return {
+            key: w.key ?? fullLabel,
+            label: fullLabel,
+            fullLabel,
+            usedPercent,
+            resetsAt,
+            resetLabel: resetsAt ? whenBack(resetsAt, now, { locale }) : null,
+          };
+        });
+      if (!measured.length) return [];
+      const session = measured.find((m) => m.key === 'session' || /session|5h/i.test(m.fullLabel || ''));
+      const week = measured.find((m) => m.key === 'week' || /week.*all/i.test(m.fullLabel || ''))
+        || measured.find((m) => m !== session && /week/i.test(m.fullLabel || ''));
+      if (session && week) return [session, week];
+      if (session) {
+        const next = measured.find((m) => m !== session);
+        return next ? [session, next] : [session];
+      }
+      if (week) {
+        const next = measured.find((m) => m !== week);
+        return next ? [week, next] : [week];
+      }
+      return measured.slice(0, 2);
+    };
+
+    const items = mine.map((account, index) => {
+      const isCurrent = activeIds[provider.id] === account.id;
+      const snapshot = quotas[account.id] ?? null;
+      const computedNote = notes[account.id] ?? accountNote({ signedIn: signedIn[account.id] ?? (snapshot ? true : null) }, snapshot, now, { locale });
+      const isOut = typeof computedNote === 'string' && computedNote.startsWith('out');
+      const tooFull = followsLanes && !computedNote && tooFullForDefault(snapshot, isCurrent);
+      const rawNote = computedNote ?? (tooFull ? 'nearly out' : null);
+      const isSignedOut = rawNote === 'signed out' || signedIn[account.id] === false;
+      const session = isSignedOut ? null : extractWindow(snapshot, 'session');
+      const week = isSignedOut ? null : extractWindow(snapshot, 'week');
+      const windows = isSignedOut ? [] : extractWindows(snapshot);
+      let badge = null;
+      if (isCurrent) badge = 'CURRENT';
+      else if (isOut) badge = 'OUT OF QUOTA';
+      else if (tooFull) badge = 'NEARLY OUT';
+
+      return {
+        id: account.id,
+        label: account.label,
+        person: account.person ?? null,
+        color: account.color ?? null,
+        rank: index + 1,
+        active: isCurrent,
+        badge,
+        note: rawNote,
+        signedIn: signedIn[account.id] ?? null,
+        session,
+        week,
+        windows,
+      };
+    });
+
+    providerGroups.push({
+      id: provider.id,
+      name: provider.name,
+      followsLanes,
+      how,
+      summary,
+      accounts: items,
+    });
+  }
+
+  const agTool = alsoSignedIn.find((t) => t.name === 'Antigravity') ?? null;
+  const agQuota = antigravityQuota ?? agTool?.quota ?? null;
+  let antigravity = null;
+  if (agTool || (agQuota && readable(agQuota))) {
+    const parsed = agQuota && readable(agQuota) ? parseAntigravityWindows(agQuota) : null;
+    const formatAgWin = (shortLabel, defaultFullLabel, w) => {
+      if (!w || w.usedPercent == null || !Number.isFinite(Number(w.usedPercent))) return null;
+      const usedPercent = Math.max(0, Math.min(100, Math.round(Number(w.usedPercent))));
+      return {
+        label: shortLabel,
+        fullLabel: w.label || defaultFullLabel,
+        usedPercent,
+        resetsAt: w.resetsAt ?? null,
+        resetLabel: w.resetsAt ? whenBack(w.resetsAt, now, { locale }) : null,
+      };
+    };
+    const windows = parsed
+      ? [
+          formatAgWin('Gemini 5h', 'Gemini (5h)', parsed.gemini5h),
+          formatAgWin('Gemini week', 'Gemini (Week)', parsed.geminiWeek),
+          formatAgWin('Claude & GPT 5h', 'Claude & GPT (5h)', parsed.claude5h),
+          formatAgWin('Claude & GPT week', 'Claude & GPT (Week)', parsed.claudeWeek),
+        ].filter(Boolean)
+      : [];
+    antigravity = {
+      name: 'Antigravity',
+      who: agTool?.who || (agTool?.signedIn ? 'signed in' : 'active'),
+      signedIn: agTool?.signedIn ?? true,
+      windows,
+      credits: parsed?.credits?.valueLabel ?? null,
+    };
+  }
+
+  const otherSignedIn = alsoSignedIn
+    .filter((t) => t.name !== 'Antigravity' && (t.signedIn || t.who))
+    .map((t) => ({
+      name: t.name,
+      who: t.who || (t.signedIn ? 'signed in' : 'not signed in'),
+      signedIn: Boolean(t.signedIn),
+    }));
+
+  return {
+    warnings,
+    watchMode: { id: modeEntry[0], label: modeEntry[1] },
+    providers: providerGroups,
+    antigravity,
+    otherSignedIn,
+  };
+}
+

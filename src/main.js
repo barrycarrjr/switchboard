@@ -1,18 +1,18 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, Notification, screen } from 'electron';
+import { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, Notification, screen, nativeTheme } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadRegistry, saveRegistry, addAccount, createAccount, removeAccount, renameAccount, setAccountColor, detectDefaults, detectCandidates, activeAccount, activeHome, setActive, normalizeHome, accountScopedEnv, configuredClaudeCredentialOverrides, PROVIDERS } from '../core/accounts.js';
 import { detectAll, detectInstalled, detectToolById, checkAllUpdates, uninstallCmdFor, installCmdFor, toolExecutable, TOOLS } from '../core/providers.js';
-import { runChecks, accountLoginState, verifiedAccountLoginState } from '../core/doctor.js';
+import { runChecks, accountLoginState, verifiedAccountLoginState, claudePlanName, readClaudeRateLimitTier } from '../core/doctor.js';
 import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota, readClaudeAccountIdentity, readDesktopUsage, fetchAntigravityQuota } from '../core/quota.js';
 import { lastSharedQuota, readSharedQuota, shareAntigravityQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
 import { fetchAllProviderStatus } from '../core/provider-status.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { signOutAccount, signoutSupported } from '../core/signout.js';
-import { loadSettings, saveSettings, settingsFile } from '../core/settings.js';
+import { loadSettings, saveSettings, settingsFile, THEME_MODES } from '../core/settings.js';
 // import { registerVaultDriver } from '../core/vault.js';
 import { validateLaneTokens, mergeLaneTokenResults } from '../core/lane-tokens.js';
 import { maybeUpdateAgy } from '../core/agy-updates.js';
@@ -57,7 +57,7 @@ function effectiveUpdateRepo() {
 import { freshNotices, planDefaultSwitches } from '../core/watch.js';
 import { accountUseOrder, defaultFollowsLanes, followsLanesNote, ranksByReset, tooFullForDefault } from '../core/lanes.js';
 import { addLane, removeLane, reorderLanes, setLaneBudget, resolveAllAccounts } from '../core/lane-admin.js';
-import { accountNote, colorDotBitmap, loginStatesFrom, trayModel, trayTooltip } from '../core/tray.js';
+import { accountNote, colorDotBitmap, loginStatesFrom, trayFlyoutModel, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
@@ -67,6 +67,8 @@ import { createGatewayKey, updateGatewayKey, revokeGatewayKey, normalizeGatewayP
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let win = null;
+let flyoutWin = null;
+let trayHoverTimer = null;
 let tray = null;
 let quitting = false;
 const gatewayServer = createGatewayServer();
@@ -79,9 +81,14 @@ let settingsWatcher = null;
  * read it at tray launch, so a change from the CLI waited for a restart. start() is a
  * no-op when the port and bind address already match, so the tray's own saves cost nothing.
  */
+let lastAppliedGatewayKey = null;
 function applyGatewaySettings() {
   const gw = normalizeGatewaySettings(loadSettings().gateway);
-  const change = gw.enabled ? gatewayServer.start() : gatewayServer.isRunning() ? gatewayServer.stop() : null;
+  const nextKey = `${Boolean(gw.enabled)}:${gw.port}:${gw.scope}`;
+  const running = gatewayServer.isRunning();
+  if (nextKey === lastAppliedGatewayKey && running === Boolean(gw.enabled)) return;
+  lastAppliedGatewayKey = nextKey;
+  const change = gw.enabled ? gatewayServer.start() : running ? gatewayServer.stop() : null;
   if (!change) return;
   change.then(() => refresh()).catch((err) => console.error('gateway settings change', err));
 }
@@ -291,12 +298,23 @@ async function stateSnapshot(forceAuthAccountId = null) {
   const notes = { ...trayFacts.notes };
   let notesChanged = false;
   for (const account of accounts) {
-    if (account.login?.signedIn === true && notes[account.id] === 'signed out') {
-      delete notes[account.id];
-      notesChanged = true;
-    } else if (account.login?.signedIn === false && notes[account.id] !== 'signed out') {
-      notes[account.id] = 'signed out';
-      notesChanged = true;
+    if (!trayFacts.quotas[account.id] && PROVIDERS[account.provider]?.quota) {
+      const q = cachedQuotaIfPresent(account);
+      if (q) trayFacts.quotas = { ...trayFacts.quotas, [account.id]: q };
+    }
+    const snap = trayFacts.quotas[account.id] ?? null;
+    if (account.login?.signedIn === false) {
+      if (notes[account.id] !== 'signed out') {
+        notes[account.id] = 'signed out';
+        notesChanged = true;
+      }
+    } else {
+      const nextNote = snap ? accountNote(account.login, snap) : (notes[account.id] === 'signed out' ? null : notes[account.id] ?? null);
+      if ((notes[account.id] ?? null) !== nextNote) {
+        if (nextNote) notes[account.id] = nextNote;
+        else delete notes[account.id];
+        notesChanged = true;
+      }
     }
   }
   const signedIn = Object.fromEntries(accounts.map((account) => [account.id, account.login?.signedIn ?? null]));
@@ -319,6 +337,7 @@ async function stateSnapshot(forceAuthAccountId = null) {
     // its note instead, and an account at its limit badged "nearly out" contradicted both
     // the tray and its own card.
     p.nearlyOutIds = p.accountOrder.filter((id) => !notes[id] && tooFullForDefault(trayFacts.quotas[id], id === p.activeAccountId));
+    p.outIds = p.accountOrder.filter((id) => typeof notes[id] === 'string' && notes[id].startsWith('out'));
     // A metered lane is never ranked by reset, so when the default sits on one, lane order
     // put it there and the page summary must not credit a weekly reset for it.
     p.activeOnMetered = Boolean(p.activeAccountId)
@@ -328,7 +347,41 @@ async function stateSnapshot(forceAuthAccountId = null) {
   // What T3 Code would color each account, so the page can offer to match it. Read each
   // time because T3 is changed in T3, and the file is a few kilobytes.
   const t3Colors = matchT3Colors(reg, readT3Instances());
-  return { accounts, laneAccounts, providers, t3Colors, watchMode: settings.quotaWatch, version: app.getVersion() };
+  const themeInfo = currentThemeInfo(settings.theme);
+  return {
+    accounts,
+    laneAccounts,
+    providers,
+    t3Colors,
+    watchMode: settings.quotaWatch,
+    theme: themeInfo.theme,
+    effectiveTheme: themeInfo.effectiveTheme,
+    version: app.getVersion(),
+  };
+}
+
+function applyThemeSetting(mode) {
+  const valid = THEME_MODES.includes(mode) ? mode : 'system';
+  try {
+    if (nativeTheme.themeSource !== valid) {
+      nativeTheme.themeSource = valid;
+    }
+  } catch { /* ignore if called before ready */ }
+  return currentThemeInfo(valid);
+}
+
+function currentThemeInfo(mode = loadSettings().theme) {
+  const valid = THEME_MODES.includes(mode) ? mode : 'system';
+  const effectiveTheme = valid === 'dark' ? 'dark'
+    : valid === 'light' ? 'light'
+    : (nativeTheme?.shouldUseDarkColors ? 'dark' : 'light');
+  return { theme: valid, effectiveTheme };
+}
+
+function broadcastTheme() {
+  const info = currentThemeInfo();
+  if (win && !win.isDestroyed()) win.webContents.send('sb:themeChanged', info);
+  if (flyoutWin && !flyoutWin.isDestroyed()) flyoutWin.webContents.send('sb:themeChanged', info);
 }
 
 function showWindow(hash = '') {
@@ -390,6 +443,165 @@ function createWindow() {
     }
   });
   win.on('closed', () => { win = null; });
+}
+
+const DEFAULT_FLYOUT_WIDTH = 480;
+const DEFAULT_FLYOUT_HEIGHT = 650;
+const MIN_FLYOUT_WIDTH = 360;
+const MIN_FLYOUT_HEIGHT = 380;
+
+let flyoutBoundsTimer = null;
+let flyoutProgrammaticResize = false;
+let liveFlyoutBounds = null;
+
+function restorableFlyoutBounds() {
+  const saved = liveFlyoutBounds ?? loadSettings().flyoutBounds;
+  if (!saved || typeof saved !== 'object') {
+    return { width: DEFAULT_FLYOUT_WIDTH, height: DEFAULT_FLYOUT_HEIGHT, x: null, y: null, userSized: false, userMoved: false };
+  }
+  const width = Number.isFinite(Number(saved.width)) ? Math.max(MIN_FLYOUT_WIDTH, Math.round(Number(saved.width))) : DEFAULT_FLYOUT_WIDTH;
+  const height = Number.isFinite(Number(saved.height)) ? Math.max(MIN_FLYOUT_HEIGHT, Math.round(Number(saved.height))) : DEFAULT_FLYOUT_HEIGHT;
+  const hasPos = typeof saved.x === 'number' && typeof saved.y === 'number' && Number.isFinite(saved.x) && Number.isFinite(saved.y);
+  const visible = hasPos && screen.getAllDisplays().some((d) => {
+    const a = d.workArea;
+    return saved.x < a.x + a.width - 40 && saved.x + width > a.x + 40
+      && saved.y < a.y + a.height - 40 && saved.y >= a.y - 10;
+  });
+  return {
+    width,
+    height,
+    x: visible ? Math.round(saved.x) : null,
+    y: visible ? Math.round(saved.y) : null,
+    userSized: Number.isFinite(Number(saved.width)) && Number.isFinite(Number(saved.height)),
+    userMoved: Boolean(visible),
+  };
+}
+
+function rememberFlyoutBounds() {
+  if (!flyoutWin || flyoutWin.isDestroyed() || flyoutProgrammaticResize) return;
+  if (flyoutWin.isMaximized() || flyoutWin.isMinimized()) return;
+  const cur = flyoutWin.getBounds();
+  liveFlyoutBounds = { x: cur.x, y: cur.y, width: cur.width, height: cur.height };
+  clearTimeout(flyoutBoundsTimer);
+  flyoutBoundsTimer = setTimeout(() => {
+    if (!flyoutWin || flyoutWin.isDestroyed() || flyoutWin.isMaximized() || flyoutWin.isMinimized()) return;
+    const b = flyoutWin.getBounds();
+    liveFlyoutBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
+    const settings = loadSettings();
+    settings.flyoutBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
+    saveSettings(settings);
+  }, 250);
+}
+
+function createFlyoutWindow() {
+  if (flyoutWin && !flyoutWin.isDestroyed()) return flyoutWin;
+  const initial = restorableFlyoutBounds();
+  flyoutWin = new BrowserWindow({
+    title: 'Usage Monitor',
+    width: initial.width,
+    height: initial.height,
+    ...(initial.userMoved ? { x: initial.x, y: initial.y } : {}),
+    minWidth: MIN_FLYOUT_WIDTH,
+    minHeight: MIN_FLYOUT_HEIGHT,
+    frame: false,
+    resizable: true,
+    movable: true,
+    minimizable: true,
+    maximizable: true,
+    fullscreenable: true,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    webPreferences: {
+      preload: path.join(here, 'preload.cjs'),
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  flyoutWin.loadFile(path.join(here, 'ui', 'usage-monitor.html'));
+  flyoutWin.on('resize', rememberFlyoutBounds);
+  flyoutWin.on('move', rememberFlyoutBounds);
+  flyoutWin.on('maximize', () => {
+    if (flyoutWin && !flyoutWin.isDestroyed()) flyoutWin.webContents.send('sb:refresh');
+  });
+  flyoutWin.on('unmaximize', () => {
+    if (flyoutWin && !flyoutWin.isDestroyed()) flyoutWin.webContents.send('sb:refresh');
+  });
+  flyoutWin.on('blur', () => {
+    if (loadSettings().flyoutPinned) return;
+    if (flyoutWin && !flyoutWin.isDestroyed()) hideFlyout({ force: true });
+  });
+  flyoutWin.on('closed', () => { flyoutWin = null; });
+  return flyoutWin;
+}
+
+function positionFlyoutWindow() {
+  if (!flyoutWin || flyoutWin.isDestroyed()) return;
+  if (flyoutWin.isMaximized()) return;
+  try {
+    const saved = restorableFlyoutBounds();
+    const curBounds = flyoutWin.getBounds();
+    if (saved.userMoved && saved.x != null && saved.y != null) {
+      const targetW = saved.userSized ? saved.width : curBounds.width;
+      const targetH = saved.userSized ? saved.height : curBounds.height;
+      flyoutProgrammaticResize = true;
+      flyoutWin.setBounds({ x: saved.x, y: saved.y, width: targetW, height: targetH }, false);
+      setTimeout(() => { flyoutProgrammaticResize = false; }, 60);
+      return;
+    }
+    if (!tray) return;
+    const trayBounds = tray.getBounds();
+    const display = screen.getDisplayMatching(trayBounds);
+    const workArea = display.workArea;
+    const targetW = Math.min(workArea.width - 16, saved.userSized ? saved.width : curBounds.width);
+    const targetH = Math.min(workArea.height - 16, saved.userSized ? saved.height : curBounds.height);
+    let x = Math.round(trayBounds.x + trayBounds.width / 2 - targetW / 2);
+    let y = Math.round(trayBounds.y - targetH - 8);
+    if (y < workArea.y) {
+      y = Math.round(trayBounds.y + trayBounds.height + 8);
+    }
+    x = Math.max(workArea.x + 8, Math.min(x, workArea.x + workArea.width - targetW - 8));
+    y = Math.max(workArea.y + 8, Math.min(y, workArea.y + workArea.height - targetH - 8));
+    flyoutProgrammaticResize = true;
+    flyoutWin.setBounds({ x, y, width: targetW, height: targetH }, false);
+    setTimeout(() => { flyoutProgrammaticResize = false; }, 60);
+  } catch {
+    flyoutProgrammaticResize = false;
+  }
+}
+
+function showFlyout({ focus = true } = {}) {
+  const fw = createFlyoutWindow();
+  if (fw.isMinimized()) fw.restore();
+  positionFlyoutWindow();
+  if (tray) tray.setToolTip('');
+  fw.webContents.send('sb:refresh');
+  if (focus) {
+    fw.show();
+    fw.focus();
+  } else {
+    fw.showInactive();
+  }
+}
+
+function hideFlyout({ force = false } = {}) {
+  if (!force && loadSettings().flyoutPinned) return;
+  if (flyoutWin && !flyoutWin.isDestroyed() && flyoutWin.isVisible()) {
+    flyoutWin.hide();
+  }
+  refreshTray();
+}
+
+function toggleFlyout() {
+  if (flyoutWin && !flyoutWin.isDestroyed() && flyoutWin.isVisible()) {
+    if (loadSettings().flyoutPinned) {
+      flyoutWin.focus();
+    } else {
+      hideFlyout({ force: true });
+    }
+  } else {
+    showFlyout({ focus: true });
+  }
 }
 
 /**
@@ -585,7 +797,9 @@ function buildTrayMenu(inputs = trayInputs()) {
           label: row.label,
           click: row.action === 'quit'
             ? () => { quitting = true; app.quit(); }
-            : () => open(row.action),
+            : row.action === 'open:flyout'
+              ? () => showFlyout({ focus: true })
+              : () => open(row.action),
         };
     }
   });
@@ -653,14 +867,19 @@ function refreshTray() {
       if (!tray) return;
       const inputs = trayInputs();
       tray.setContextMenu(buildTrayMenu(inputs));
-      tray.setToolTip(trayTooltip(inputs));
+      const flyoutOpen = Boolean(flyoutWin && !flyoutWin.isDestroyed() && flyoutWin.isVisible());
+      tray.setToolTip(loadSettings().trayHoverFlyout || flyoutOpen ? '' : trayTooltip(inputs));
+      if (flyoutOpen) {
+        flyoutWin.webContents.send('sb:refresh');
+      }
     }, 40);
   }
 }
 
 function refresh() {
   refreshTray();
-  if (win) win.webContents.send('sb:refresh');
+  if (win && !win.isDestroyed()) win.webContents.send('sb:refresh');
+  if (flyoutWin && !flyoutWin.isDestroyed()) flyoutWin.webContents.send('sb:refresh');
   // The terminal list and the sign-in lines are built from the accounts, so an account
   // added or removed anywhere in the app leaves them wrong. Noticing here covers every
   // path without each one having to remember. refreshTrayFacts ends by calling back into
@@ -757,8 +976,12 @@ async function runQuotaWatch() {
     const loginStates = {};
     const activeIds = Object.fromEntries(Object.keys(PROVIDERS).map((id) => [id, activeAccount(reg, id)?.id ?? null]));
     const liveQuotaAccountIds = new Set();
-    if (settings.quotaWatch !== 'off' || settings.notifyWebhookUrl || settings.notifyCommand) {
+    const flyoutOpen = Boolean(flyoutWin && !flyoutWin.isDestroyed() && flyoutWin.isVisible());
+    if (settings.quotaWatch !== 'off' || settings.notifyWebhookUrl || settings.notifyCommand || settings.flyoutPinned || flyoutOpen) {
       const watchProviders = new Set(['claude']);
+      if (settings.flyoutPinned || flyoutOpen) {
+        Object.keys(PROVIDERS).forEach((pid) => { if (PROVIDERS[pid]?.quota) watchProviders.add(pid); });
+      }
       settings.lanes.forEach((lane) => watchProviders.add(lane.harness));
       for (const account of reg.accounts) {
         if (watchProviders.has(account.provider)) liveQuotaAccountIds.add(account.id);
@@ -929,10 +1152,40 @@ app.whenReady().then(async () => {
   tray = new Tray(trayIcon);
   const startupTray = trayInputs();
   tray.setContextMenu(buildTrayMenu(startupTray));
-  tray.setToolTip(trayTooltip(startupTray));
-  tray.on('click', () => showWindow());
+  tray.setToolTip(loadSettings().trayHoverFlyout ? '' : trayTooltip(startupTray));
+  // Option C: left-click toggles the read-only Quota Flyout; double-click opens the main
+  // Switchboard window; optional 600ms dwell hover opens the flyout when enabled in Settings.
+  tray.on('click', () => {
+    if (trayHoverTimer) { clearTimeout(trayHoverTimer); trayHoverTimer = null; }
+    toggleFlyout();
+  });
+  tray.on('double-click', () => {
+    if (trayHoverTimer) { clearTimeout(trayHoverTimer); trayHoverTimer = null; }
+    hideFlyout();
+    showWindow();
+  });
+  tray.on('mouse-enter', () => {
+    if (!loadSettings().trayHoverFlyout) return;
+    if (tray) tray.setToolTip('');
+    if (trayHoverTimer) clearTimeout(trayHoverTimer);
+    trayHoverTimer = setTimeout(() => {
+      trayHoverTimer = null;
+      showFlyout({ focus: false });
+    }, 600);
+  });
+  tray.on('mouse-leave', () => {
+    if (trayHoverTimer) { clearTimeout(trayHoverTimer); trayHoverTimer = null; }
+  });
+
+  applyThemeSetting(loadSettings().theme);
+  nativeTheme.on('updated', () => {
+    broadcastTheme();
+  });
 
   createWindow();
+  if (loadSettings().flyoutPinned) {
+    showFlyout({ focus: false });
+  }
 
   if (loadSettings().gateway?.enabled) {
     gatewayServer.start().catch((err) => {
@@ -970,6 +1223,191 @@ app.on('window-all-closed', () => { /* stay in the tray */ });
 app.on('before-quit', () => { quitting = true; settingsWatcher?.close(); gatewayServer.stop().catch(() => {}); });
 
 // ---- IPC: the renderer only ever talks to the core through these. ----
+
+ipcMain.handle('sb:getTheme', () => currentThemeInfo());
+
+ipcMain.handle('sb:setTheme', (_e, mode) => {
+  const valid = THEME_MODES.includes(mode) ? mode : 'system';
+  const s = loadSettings();
+  s.theme = valid;
+  saveSettings(s);
+  const info = applyThemeSetting(valid);
+  broadcastTheme();
+  return { ok: true, ...info };
+});
+
+function localAccountPerson(account, login) {
+  let email = login?.email ?? null;
+  let plan = login?.plan ?? null;
+  if ((!email || !plan) && account?.provider === 'claude' && account?.home) {
+    try {
+      const claudeJson = JSON.parse(fs.readFileSync(path.join(account.home, '.claude.json'), 'utf8'));
+      const oauthAcct = claudeJson?.oauthAccount;
+      if (!email && typeof oauthAcct?.emailAddress === 'string' && oauthAcct.emailAddress) {
+        email = oauthAcct.emailAddress;
+      }
+    } catch { /* ignore */ }
+    try {
+      const creds = JSON.parse(fs.readFileSync(path.join(account.home, '.credentials.json'), 'utf8'));
+      const subType = creds?.claudeAiOauth?.subscriptionType;
+      if (!plan && typeof subType === 'string' && subType) {
+        plan = claudePlanName(subType, readClaudeRateLimitTier(account.home));
+      }
+    } catch { /* ignore */ }
+  }
+  return [email, plan ? `${plan} plan` : null].filter(Boolean).join(' \u00b7 ') || null;
+}
+
+ipcMain.handle('sb:trayFlyoutState', () => {
+  const inputs = trayInputs();
+  const quotas = { ...inputs.quotas };
+  const signedIn = { ...inputs.signedIn };
+  const notes = { ...inputs.notes };
+  const accounts = inputs.accounts.map((a) => {
+    if (!quotas[a.id] && PROVIDERS[a.provider]?.quota) {
+      const q = cachedQuotaIfPresent(a);
+      if (q) quotas[a.id] = q;
+    }
+    const authEntry = authCache.get(a.id);
+    const cachedAuth = authEntry?.result ?? null;
+    if (!cachedAuth && !authEntry?.pending && a.provider === 'claude') {
+      cachedLoginState(a).then(() => {
+        if (flyoutWin && !flyoutWin.isDestroyed()) {
+          flyoutWin.webContents.send('sb:refresh');
+        }
+      }).catch(() => {});
+    }
+    const login = cachedAuth ?? accountLoginState(a);
+    if (signedIn[a.id] == null) {
+      if (login?.signedIn != null) signedIn[a.id] = login.signedIn;
+      if (!notes[a.id] && (login?.signedIn === false || quotas[a.id])) {
+        const n = accountNote(login, quotas[a.id]);
+        if (n) notes[a.id] = n;
+      }
+    }
+    const person = localAccountPerson(a, login);
+    return { ...a, person };
+  });
+  const s = loadSettings();
+  const themeInfo = currentThemeInfo(s.theme);
+  const isMaximized = Boolean(flyoutWin && !flyoutWin.isDestroyed() && flyoutWin.isMaximized());
+  const savedBounds = restorableFlyoutBounds();
+  return {
+    ...trayFlyoutModel({ ...inputs, accounts, quotas, signedIn, notes }),
+    pinned: Boolean(s.flyoutPinned),
+    maximized: isMaximized,
+    userMoved: Boolean(savedBounds.userMoved),
+    userSized: Boolean(savedBounds.userSized),
+    theme: themeInfo.theme,
+    effectiveTheme: themeInfo.effectiveTheme,
+  };
+});
+
+ipcMain.handle('sb:flyoutResize', (_e, height) => {
+  if (!flyoutWin || flyoutWin.isDestroyed()) return { ok: false };
+  if (flyoutWin.isMaximized()) return { ok: true, maximized: true };
+  const saved = restorableFlyoutBounds();
+  if (saved.userSized || saved.userMoved) {
+    return { ok: true, width: saved.width, height: saved.height, userSized: true };
+  }
+  const b = flyoutWin.getBounds();
+  let maxH = 920;
+  try {
+    const display = screen.getDisplayMatching(b);
+    if (display?.workArea?.height) {
+      maxH = Math.max(DEFAULT_FLYOUT_HEIGHT, display.workArea.height - 24);
+    }
+  } catch {}
+  const h = Math.min(maxH, Math.max(DEFAULT_FLYOUT_HEIGHT, Math.ceil(Number(height) || DEFAULT_FLYOUT_HEIGHT)));
+  if (Math.abs(b.height - h) > 2 || Math.abs(b.width - DEFAULT_FLYOUT_WIDTH) > 2) {
+    flyoutProgrammaticResize = true;
+    flyoutWin.setSize(DEFAULT_FLYOUT_WIDTH, h, false);
+    positionFlyoutWindow();
+    setTimeout(() => { flyoutProgrammaticResize = false; }, 100);
+  }
+  return { ok: true, width: DEFAULT_FLYOUT_WIDTH, height: h, userSized: false };
+});
+
+ipcMain.handle('sb:trayFlyoutSettings', () => {
+  const s = loadSettings();
+  return { trayHoverFlyout: Boolean(s.trayHoverFlyout), flyoutPinned: Boolean(s.flyoutPinned) };
+});
+
+ipcMain.handle('sb:setTrayFlyoutSettings', (_e, { trayHoverFlyout, flyoutPinned } = {}) => {
+  const s = loadSettings();
+  if (trayHoverFlyout !== undefined) {
+    s.trayHoverFlyout = Boolean(trayHoverFlyout);
+  }
+  if (flyoutPinned !== undefined) {
+    s.flyoutPinned = Boolean(flyoutPinned);
+  }
+  saveSettings(s);
+  if (tray && s.trayHoverFlyout) tray.setToolTip('');
+  refreshTray();
+  return { ok: true, trayHoverFlyout: s.trayHoverFlyout, flyoutPinned: s.flyoutPinned };
+});
+
+ipcMain.handle('sb:flyoutAction', async (_e, action) => {
+  if (action === 'toggle-pin') {
+    const s = loadSettings();
+    s.flyoutPinned = !s.flyoutPinned;
+    saveSettings(s);
+    if (flyoutWin && !flyoutWin.isDestroyed()) {
+      flyoutWin.webContents.send('sb:refresh');
+    }
+    return { ok: true, pinned: s.flyoutPinned };
+  }
+  if (action === 'minimize') {
+    hideFlyout({ force: true });
+    return { ok: true };
+  }
+  if (action === 'toggle-maximize') {
+    if (flyoutWin && !flyoutWin.isDestroyed()) {
+      if (flyoutWin.isMaximized()) {
+        flyoutWin.unmaximize();
+      } else {
+        flyoutWin.maximize();
+      }
+      flyoutWin.webContents.send('sb:refresh');
+    }
+    return { ok: true, maximized: Boolean(flyoutWin && !flyoutWin.isDestroyed() && flyoutWin.isMaximized()) };
+  }
+  if (action === 'close') {
+    // Closing hides the Usage Monitor while remembering whether it was pinned,
+    // so the next time it is opened it keeps the same pinned behavior.
+    hideFlyout({ force: true });
+    return { ok: true };
+  }
+  if (action === 'refresh') {
+    await runQuotaWatch();
+    if (flyoutWin && !flyoutWin.isDestroyed()) {
+      flyoutWin.webContents.send('sb:refresh');
+    }
+    return { ok: true };
+  }
+  if (action === 'dock-tray') {
+    liveFlyoutBounds = null;
+    clearTimeout(flyoutBoundsTimer);
+    const s = loadSettings();
+    s.flyoutBounds = null;
+    saveSettings(s);
+    if (flyoutWin && !flyoutWin.isDestroyed() && flyoutWin.isMaximized()) {
+      flyoutWin.unmaximize();
+    }
+    positionFlyoutWindow();
+    if (flyoutWin && !flyoutWin.isDestroyed()) {
+      flyoutWin.webContents.send('sb:refresh');
+    }
+    return { ok: true };
+  }
+  hideFlyout();
+  if (typeof action === 'string' && action.startsWith('open:')) {
+    showWindow(action.slice('open:'.length));
+    return { ok: true };
+  }
+  showWindow();
+  return { ok: true };
+});
 
 ipcMain.handle('sb:state', (_e, forceAuthAccountId = null) => {
   const force = typeof forceAuthAccountId === 'string'

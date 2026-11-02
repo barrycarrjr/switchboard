@@ -1,0 +1,1087 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<title>Usage Monitor</title>
+<style>
+  :root {
+    --accent: #0067c0;
+    --accent-soft: #e3f0fb;
+    --bg: #ffffff;
+    --bg2: #f3f3f3;
+    --subtle: #f8fafc;
+    --line: #e2e5e9;
+    --ink: #1b1b1b;
+    --sub: #616a75;
+    --ok: #107c41;
+    --ok-bg: #e2f3e9;
+    --warn: #9a6700;
+    --warn-bg: #fff1cc;
+    --err: #b42318;
+    --err-bg: #fde8e6;
+    --bar-track: #e5e7eb;
+    --bar-good: #107c41;
+    --bar-warn: #d99a00;
+    --bar-hot: #d13438;
+    --btn-bg: #ffffff;
+    --btn-border: #c9ced6;
+  }
+  @media (prefers-color-scheme: dark) {
+    html:not([data-theme="light"]) {
+      color-scheme: dark;
+      --accent: #4da3ff;
+      --accent-soft: rgba(77, 163, 255, 0.16);
+      --bg: #21252b;
+      --bg2: #181a1f;
+      --subtle: #282c34;
+      --line: #333842;
+      --ink: #f3f4f6;
+      --sub: #9ca3af;
+      --ok: #22c55e;
+      --ok-bg: rgba(34, 197, 94, 0.16);
+      --warn: #f59e0b;
+      --warn-bg: rgba(245, 158, 11, 0.16);
+      --err: #ef4444;
+      --err-bg: rgba(239, 68, 68, 0.18);
+      --bar-track: #323843;
+      --bar-good: #22c55e;
+      --bar-warn: #f59e0b;
+      --bar-hot: #ef4444;
+      --btn-bg: #282c34;
+      --btn-border: #3e4451;
+    }
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --accent: #4da3ff;
+    --accent-soft: rgba(77, 163, 255, 0.16);
+    --bg: #21252b;
+    --bg2: #181a1f;
+    --subtle: #282c34;
+    --line: #333842;
+    --ink: #f3f4f6;
+    --sub: #9ca3af;
+    --ok: #22c55e;
+    --ok-bg: rgba(34, 197, 94, 0.16);
+    --warn: #f59e0b;
+    --warn-bg: rgba(245, 158, 11, 0.16);
+    --err: #ef4444;
+    --err-bg: rgba(239, 68, 68, 0.18);
+    --bar-track: #323843;
+    --bar-good: #22c55e;
+    --bar-warn: #f59e0b;
+    --bar-hot: #ef4444;
+    --btn-bg: #282c34;
+    --btn-border: #3e4451;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg2);
+    color: var(--ink);
+    font: 14.5px/1.45 "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    user-select: none;
+    overflow: hidden;
+  }
+  .flyout-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--bg2);
+    overflow: hidden;
+    position: relative;
+  }
+  .flyout-shell.maximized {
+    border-radius: 0;
+    border: none;
+  }
+  .flyout-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 0 0 14px;
+    min-height: 40px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+    gap: 8px;
+    flex-shrink: 0;
+    -webkit-app-region: drag;
+    cursor: grab;
+  }
+  .flyout-title {
+    font-weight: 700;
+    font-size: 0.98rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px 0;
+  }
+  .head-right {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    -webkit-app-region: no-drag;
+    flex-shrink: 0;
+    align-self: stretch;
+  }
+  .flyout-mode {
+    font-size: 0.76rem;
+    color: var(--sub);
+    background: var(--subtle);
+    border: 1px solid var(--line);
+    padding: 2px 9px;
+    border-radius: 99px;
+    white-space: nowrap;
+    align-self: center;
+    margin-right: 4px;
+  }
+  .win-controls {
+    display: flex;
+    align-items: stretch;
+    -webkit-app-region: no-drag;
+  }
+  .win-btn {
+    -webkit-app-region: no-drag;
+    border: none;
+    background: transparent;
+    color: var(--sub);
+    width: 38px;
+    min-height: 40px;
+    padding: 0;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .win-btn svg {
+    width: 15px;
+    height: 15px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+  }
+  .win-btn:hover {
+    background: rgba(148, 163, 184, 0.16);
+    color: var(--ink);
+  }
+  .win-btn.pinned {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .win-btn.pinned svg {
+    fill: currentColor;
+  }
+  .win-btn.close-btn:hover {
+    background: #e81123;
+    color: #ffffff;
+  }
+  .win-sep {
+    width: 1px;
+    height: 18px;
+    background: var(--line);
+    align-self: center;
+    margin: 0 2px;
+  }
+  .flyout-body {
+    flex: 1;
+    padding: 12px 14px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+  }
+  .warn-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 11px;
+    border-radius: 6px;
+    background: var(--warn-bg);
+    border: 1px solid var(--warn);
+    color: var(--warn);
+    font-size: 0.85rem;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .prov-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+    --row-scale: 1;
+    --bar-scale: 1;
+    --pad-scale: 1;
+    --head-scale: 1;
+  }
+  .flyout-body.fill-height .prov-group {
+    flex: var(--prov-weight, 1) 0 var(--base-group-h, auto);
+    min-height: var(--base-group-h, auto);
+  }
+  .prov-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 0 2px;
+    flex-shrink: 0;
+  }
+  .prov-name {
+    font-weight: 600;
+    font-size: calc(0.78rem * var(--head-scale, 1));
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--sub);
+  }
+  .prov-how {
+    font-size: calc(0.74rem * var(--head-scale, 1));
+    color: var(--sub);
+    text-align: right;
+  }
+  .acct-list {
+    flex: 1 0 auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+    align-items: stretch;
+    gap: 8px;
+  }
+  .acct-row {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: max-content;
+    height: 100%;
+    position: relative;
+  }
+  .acct-row.active {
+    border-color: var(--accent);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .acct-head {
+    padding: calc(10px * var(--pad-scale, 1)) calc(12px * var(--pad-scale, 1)) calc(9px * var(--pad-scale, 1));
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  .acct-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+  }
+  .acct-id {
+    display: flex;
+    align-items: center;
+    gap: calc(7px * var(--row-scale, 1));
+    min-width: 0;
+    font-weight: 700;
+    font-size: calc(0.94rem * var(--row-scale, 1));
+    line-height: 1.3;
+  }
+  .acct-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .acct-label.has-tip {
+    cursor: default;
+    border-bottom: 1px dotted transparent;
+    transition: border-color 0.12s ease;
+  }
+  .acct-label.has-tip:hover {
+    border-bottom-color: var(--sub);
+  }
+  .acct-hover-tip {
+    position: fixed;
+    z-index: 100;
+    background: var(--bg);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 5px 9px;
+    font-size: 0.76rem;
+    font-weight: 500;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
+    pointer-events: none;
+    white-space: nowrap;
+    display: none;
+  }
+  .acct-hover-tip.show,
+  .acct-hover-tip.visible {
+    display: block;
+  }
+  .acct-rank {
+    font-size: calc(0.74rem * var(--row-scale, 1));
+    color: var(--sub);
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .dot {
+    width: calc(12px * var(--row-scale, 1));
+    height: calc(12px * var(--row-scale, 1));
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--sub);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+  }
+  .acct-badges {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .badge {
+    font-size: calc(0.72rem * var(--row-scale, 1));
+    font-weight: 700;
+    padding: calc(2px * var(--pad-scale, 1)) calc(9px * var(--pad-scale, 1));
+    border-radius: 99px;
+    letter-spacing: 0.03em;
+  }
+  .badge.current {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .badge.warn {
+    background: var(--warn-bg);
+    color: var(--warn);
+  }
+  .badge.err {
+    background: var(--err-bg);
+    color: var(--err);
+  }
+  .badge.note {
+    background: var(--subtle);
+    color: var(--sub);
+    border: 1px solid var(--line);
+    font-weight: 550;
+  }
+  .meters {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    flex: 1 0 auto;
+    padding: calc(8px * var(--pad-scale, 1)) calc(12px * var(--pad-scale, 1));
+    background: var(--subtle);
+    border-top: 1px solid var(--line);
+    border-radius: 0 0 7px 7px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-evenly;
+  }
+  .meter + .meter {
+    margin-top: calc(8px * var(--pad-scale, 1));
+    padding-top: calc(6px * var(--pad-scale, 1));
+    border-top: 1px dashed var(--line);
+  }
+  .meter-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: calc(0.76rem * var(--row-scale, 1));
+    margin-bottom: calc(4px * var(--pad-scale, 1));
+  }
+  .meter-left {
+    font-weight: 600;
+    color: var(--accent);
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+  .meter-left.good { color: var(--bar-good); }
+  .meter-left.warn { color: var(--bar-warn); }
+  .meter-left.hot { color: var(--bar-hot); }
+  .meter-name {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .meter-right {
+    font-size: calc(0.72rem * var(--row-scale, 1));
+    color: var(--sub);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bar {
+    width: 100%;
+    height: calc(6px * var(--bar-scale, 1));
+    border-radius: calc(3px * var(--bar-scale, 1));
+    background: var(--bar-track);
+    overflow: hidden;
+  }
+  .bar > i {
+    display: block;
+    height: 100%;
+    border-radius: calc(3px * var(--bar-scale, 1));
+    background: var(--bar-good);
+    transition: width 0.25s ease;
+  }
+  .bar.warn > i { background: var(--bar-warn); }
+  .bar.hot > i { background: var(--bar-hot); }
+  .prov-resizer {
+    height: 10px;
+    margin: 1px 0 -3px;
+    cursor: ns-resize;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .flyout-body.can-resize-rows .prov-resizer {
+    display: flex;
+  }
+  .prov-resizer::after {
+    content: '';
+    width: 44px;
+    height: 3px;
+    border-radius: 99px;
+    background: var(--line);
+    opacity: 0.7;
+    transition: width 0.14s ease, background 0.14s ease, opacity 0.14s ease, height 0.14s ease;
+  }
+  .prov-resizer:hover::after,
+  .prov-resizer.dragging::after {
+    width: 76px;
+    height: 4px;
+    background: var(--accent);
+    opacity: 1;
+  }
+  .flyout-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--bg);
+    border-top: 1px solid var(--line);
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .readonly-note {
+    font-size: 0.8rem;
+    color: var(--sub);
+  }
+  .foot-btns {
+    display: flex;
+    gap: 7px;
+  }
+  .btn {
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 5px 11px;
+    border-radius: 6px;
+    border: 1px solid var(--btn-border);
+    background: var(--btn-bg);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn.primary:hover {
+    color: #fff;
+    filter: brightness(1.08);
+  }
+</style>
+</head>
+<body>
+<div class="flyout-shell" id="shell">
+  <div class="flyout-head" id="flyoutHead" title="Drag to move to any monitor · Double-click to maximize">
+    <div class="flyout-title">
+      <span>Usage Monitor</span>
+    </div>
+    <div class="head-right">
+      <div class="flyout-mode" id="watchBadge">Failover</div>
+      <div class="win-controls">
+        <button class="win-btn" id="btnDock" title="Dock back above system tray" aria-label="Dock back above system tray" style="display:none">
+          <svg viewBox="0 0 16 16"><path d="M8 3v7m0 0L5 7m3 3 3-3M3 13h10"/></svg>
+        </button>
+        <button class="win-btn" id="btnRefresh" title="Refresh usage now" aria-label="Refresh usage now">
+          <svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.4-3.66M13.5 2.5v2.6h-2.6"/></svg>
+        </button>
+        <button class="win-btn" id="btnPin" title="Pin window open (stays open when clicking elsewhere)" aria-label="Pin window open">
+          <svg viewBox="0 0 16 16"><path d="M9.5 2.5 13.5 6.5 12 8 9.5 6.5 6.5 9.5 8 12 6.5 13.5 4 11 1.5 13.5 2.5 12.5 5 10 2.5 7.5 4 6 6.5 7.5 9.5 4.5 8 2z"/></svg>
+        </button>
+        <div class="win-sep"></div>
+        <button class="win-btn" id="btnMin" title="Minimize (hide to tray)" aria-label="Minimize">
+          <svg viewBox="0 0 16 16"><path d="M3.5 8h9"/></svg>
+        </button>
+        <button class="win-btn" id="btnMax" title="Maximize / Restore full screen" aria-label="Maximize">
+          <svg id="maxIcon" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg>
+        </button>
+        <button class="win-btn close-btn" id="btnClose" title="Close Usage Monitor" aria-label="Close">
+          <svg viewBox="0 0 16 16"><path d="M4 4l8 8m0-8-8 8"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="flyout-body" id="body"></div>
+  <div class="flyout-foot">
+    <div class="readonly-note" id="footNote">Read-only &middot; live auto-refresh</div>
+    <div class="foot-btns">
+      <button class="btn" id="btnLanes">Lanes</button>
+      <button class="btn primary" id="btnOpen">Open Switchboard</button>
+    </div>
+  </div>
+</div>
+<div class="acct-hover-tip" id="acctHoverTip"></div>
+<script>
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+const ROW_WEIGHTS_KEY = 'sb:flyoutRowWeights';
+let memoryRowWeights = {};
+
+function loadRowWeights() {
+  try {
+    if (typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function') {
+      const raw = localStorage.getItem(ROW_WEIGHTS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    }
+  } catch {}
+  return { ...memoryRowWeights };
+}
+
+function saveRowWeights(weights) {
+  memoryRowWeights = { ...(weights || {}) };
+  try {
+    if (typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
+      localStorage.setItem(ROW_WEIGHTS_KEY, JSON.stringify(memoryRowWeights));
+    }
+  } catch {}
+}
+
+function resetRowWeights() {
+  memoryRowWeights = {};
+  try {
+    if (typeof localStorage !== 'undefined' && typeof localStorage.removeItem === 'function') {
+      localStorage.removeItem(ROW_WEIGHTS_KEY);
+    }
+  } catch {}
+  const groups = Array.from(document.querySelectorAll('.prov-group'));
+  for (const g of groups) {
+    const defW = Number(g.dataset.defaultWeight) || 1;
+    g.style.setProperty('--prov-weight', String(defW));
+  }
+  requestAnimationFrame(updateRowScales);
+}
+
+function defaultRowWeight(maxMeters) {
+  const m = Math.max(1, Number(maxMeters) || 1);
+  return Number((1 + (m - 1) * 0.28).toFixed(2));
+}
+
+function naturalGroupMetrics(g) {
+  const metersCount = Math.max(1, Number(g.dataset.meters) || 1);
+  const baseCardH = 44 + metersCount * 42;
+  const listEl = g.querySelector('.acct-list');
+  const cards = g.querySelectorAll('.acct-row');
+  const cardCount = Math.max(1, cards.length);
+  const listW = listEl?.clientWidth || g.clientWidth || 440;
+  const cols = Math.max(1, Math.min(cardCount, Math.floor((listW + 8) / 328)));
+  const gridRows = Math.max(1, Math.ceil(cardCount / cols));
+  const baseListH = gridRows * baseCardH + Math.max(0, gridRows - 1) * 8;
+  const baseGroupH = 26 + baseListH;
+  return { metersCount, baseCardH, gridRows, baseListH, baseGroupH, listEl, firstCard: cards[0] };
+}
+
+function updateRowScales() {
+  const body = document.getElementById('body');
+  const shell = document.getElementById('shell');
+  const groups = Array.from(document.querySelectorAll('.prov-group'));
+  if (!body || !groups.length) return;
+
+  const metrics = groups.map((g) => ({ g, ...naturalGroupMetrics(g) }));
+  for (const { g, baseGroupH } of metrics) {
+    g.style.setProperty('--base-group-h', `${baseGroupH}px`);
+  }
+  const resizersH = groups.length * 8;
+  const totalNaturalH = metrics.reduce((sum, m) => sum + m.baseGroupH, 0) + Math.max(0, groups.length - 1) * 8 + resizersH + 24;
+  const isMax = Boolean(shell?.classList.contains('maximized'));
+  const hasSurplusSpace = isMax || (body.clientHeight > totalNaturalH + 20);
+
+  if (!hasSurplusSpace) {
+    body.classList.remove('fill-height', 'can-resize-rows');
+    for (const { g } of metrics) {
+      g.style.setProperty('--row-scale', '1');
+      g.style.setProperty('--bar-scale', '1');
+      g.style.setProperty('--pad-scale', '1');
+      g.style.setProperty('--head-scale', '1');
+    }
+    return;
+  }
+
+  body.classList.add('fill-height', 'can-resize-rows');
+  for (const { g, baseCardH, gridRows, listEl, firstCard } of metrics) {
+    const actualListH = listEl?.clientHeight || (g.clientHeight - 28);
+    const perRowCardH = Math.max(baseCardH, (actualListH - Math.max(0, gridRows - 1) * 8) / gridRows);
+    const cardW = firstCard?.clientWidth || g.clientWidth || 360;
+    const ratio = Math.max(1, perRowCardH / baseCardH);
+    const maxScaleByWidth = Math.max(1, Math.min(1.9, cardW / 305));
+    const rowScale = Math.max(1, Math.min(maxScaleByWidth, 1 + Math.max(0, ratio - 1) * 0.48));
+    const barScale = Math.max(1, Math.min(2.7, 1 + Math.max(0, ratio - 1) * 0.72));
+    const padScale = Math.max(1, Math.min(1.85, 1 + Math.max(0, ratio - 1) * 0.42));
+    const headScale = Math.max(1, Math.min(1.35, 1 + Math.max(0, ratio - 1) * 0.22));
+    g.style.setProperty('--row-scale', rowScale.toFixed(3));
+    g.style.setProperty('--bar-scale', barScale.toFixed(3));
+    g.style.setProperty('--pad-scale', padScale.toFixed(3));
+    g.style.setProperty('--head-scale', headScale.toFixed(3));
+  }
+}
+
+function attachRowResizer(group, getGroups) {
+  const handle = document.createElement('div');
+  handle.className = 'prov-resizer';
+  handle.title = 'Drag up or down to resize this provider row \u00b7 Double-click to reset all row heights';
+  handle.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resetRowWeights();
+  });
+  handle.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const groups = getGroups();
+    const idx = groups.indexOf(group);
+    if (idx < 0 || groups.length < 1) return;
+    handle.classList.add('dragging');
+    const startY = e.clientY;
+    const minHeights = groups.map((g) => naturalGroupMetrics(g).baseGroupH);
+    const startHeights = groups.map((g, i) => Math.max(minHeights[i], g.getBoundingClientRect().height));
+    const totalSurplus = startHeights.reduce((sum, h, i) => sum + Math.max(0, h - minHeights[i]), 0);
+    if (totalSurplus < 8) {
+      handle.classList.remove('dragging');
+      return;
+    }
+
+    const onMove = (ev) => {
+      const rawDelta = ev.clientY - startY;
+      const nextHeights = [...startHeights];
+      const desiredTarget = Math.max(minHeights[idx], startHeights[idx] + rawDelta);
+      let neededFromOthers = desiredTarget - startHeights[idx];
+
+      // First absorb from rows below idx, then from rows above idx so total height stays constant
+      // and no row ever shrinks below its full natural card height (minHeights).
+      const order = [];
+      for (let i = idx + 1; i < groups.length; i++) order.push(i);
+      for (let i = idx - 1; i >= 0; i--) order.push(i);
+
+      for (const otherIdx of order) {
+        if (Math.abs(neededFromOthers) < 0.5) break;
+        const avail = Math.max(0, nextHeights[otherIdx] - minHeights[otherIdx]);
+        if (neededFromOthers > 0) {
+          const take = Math.min(avail, neededFromOthers);
+          nextHeights[otherIdx] -= take;
+          neededFromOthers -= take;
+        } else {
+          const give = -neededFromOthers;
+          nextHeights[otherIdx] += give;
+          neededFromOthers = 0;
+        }
+      }
+      nextHeights[idx] = desiredTarget - neededFromOthers;
+
+      const weights = loadRowWeights();
+      groups.forEach((g, i) => {
+        const extra = Math.max(0, nextHeights[i] - minHeights[i]);
+        const w = totalSurplus > 0 ? Math.max(0.05, (extra / totalSurplus) * groups.length) : 1;
+        g.style.setProperty('--prov-weight', w.toFixed(3));
+        if (g.dataset.provKey) {
+          weights[g.dataset.provKey] = Number(w.toFixed(3));
+        }
+      });
+      saveRowWeights(weights);
+      updateRowScales();
+    };
+
+    const onUp = () => {
+      handle.classList.remove('dragging');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      updateRowScales();
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+  group.appendChild(handle);
+}
+
+function hideAccountHover() {
+  const tip = document.getElementById('acctHoverTip');
+  if (tip) tip.classList.remove('visible');
+}
+
+function bindAccountHover(el, text) {
+  if (!el || !text) return;
+  el.classList.add('has-tip');
+  el.title = text;
+  el.addEventListener('mouseenter', () => {
+    const tip = document.getElementById('acctHoverTip');
+    if (!tip) return;
+    tip.textContent = text;
+    tip.classList.add('visible');
+    const rect = el.getBoundingClientRect();
+    const tipRect = tip.getBoundingClientRect();
+    let left = Math.max(8, Math.min(rect.left, window.innerWidth - tipRect.width - 8));
+    let top = rect.bottom + 6;
+    if (top + tipRect.height > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - tipRect.height - 6);
+    }
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+  });
+  el.addEventListener('mouseleave', hideAccountHover);
+}
+
+function applyFlyoutTheme(info) {
+  if (!info || typeof info !== 'object') return;
+  if (info.effectiveTheme === 'dark' || info.effectiveTheme === 'light') {
+    document.documentElement.setAttribute('data-theme', info.effectiveTheme);
+  }
+}
+
+if (typeof sb !== 'undefined') {
+  if (sb.getTheme) sb.getTheme().then(applyFlyoutTheme).catch(() => {});
+  if (sb.onThemeChanged) sb.onThemeChanged(applyFlyoutTheme);
+}
+
+function barTone(pct) {
+  if (pct >= 90) return 'hot';
+  if (pct >= 70) return 'warn';
+  return 'good';
+}
+
+function formatResetInfo(win, now = Date.now()) {
+  if (win?.resetsAt) {
+    const resetMs = Number(win.resetsAt);
+    if (resetMs < now) {
+      return ' &middot; Reset passed';
+    }
+    const d = new Date(resetMs);
+    const isToday = d.toDateString() === new Date(now).toDateString();
+    const timeStr = isToday
+      ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+      : d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return ' &middot; Resets ' + esc(timeStr);
+  }
+  if (win?.resetLabel) {
+    return ' &middot; Resets ' + esc(win.resetLabel);
+  }
+  return '';
+}
+
+function renderMeter(title, win, now = Date.now()) {
+  const wrap = document.createElement('div');
+  wrap.className = 'meter';
+  if (!win || win.usedPercent == null) {
+    wrap.innerHTML = `<div class="meter-top"><span class="meter-left"><span class="meter-name">${esc(title)}:</span> &mdash;</span><span class="meter-right">No percentage reported</span></div><div class="bar"><i style="width:0%"></i></div>`;
+    return wrap;
+  }
+  const rawPct = Math.round(Number(win.usedPercent) || 0);
+  const pct = Math.max(0, Math.min(100, rawPct));
+  const leftPct = Math.max(0, 100 - rawPct);
+  const tone = barTone(pct);
+  const reached = rawPct >= 100 ? ' &middot; limit reached' : '';
+  const resetInfo = formatResetInfo(win, now);
+  wrap.innerHTML = `
+    <div class="meter-top">
+      <span class="meter-left ${tone}"><span class="meter-name">${esc(title)}:</span> <strong>${pct}%</strong> used</span>
+      <span class="meter-right">${leftPct}% left${reached}${resetInfo}</span>
+    </div>
+    <div class="bar ${tone}"><i style="width:${pct}%"></i></div>
+  `;
+  return wrap;
+}
+
+async function paint() {
+  if (typeof sb === 'undefined' || !sb?.trayFlyoutState) return;
+  const model = await sb.trayFlyoutState();
+  const now = Date.now();
+  hideAccountHover();
+  applyFlyoutTheme(model);
+  const shell = document.getElementById('shell');
+  if (shell) {
+    shell.classList.toggle('maximized', Boolean(model.maximized));
+  }
+  const badge = document.getElementById('watchBadge');
+  badge.textContent = `Watch: ${model.watchMode?.label ?? 'Do nothing'}`;
+
+  const pinBtn = document.getElementById('btnPin');
+  if (pinBtn) {
+    const isPinned = Boolean(model.pinned);
+    pinBtn.classList.toggle('pinned', isPinned);
+    pinBtn.setAttribute('aria-pressed', isPinned ? 'true' : 'false');
+    pinBtn.title = isPinned
+      ? 'Pinned open \u2014 stays open when clicking elsewhere, and remembers this when closed (click to unpin)'
+      : 'Pin window open (stays open when clicking elsewhere)';
+  }
+  const maxBtn = document.getElementById('btnMax');
+  const maxIcon = document.getElementById('maxIcon');
+  if (maxBtn && maxIcon) {
+    const isMax = Boolean(model.maximized);
+    maxBtn.title = isMax ? 'Restore window size' : 'Maximize full screen';
+    maxIcon.innerHTML = isMax
+      ? '<path d="M5.5 3.5h7v7"/><rect x="3.5" y="5.5" width="7" height="7" rx="1"/>'
+      : '<rect x="3.5" y="3.5" width="9" height="9" rx="1"/>';
+  }
+  const dockBtn = document.getElementById('btnDock');
+  if (dockBtn) {
+    dockBtn.style.display = (model.userMoved || model.userSized || model.maximized) ? 'inline-flex' : 'none';
+  }
+  const footNote = document.getElementById('footNote');
+  if (footNote) {
+    const timeStr = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    footNote.innerHTML = `Read-only &middot; updated ${esc(timeStr)}`;
+  }
+
+  const body = document.getElementById('body');
+  body.innerHTML = '';
+  const savedWeights = loadRowWeights();
+  const renderedGroups = [];
+
+  for (const w of (model.warnings ?? [])) {
+    const wb = document.createElement('div');
+    wb.className = 'warn-banner';
+    wb.textContent = w.label;
+    wb.addEventListener('click', () => sb.flyoutAction(w.action || 'open:accounts'));
+    body.appendChild(wb);
+  }
+
+  for (const p of (model.providers ?? [])) {
+    const group = document.createElement('div');
+    group.className = 'prov-group';
+    const provKey = String(p.id || p.name || '').toLowerCase();
+    group.dataset.provKey = provKey;
+    const head = document.createElement('div');
+    head.className = 'prov-head';
+    head.innerHTML = `<span class="prov-name">${esc(p.name)}</span><span class="prov-how">${esc(p.summary || p.how || '')}</span>`;
+    group.appendChild(head);
+
+    const list = document.createElement('div');
+    list.className = 'acct-list';
+    let maxMeters = 1;
+    for (const a of (p.accounts ?? [])) {
+      const row = document.createElement('div');
+      row.className = 'acct-row' + (a.active ? ' active' : '');
+      if (a.color) {
+        row.style.boxShadow = a.active
+          ? `inset 3px 0 0 var(--accent), inset 0 3px 0 ${a.color}`
+          : `inset 0 3px 0 ${a.color}`;
+      }
+
+      const acctHead = document.createElement('div');
+      acctHead.className = 'acct-head';
+      const top = document.createElement('div');
+      top.className = 'acct-top';
+
+      const left = document.createElement('div');
+      left.className = 'acct-id';
+
+      const lbl = document.createElement('span');
+      lbl.className = 'acct-label';
+      lbl.textContent = a.label;
+      if (a.person) {
+        bindAccountHover(lbl, a.person);
+      }
+      left.appendChild(lbl);
+
+      if (a.color) {
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        dot.style.background = a.color;
+        left.appendChild(dot);
+      }
+
+      if (a.badge === 'CURRENT') {
+        const b = document.createElement('span');
+        b.className = 'badge current';
+        b.textContent = 'CURRENT';
+        left.appendChild(b);
+      } else if (a.badge === 'OUT OF QUOTA') {
+        const b = document.createElement('span');
+        b.className = 'badge err';
+        b.textContent = 'OUT OF QUOTA';
+        left.appendChild(b);
+      } else if (a.badge === 'NEARLY OUT') {
+        const b = document.createElement('span');
+        b.className = 'badge warn';
+        b.textContent = 'NEARLY OUT';
+        left.appendChild(b);
+      }
+
+      top.appendChild(left);
+
+      const badges = document.createElement('div');
+      badges.className = 'acct-badges';
+      if (a.note && a.note !== 'nearly out' && !a.note.startsWith('out')) {
+        const n = document.createElement('span');
+        n.className = 'badge note';
+        n.textContent = a.note;
+        badges.appendChild(n);
+      }
+      const rank = document.createElement('span');
+      rank.className = 'acct-rank';
+      rank.textContent = `#${a.rank}`;
+      rank.title = `Load / failover order #${a.rank}`;
+      badges.appendChild(rank);
+      top.appendChild(badges);
+      acctHead.appendChild(top);
+      row.appendChild(acctHead);
+
+      const winList = Array.isArray(a.windows) && a.windows.length
+        ? a.windows
+        : [
+            a.session ? { label: '5 hours', ...a.session } : null,
+            a.week ? { label: 'Week', ...a.week } : null,
+          ].filter(Boolean);
+      if (winList.length) {
+        maxMeters = Math.max(maxMeters, winList.length);
+        const meters = document.createElement('div');
+        meters.className = 'meters';
+        for (const w of winList) {
+          meters.appendChild(renderMeter(w.fullLabel || w.label || 'Usage', w, now));
+        }
+        row.appendChild(meters);
+      }
+      list.appendChild(row);
+    }
+    group.dataset.meters = String(maxMeters);
+    const defWeight = defaultRowWeight(maxMeters);
+    group.dataset.defaultWeight = String(defWeight);
+    const weight = Number(savedWeights[provKey]) > 0 ? Number(savedWeights[provKey]) : defWeight;
+    group.style.setProperty('--prov-weight', String(weight));
+
+    group.appendChild(list);
+    attachRowResizer(group, () => renderedGroups);
+    renderedGroups.push(group);
+    body.appendChild(group);
+  }
+
+  if (model.antigravity) {
+    const ag = model.antigravity;
+    const group = document.createElement('div');
+    group.className = 'prov-group';
+    const provKey = 'antigravity';
+    group.dataset.provKey = provKey;
+    const head = document.createElement('div');
+    head.className = 'prov-head';
+    head.innerHTML = `<span class="prov-name">Antigravity (Google)</span><span class="prov-how">Vendor login &middot; one login per machine</span>`;
+    group.appendChild(head);
+    const list = document.createElement('div');
+    list.className = 'acct-list';
+    const card = document.createElement('div');
+    card.className = 'acct-row';
+    const acctHead = document.createElement('div');
+    acctHead.className = 'acct-head';
+    const top = document.createElement('div');
+    top.className = 'acct-top';
+    const left = document.createElement('div');
+    left.className = 'acct-id';
+    const lbl = document.createElement('span');
+    lbl.className = 'acct-label';
+    lbl.textContent = 'Antigravity';
+    const personParts = [ag.who, ag.credits].filter(Boolean).join(' \u00b7 ').replace(/,\s*/g, ' \u00b7 ');
+    if (personParts) {
+      bindAccountHover(lbl, personParts);
+    }
+    left.appendChild(lbl);
+    top.appendChild(left);
+    acctHead.appendChild(top);
+    card.appendChild(acctHead);
+    const agMetersCount = ag.windows?.length || 1;
+    if (ag.windows?.length) {
+      const meters = document.createElement('div');
+      meters.className = 'meters';
+      for (const w of ag.windows) {
+        meters.appendChild(renderMeter(w.fullLabel || w.label, w, now));
+      }
+      card.appendChild(meters);
+    }
+    group.dataset.meters = String(agMetersCount);
+    const defWeight = defaultRowWeight(agMetersCount);
+    group.dataset.defaultWeight = String(defWeight);
+    const weight = Number(savedWeights[provKey]) > 0 ? Number(savedWeights[provKey]) : defWeight;
+    group.style.setProperty('--prov-weight', String(weight));
+
+    list.appendChild(card);
+    group.appendChild(list);
+    attachRowResizer(group, () => renderedGroups);
+    renderedGroups.push(group);
+    body.appendChild(group);
+  }
+
+  if (sb.flyoutResize && !model.maximized && !model.userSized && !model.userMoved) {
+    body.classList.remove('fill-height', 'can-resize-rows');
+    body.style.flex = '0 0 auto';
+    const headEl = document.querySelector('.flyout-head');
+    const footEl = document.querySelector('.flyout-foot');
+    const naturalBodyH = body?.scrollHeight || 120;
+    body.style.flex = '';
+    const desired = (headEl?.offsetHeight || 42) + naturalBodyH + (footEl?.offsetHeight || 42) + 4;
+    sb.flyoutResize(desired);
+  }
+  requestAnimationFrame(updateRowScales);
+}
+
+if (typeof ResizeObserver !== 'undefined') {
+  const ro = new ResizeObserver(() => updateRowScales());
+  const bodyEl = document.getElementById('body');
+  if (bodyEl) ro.observe(bodyEl);
+}
+window.addEventListener('resize', () => updateRowScales());
+
+document.getElementById('btnOpen').addEventListener('click', () => sb?.flyoutAction('open:accounts'));
+document.getElementById('btnLanes').addEventListener('click', () => sb?.flyoutAction('open:lanes'));
+document.getElementById('btnPin').addEventListener('click', () => sb?.flyoutAction('toggle-pin'));
+document.getElementById('btnMin').addEventListener('click', () => sb?.flyoutAction('minimize'));
+document.getElementById('btnMax').addEventListener('click', () => sb?.flyoutAction('toggle-maximize'));
+document.getElementById('btnClose').addEventListener('click', () => sb?.flyoutAction('close'));
+document.getElementById('btnDock').addEventListener('click', () => sb?.flyoutAction('dock-tray'));
+document.getElementById('flyoutHead').addEventListener('dblclick', (e) => {
+  if (e.target.closest('.win-controls, button')) return;
+  sb?.flyoutAction('toggle-maximize');
+});
+document.getElementById('btnRefresh').addEventListener('click', async () => {
+  const btn = document.getElementById('btnRefresh');
+  if (btn) btn.disabled = true;
+  try {
+    await sb?.flyoutAction('refresh');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+});
+if (typeof sb !== 'undefined' && sb?.onRefresh) sb.onRefresh(() => paint());
+setInterval(() => paint(), 60 * 1000);
+paint();
+</script>
+</body>
+</html>

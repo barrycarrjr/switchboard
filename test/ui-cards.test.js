@@ -387,9 +387,10 @@ test('the section summary says how the account in use is picked when the watch p
 // later, beside "picked by soonest weekly reset", and said nothing about why.
 test('an account passed over for being near its limit is badged, and the one in use stays CURRENT', () => {
   const { accountBadge } = load(['accountBadge'], ['accountBadge']);
-  const p = { activeAccountId: 'main', nearlyOutIds: ['third'] };
+  const p = { activeAccountId: 'main', nearlyOutIds: ['third'], outIds: ['fourth'] };
   assert.equal(accountBadge(p, { id: 'main' }), 'CURRENT');
   assert.equal(accountBadge(p, { id: 'third' }), 'NEARLY OUT');
+  assert.equal(accountBadge(p, { id: 'fourth' }), 'OUT OF QUOTA');
   assert.equal(accountBadge(p, { id: 'second' }), null);
   assert.equal(accountBadge({ activeAccountId: 'main' }, { id: 'third' }), null, 'nothing is marked where the watch is not picking');
   assert.match(HTML, /badge: accountBadge\(p, a\),/, 'and the card uses it');
