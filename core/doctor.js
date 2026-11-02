@@ -457,6 +457,15 @@ export async function runChecks({
     } catch { /* no config.toml is fine */ }
   }
 
+  // The button every lane-token finding below carries: it opens the same `lane-token`
+  // command in a window (src/main.js), so nobody has to copy a lane id into a terminal.
+  const mintFix = (laneId, label) => ({
+    action: 'mint-lane-token',
+    args: { laneId, label },
+    label: 'Get new token',
+    confirm: `Get a new setup token for ${label}? A window opens and your browser asks you to approve. Then copy the token the window prints and paste it back into that window.`,
+  });
+
   // 5. A lane token the vendor stopped honouring. Nothing is down for terminals on this
   //    machine: they use the folder sign-in. The lease broker and automation are: a
   //    caller inside WSL or on another machine gets no token from the lane and cannot
@@ -471,6 +480,7 @@ export async function runChecks({
       level: 'warn',
       title: `Lane token for ${label} was revoked or expired`,
       detail: `Terminals on this machine still use lane ${laneId}'s folder sign-in, but the lease broker and automation get no token from it any more, so a caller inside WSL or on another machine cannot use the lane. Mint a new one with: switchboard lane-token ${laneId}`,
+      fix: mintFix(laneId, label),
     });
   }
 
@@ -486,6 +496,7 @@ export async function runChecks({
       level: 'warn',
       title: `Lane token for ${label} cannot be read on this machine`,
       detail: `It was encrypted under a different user name, computer name or home folder, so the lease broker and automation get no token from lane ${laneId}; terminals on this machine still use its folder sign-in. Mint a new one with: switchboard lane-token ${laneId}`,
+      fix: mintFix(laneId, label),
     });
   }
 
@@ -503,6 +514,7 @@ export async function runChecks({
       level: 'warn',
       title: `Lane ${lane.id} (${label}) has no setup token`,
       detail: `The lease broker and automation can only use a Claude lane that holds a setup token; terminals on this machine are not affected. Mint one with: switchboard lane-token ${lane.id} (or for every lane that lacks one: switchboard lane-token --missing)`,
+      fix: mintFix(lane.id, label),
     });
   }
 
@@ -523,6 +535,7 @@ export async function runChecks({
       level: 'warn',
       title: `Lane token for ${account.label} no longer matches the folder sign-in`,
       detail: `Lane ${laneId}'s folder is signed in as a different account than the token was minted for (or its sign-in identity is unreadable, or the entry carries no identity stamp), so the lease broker and automation stop receiving the token rather than billing the wrong account; terminals on this machine still use the folder sign-in. Sign the folder back in, or mint a fresh token with: switchboard lane-token ${laneId}`,
+      fix: mintFix(laneId, account.label),
     });
   }
 

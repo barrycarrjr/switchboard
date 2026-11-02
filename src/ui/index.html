@@ -2589,7 +2589,7 @@ async function renderGateway() {
       textWrap.appendChild(el('div', 'gw-route-title', `${esc(r.label)}: ${esc(r.primary.accountLabel)}${esc(pctNote)}`));
       const missingCount = r.needsSetupTokenLanes?.length || 0;
       const tokenNote = key === 'claude' && missingCount > 0
-        ? ` (${missingCount} lane needs switchboard lane-token)`
+        ? ` (${missingCount} lane needs a new token: Health, Get new token)`
         : '';
       const standbyText = r.standbyCount > 0
         ? `${r.pathHint} -> +${r.standbyCount} standby in Lanes${tokenNote}`

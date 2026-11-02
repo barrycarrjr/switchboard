@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { signinTerminal } from '../core/signin.js';
+import { signinTerminal, laneTokenTerminal } from '../core/signin.js';
 import { accountScopedEnv, configuredClaudeCredentialOverrides } from '../core/accounts.js';
 
 test('the account folder is handed over as an environment variable, never as command text', () => {
@@ -93,4 +93,23 @@ test('a lane of every tool starts without API keys inherited from the calling sh
   }
   // Picks a project for a Code Assist sign-in; signs nothing in by itself.
   assert.equal(accountScopedEnv({ provider: 'gemini', home: 'C:\\p\\.gemini' }, shell).GOOGLE_CLOUD_PROJECT, 'my-project');
+});
+
+test('the Get new token window runs the app as Node on its own lane-token command, all values in the environment', () => {
+  const exePath = "C:\Program Files\Jo's apps\Switchboard.exe";
+  const cliPath = 'C:\Program Files\Switchboard\resources\app.asar\bin\cli.js';
+  const laneId = "lane-1'; calc; $x='";
+  const label = "Jo's %PATH% account";
+  const { command, env } = laneTokenTerminal({ laneId, label, exePath, cliPath });
+  assert.equal(command, 'Write-Host $env:SWITCHBOARD_TOKEN_BANNER -ForegroundColor Cyan; '
+    + "Start-Process -FilePath $env:SWITCHBOARD_EXE -ArgumentList ([char]34 + $env:SWITCHBOARD_CLI + [char]34), 'lane-token', $env:SWITCHBOARD_LANE_ID -NoNewWindow -Wait");
+  assert.equal(command.includes('"'), false, 'no double quote for cmd.exe to reinterpret');
+  assert.match(command, /-Wait$/, 'PowerShell does not wait for a windowed program started with &');
+  assert.equal(env.ELECTRON_RUN_AS_NODE, '1', 'the app executable runs cli.js as Node, as switchboard.cmd does');
+  assert.equal(env.SWITCHBOARD_EXE, exePath);
+  assert.equal(env.SWITCHBOARD_CLI, cliPath);
+  assert.equal(env.SWITCHBOARD_LANE_ID, laneId);
+  assert.match(env.SWITCHBOARD_TOKEN_BANNER, /Jo's %PATH% account/);
+  assert.match(env.SWITCHBOARD_TOKEN_BANNER, /browser never shows it/, 'says where the token appears, since the browser only says signed in');
+  for (const v of [exePath, cliPath, laneId, label, 'calc']) assert.equal(command.includes(v), false);
 });

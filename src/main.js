@@ -10,7 +10,7 @@ import { DESKTOP_STALE_MS, heldReadingIsNewer, inheritResetTimes, providerQuota,
 import { lastSharedQuota, readSharedQuota, shareAntigravityQuota, sharedQuotaKey, writeSharedQuota } from '../core/quota-cache.js';
 import { fetchAllProviderStatus } from '../core/provider-status.js';
 import { applyFix } from '../core/fixes.js';
-import { signinTerminal } from '../core/signin.js';
+import { signinTerminal, laneTokenTerminal } from '../core/signin.js';
 import { signOutAccount, signoutSupported } from '../core/signout.js';
 import { loadSettings, saveSettings, settingsFile, THEME_MODES } from '../core/settings.js';
 // import { registerVaultDriver } from '../core/vault.js';
@@ -951,7 +951,7 @@ async function runQuotaWatch() {
         const label = registry().accounts.find((a) => a.id === accountId)?.label ?? r.laneId;
         new Notification({
           title: 'Switchboard: lane token needs re-minting',
-          body: `The token for ${label} was revoked or expired; automation reverted to the folder sign-in. Mint a new one with: switchboard lane-token ${r.laneId}`,
+          body: `The token for ${label} was revoked or expired; automation reverted to the folder sign-in. Click here, then Get new token on the Health page (or run: switchboard lane-token ${r.laneId}).`,
         }).on('click', () => showWindow('health')).show();
       }
     }
@@ -1619,6 +1619,28 @@ ipcMain.handle('sb:register', (_e, candidate) => {
 });
 
 ipcMain.handle('sb:fix', (_e, action, args) => {
+  // Minting a lane token needs a person at a real console (see laneTokenTerminal), so this
+  // fix opens one rather than changing anything itself. The window's own lane-token command
+  // stores the token, and the settings watcher picks it up.
+  if (action === 'mint-lane-token') {
+    const laneId = String(args?.laneId ?? '');
+    if (!loadSettings().lanes?.some((l) => l.id === laneId && l.harness === 'claude')) {
+      throw new Error(`no Claude lane with id "${laneId}"`);
+    }
+    const { command, env: tokenEnv } = laneTokenTerminal({
+      laneId,
+      label: args?.label,
+      exePath: process.execPath,
+      cliPath: path.join(here, '..', 'bin', 'cli.js'),
+    });
+    spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', command], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+      env: { ...process.env, ...tokenEnv },
+    }).unref();
+    return { ok: true, did: 'A window has opened. Approve in the browser, then paste the token back into that window.' };
+  }
   const result = applyFix(action, args);
   refresh();
   return result;

@@ -158,6 +158,8 @@ test('a live token minted under a different login than the folder now carries wa
   assert.equal(c.level, 'warn');
   assert.match(c.title, /no longer matches the folder sign-in/);
   assert.match(c.detail, /switchboard lane-token lane-1/);
+  assert.equal(c.fix.action, 'mint-lane-token');
+  assert.equal(c.fix.args.laneId, 'lane-1');
   assert.equal(JSON.stringify(checks).includes('tok-a'), false);
   // A stamp matching the folder's login is not a finding. An entry with NO stamp is:
   // no legitimately minted entry lacks one, so it is out of band (hand-edited, copied,
@@ -742,6 +744,7 @@ test('a lane token this machine cannot decrypt warns once, and is not also repor
   assert.equal(c.level, 'warn');
   assert.equal(c.title, 'Lane token for Work cannot be read on this machine');
   assert.match(c.detail, /switchboard lane-token lane-1/);
+  assert.deepEqual(c.fix.args, { laneId: 'lane-1', label: 'Work' });
   assert.equal(checks.find((x) => x.id === 'lane-token-identity-lane-1'), undefined);
 });
 
@@ -800,6 +803,12 @@ test('a Claude lane that holds no setup token at all is a warning, with the one-
   assert.equal(checks.find((x) => x.id === 'lane-token-missing-lane-3'), undefined, 'only Claude lanes carry setup tokens');
   assert.equal(checks.find((x) => x.id === 'lane-token-missing-lane-4'), undefined, 'a dead token has its own line');
   assert.ok(checks.find((x) => x.id === 'lane-token-lane-4'));
+  // Both the missing and the dead token carry the Get new token button for their own lane.
+  assert.deepEqual(c.fix.args, { laneId: 'lane-1', label: 'Work' });
+  assert.equal(c.fix.action, 'mint-lane-token');
+  assert.equal(c.fix.label, 'Get new token');
+  assert.match(c.fix.confirm, /paste it back/);
+  assert.deepEqual(checks.find((x) => x.id === 'lane-token-lane-4').fix.args, { laneId: 'lane-4', label: 'Work' });
   // No doctor text may send a caller inside WSL to a "folder mode" it never had.
   assert.ok(!checks.some((x) => /folder mode/i.test(`${x.title} ${x.detail}`)));
 });
