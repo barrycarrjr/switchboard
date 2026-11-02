@@ -103,8 +103,12 @@ else
 fi
 
 outcome="ok"; rate_type=""; resets=""
-if [ -n "$capture" ] && grep -q '"type":"rate_limit_event"' "$capture"; then
-    line="$(grep '"type":"rate_limit_event"' "$capture" | tail -1)"
+# Only a "rejected" event means the account is out. Claude prints a rate_limit_event on ordinary
+# runs too ("allowed", "allowed_warning"), and reporting those cooled every lane down until its
+# weekly reset after one good run, so no lane could be leased (AI bridge, 2026-11-02).
+line=""
+[ -n "$capture" ] && line="$(grep '"type":"rate_limit_event"' "$capture" | grep '"status":"rejected"' | tail -1)"
+if [ -n "$line" ]; then
     rate_type="$(printf '%s' "$line" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(d).rate_limit_info.rateLimitType||""))}catch(e){}})')"
     resets="$(printf '%s' "$line" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(d).rate_limit_info.resetsAt||""))}catch(e){}})')"
     outcome="rate-limited"
