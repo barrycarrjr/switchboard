@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { readUserEnv, readMachineEnv } from './env.js';
 import { accountScopedEnv, CLAUDE_CREDENTIAL_ENV_VARS, CREDENTIAL_ENV_VARS, PROVIDERS } from './accounts.js';
 import { toEpochMs, readClaudeAccountIdentity } from './quota.js';
-import { laneTokenIdentityMatches } from './lane-tokens.js';
+import { laneTokenIdentityMatches, laneTokenState } from './lane-tokens.js';
 import { cliLaunch } from './cli-launch.js';
 
 const runFile = promisify(execFile);
@@ -457,10 +457,11 @@ export async function runChecks({
     } catch { /* no config.toml is fine */ }
   }
 
-  // 5. A lane token the vendor stopped honouring. Nothing is down: the lane still runs
-  //    on its folder sign-in, so automation quietly reverted to folder mode, and the
-  //    only fix is minting a fresh token. Saying so here is what turns "mystery slower
-  //    fleet" into a one-command repair.
+  // 5. A lane token the vendor stopped honouring. Nothing is down for terminals on this
+  //    machine: they use the folder sign-in. The lease broker and automation are: a
+  //    caller inside WSL or on another machine gets no token from the lane and cannot
+  //    run on it at all (it never had a folder to fall back to). The only fix is minting
+  //    a fresh token, and saying so here turns "mystery stalled fleet" into one command.
   for (const [laneId, entry] of Object.entries(settings?.laneTokens ?? {})) {
     if (!entry?.dead) continue;
     const account = accounts.find((a) => a.id === entry.accountId);
@@ -469,7 +470,7 @@ export async function runChecks({
       id: `lane-token-${laneId}`,
       level: 'warn',
       title: `Lane token for ${label} was revoked or expired`,
-      detail: `Lane ${laneId} still runs on its folder sign-in; automation just stopped receiving the token. Mint a new one with: switchboard lane-token ${laneId}`,
+      detail: `Terminals on this machine still use lane ${laneId}'s folder sign-in, but the lease broker and automation get no token from it any more, so a caller inside WSL or on another machine cannot use the lane. Mint a new one with: switchboard lane-token ${laneId}`,
     });
   }
 
@@ -484,14 +485,31 @@ export async function runChecks({
       id: `lane-token-unreadable-${laneId}`,
       level: 'warn',
       title: `Lane token for ${label} cannot be read on this machine`,
-      detail: `It was encrypted under a different user name, computer name or home folder, so automation stopped receiving it. Lane ${laneId} still runs on its folder sign-in. Mint a new one with: switchboard lane-token ${laneId}`,
+      detail: `It was encrypted under a different user name, computer name or home folder, so the lease broker and automation get no token from lane ${laneId}; terminals on this machine still use its folder sign-in. Mint a new one with: switchboard lane-token ${laneId}`,
+    });
+  }
+
+  // 5c. A Claude lane with no token at all. Terminals on this machine never notice: they
+  //     use the folder sign-in. The lease broker and automation do: a caller inside WSL or
+  //     on another machine can only be lent a lane that holds a setup token, so a lane
+  //     without one is invisible to them. Dead and unreadable tokens have their own lines
+  //     above; this one is for a lane that was never minted for.
+  for (const lane of (settings?.lanes ?? []).filter((l) => l?.harness === 'claude')) {
+    if (laneTokenState(settings, lane.id) !== 'none') continue;
+    const account = accounts.find((a) => a.id === lane.accountId);
+    const label = account?.label ?? lane.accountId ?? lane.id;
+    checks.push({
+      id: `lane-token-missing-${lane.id}`,
+      level: 'warn',
+      title: `Lane ${lane.id} (${label}) has no setup token`,
+      detail: `The lease broker and automation can only use a Claude lane that holds a setup token; terminals on this machine are not affected. Mint one with: switchboard lane-token ${lane.id} (or for every lane that lacks one: switchboard lane-token --missing)`,
     });
   }
 
   // 6. A live lane token minted under a different login than the lane's folder now
-  //    carries. Re-signing the folder does not touch the stored token, so dry-run
-  //    stops handing it out rather than billing the old account, and automation
-  //    quietly reverts to folder mode. Saying so here is what turns "the fleet
+  //    carries. Re-signing the folder does not touch the stored token, so dry-run and
+  //    the lease broker stop handing it out rather than billing the old account, and
+  //    automation gets no token from the lane. Saying so here is what turns "the fleet
   //    stopped using its token" into a one-command repair.
   for (const [laneId, entry] of Object.entries(settings?.laneTokens ?? {})) {
     if (!entry || entry.dead || entry.unreadable) continue;
@@ -504,7 +522,7 @@ export async function runChecks({
       id: `lane-token-identity-${laneId}`,
       level: 'warn',
       title: `Lane token for ${account.label} no longer matches the folder sign-in`,
-      detail: `Lane ${laneId}'s folder is signed in as a different account than the token was minted for (or its sign-in identity is unreadable, or the entry carries no identity stamp), so automation stops receiving the token rather than billing the wrong account. Sign the folder back in, or mint a fresh token with: switchboard lane-token ${laneId}`,
+      detail: `Lane ${laneId}'s folder is signed in as a different account than the token was minted for (or its sign-in identity is unreadable, or the entry carries no identity stamp), so the lease broker and automation stop receiving the token rather than billing the wrong account; terminals on this machine still use the folder sign-in. Sign the folder back in, or mint a fresh token with: switchboard lane-token ${laneId}`,
     });
   }
 

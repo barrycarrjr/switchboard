@@ -6,9 +6,12 @@ import { tempDir } from '../test-support/tempdir.js';
 import { resetVaultDriver } from '../core/vault.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import {
+  chooseProvisionKey,
   classifyRemoteAddress,
   createGatewayKey,
+  DEFAULT_PROVISION_LABEL,
   detectGatewayHostIp,
+  gatewayEnabledSettings,
   ipAllowedByScope,
   listGatewayKeys,
   normalizeGatewayPort,
@@ -119,4 +122,71 @@ test('detectGatewayHostIp and normalizers validate inputs', () => {
   assert.equal(detectGatewayHostIp('localhost', mockInterfaces), '127.0.0.1');
   assert.equal(detectGatewayHostIp('localhost-wsl', mockInterfaces), '172.25.160.1');
   assert.equal(detectGatewayHostIp('lan', mockInterfaces), '192.168.1.99');
+});
+
+test('gatewayEnabledSettings turns the gateway on and never changes a scope or port someone chose', () => {
+  const fresh = gatewayEnabledSettings({});
+  assert.equal(fresh.settings.gateway.enabled, true);
+  assert.equal(fresh.scope, 'localhost-wsl');
+  assert.equal(fresh.fresh, true);
+  assert.equal(fresh.wasEnabled, false);
+
+  const lan = gatewayEnabledSettings({ gateway: { enabled: false, scope: 'lan', port: 8400 } });
+  assert.equal(lan.settings.gateway.enabled, true);
+  assert.equal(lan.settings.gateway.scope, 'lan', 'an existing scope is kept, in either direction');
+  assert.equal(lan.settings.gateway.port, 8400);
+  assert.equal(lan.fresh, false);
+
+  const on = gatewayEnabledSettings({ gateway: { enabled: true, scope: 'localhost' }, other: 1 });
+  assert.equal(on.wasEnabled, true);
+  assert.equal(on.settings.gateway.scope, 'localhost');
+  assert.equal(on.settings.other, 1, 'the rest of the settings ride along');
+});
+
+test('chooseProvisionKey creates a key with the gateway scope when none is stored, else reuses one and gives it that scope', () => {
+  const none = chooseProvisionKey({ gateway: { enabled: true, scope: 'lan' } }, { now: 1000 });
+  assert.equal(none.created, true);
+  assert.equal(none.key.scope, 'lan', 'a new key takes the gateway scope, never a hard-coded one');
+  assert.equal(none.key.label, DEFAULT_PROVISION_LABEL);
+  assert.match(none.secret, /^sb-key-/);
+  assert.equal(none.settings.gatewayKeys[none.key.id].token, none.secret);
+  assert.equal(none.scopeChanged, false);
+
+  const labelled = chooseProvisionKey({ gateway: { scope: 'localhost' } }, { label: 'fleet box', now: 1000 });
+  assert.equal(labelled.key.label, 'fleet box');
+  assert.equal(labelled.key.scope, 'localhost');
+
+  // Stored keys: the label match wins, then the one already on the gateway scope, then
+  // the first readable one. A key this machine cannot decrypt is never picked.
+  const first = createGatewayKey({ gateway: { scope: 'lan' } }, { label: 'laptop', scope: 'localhost-wsl', now: 1 });
+  const second = createGatewayKey(first.settings, { label: 'lan box', scope: 'lan', now: 2 });
+  const stored = {
+    ...second.settings,
+    gatewayKeys: {
+      ...second.settings.gatewayKeys,
+      broken: { id: 'broken', label: 'old machine', token: 'sb-key-unreadable', unreadable: true, scope: 'lan' },
+    },
+  };
+  const byScope = chooseProvisionKey(stored, { now: 3 });
+  assert.equal(byScope.created, false);
+  assert.equal(byScope.key.id, second.key.id);
+  assert.equal(byScope.scopeChanged, false);
+  assert.equal(byScope.secret, second.secret);
+  assert.equal(byScope.settings, stored, 'nothing to change, so the same settings object');
+
+  const byLabel = chooseProvisionKey(stored, { label: 'Laptop', now: 3 });
+  assert.equal(byLabel.key.id, first.key.id);
+  assert.equal(byLabel.scopeChanged, true);
+  assert.equal(byLabel.previousScope, 'localhost-wsl');
+  assert.equal(byLabel.key.scope, 'lan', 'a reused key is moved onto the gateway scope: a key is checked against its own scope');
+  assert.equal(byLabel.settings.gatewayKeys[first.key.id].scope, 'lan');
+  assert.equal(byLabel.settings.gatewayKeys[first.key.id].token, first.secret, 'the secret is kept, so installed clients stay valid');
+  assert.equal(byLabel.settings.gatewayKeys[second.key.id].scope, 'lan', 'other keys are untouched');
+
+  const onlyUnreadable = chooseProvisionKey({ gateway: { scope: 'lan' }, gatewayKeys: { broken: stored.gatewayKeys.broken } }, { now: 4 });
+  assert.equal(onlyUnreadable.created, true, 'an unreadable key cannot be installed, so a new one is made');
+
+  const explicit = chooseProvisionKey(first.settings, { scope: 'localhost-wsl', now: 5 });
+  assert.equal(explicit.key.id, first.key.id);
+  assert.equal(explicit.scopeChanged, false, 'an explicit scope argument wins over the settings');
 });

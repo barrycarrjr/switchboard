@@ -1760,11 +1760,92 @@ export function parseWslDistroList(rawBuffer) {
 }
 
 /**
+ * Where the wrapper lives inside a distro, as bash sees it. `switchboard-lease` itself and
+ * the callers that start it (the AI bridge, T3) look for it there.
+ */
+const WSL_WRAPPER_PATH = '$HOME/.local/bin/switchboard-lease';
+
+/**
+ * The wrapper install inside one distro, as one bash script fed the wrapper on stdin. It
+ * prints one word and the path (and a symlink's target), which parseWrapperInstallOutput
+ * turns into a status. A symlink is left alone unless `replace` is set: on a developer's
+ * machine it points into a Switchboard checkout, and writing through it would overwrite
+ * that file (found 2026-11-01). A copy that already matches is left untouched, so the tray
+ * can run this at every start without churning the file. Run with `--exec`, so wsl.exe
+ * hands the script to bash as given instead of through the distro's login shell, which
+ * reads quotes and `$` a second time.
+ */
+export function wrapperInstallScript(replace = false) {
+  return [
+    'set -u',
+    'mkdir -p "$HOME/.local/bin"',
+    `p="${WSL_WRAPPER_PATH}"`,
+    'tmp=$(mktemp "$HOME/.local/bin/.switchboard-lease.XXXXXX") || exit 1',
+    'cat > "$tmp" || exit 1',
+    'if [ -L "$p" ]; then',
+    `  if [ "${replace ? 1 : 0}" = 1 ]; then rm -f "$p" && mv "$tmp" "$p" && chmod 755 "$p" && printf "replaced %s" "$p"; else t=$(readlink -f "$p"); rm -f "$tmp"; printf "symlink %s -> %s" "$p" "$t"; fi`,
+    'elif [ -f "$p" ] && cmp -s "$tmp" "$p"; then rm -f "$tmp"; chmod 755 "$p"; printf "unchanged %s" "$p"',
+    'elif [ -f "$p" ]; then mv "$tmp" "$p" && chmod 755 "$p" && printf "updated %s" "$p"',
+    'else mv "$tmp" "$p" && chmod 755 "$p" && printf "installed %s" "$p"',
+    'fi',
+  ].join('\n');
+}
+
+const KEY_INSTALL_SCRIPT = 'mkdir -p "$HOME/.config/switchboard" && umask 077 && cat > "$HOME/.config/switchboard/client-key"';
+
+/**
+ * What wrapperInstallScript printed, as a status: `installed`, `updated`, `unchanged`,
+ * `replaced`, `symlink-kept` (with the link's target), or `failed` when the script did not
+ * finish or printed something else.
+ */
+export function parseWrapperInstallOutput(text, code = 0) {
+  const lines = String(text ?? '').replace(/\0/g, '').trim().split(/\r?\n/).filter((l) => l.length > 0);
+  const line = lines.length ? lines[lines.length - 1] : '';
+  const m = /^(installed|updated|unchanged|replaced|symlink) (\S+)(?: -> (.+))?$/.exec(line);
+  if (code !== 0 || !m) return { wrapper: 'failed', path: null, target: null };
+  return { wrapper: m[1] === 'symlink' ? 'symlink-kept' : m[1], path: m[2], target: m[3] ?? null };
+}
+
+async function listWslDistros(spawnImpl) {
+  try {
+    const listRes = await runPipedCommand('wsl.exe', ['--list', '--quiet'], null, spawnImpl, 5000);
+    return listRes.code === 0 ? parseWslDistroList(listRes.stdout) : [];
+  } catch {
+    return [];
+  }
+}
+
+function readLeaseScript(leaseScriptPath) {
+  if (!leaseScriptPath || !fs.existsSync(leaseScriptPath)) return '';
+  return fs.readFileSync(leaseScriptPath, 'utf8').replace(/\r\n/g, '\n');
+}
+
+async function installWrapperInDistro(distro, leaseScript, { replaceSymlink = false, spawnImpl = spawn } = {}) {
+  try {
+    const res = await runPipedCommand(
+      'wsl.exe',
+      ['-d', distro, '--exec', 'bash', '-c', wrapperInstallScript(replaceSymlink)],
+      Buffer.from(leaseScript, 'utf8'),
+      spawnImpl,
+      8000,
+    );
+    return parseWrapperInstallOutput(res.stdout.toString('utf8'), res.code);
+  } catch {
+    return { wrapper: 'failed', path: null, target: null };
+  }
+}
+
+/**
  * One-click provisioning of the Switchboard client key and `switchboard-lease` wrapper:
  * - Writes `~/.config/switchboard/client-key` (mode 0600) in the local user home directory.
  * - On Windows with WSL installed, writes `~/.config/switchboard/client-key` (mode 0600)
  *   and `~/.local/bin/switchboard-lease` (mode 0755) inside each non-Docker WSL distro,
  *   streaming the key over stdin so it never appears on a command line.
+ * `distros` reports each distro: whether its key file was written, and what happened to
+ * the wrapper (installed, updated, unchanged, symlink-kept, replaced, failed, or
+ * not-provided when no wrapper file was given). `wslDistros` and `wslBinaryPath` stay as
+ * the Gateway tab reads them. `replaceSymlink` replaces a symlinked wrapper with a copy;
+ * by default it is kept and reported with its target.
  */
 export async function provisionLocalAndWslClient({
   token,
@@ -1772,6 +1853,7 @@ export async function provisionLocalAndWslClient({
   homeDir = os.homedir(),
   platform = process.platform,
   spawnImpl = spawn,
+  replaceSymlink = false,
 } = {}) {
   const cleanToken = String(token ?? '').trim();
   if (!cleanToken.startsWith('sb-key-')) {
@@ -1783,60 +1865,105 @@ export async function provisionLocalAndWslClient({
   fs.mkdirSync(localConfigDir, { recursive: true });
   fs.writeFileSync(localKeyPath, cleanToken + '\n', { encoding: 'utf8', mode: 0o600 });
 
-  let leaseScript = '';
-  if (leaseScriptPath && fs.existsSync(leaseScriptPath)) {
-    leaseScript = fs.readFileSync(leaseScriptPath, 'utf8').replace(/\r\n/g, '\n');
-  }
-
-  const wslDistros = [];
-  const wslBinaryPaths = [];
+  const leaseScript = readLeaseScript(leaseScriptPath);
+  const distros = [];
 
   if (platform === 'win32') {
-    let distros = [];
-    try {
-      const listRes = await runPipedCommand('wsl.exe', ['--list', '--quiet'], null, spawnImpl, 5000);
-      if (listRes.code === 0) {
-        distros = parseWslDistroList(listRes.stdout);
-      }
-    } catch {
-      distros = [];
-    }
-
-    for (const distro of distros) {
+    for (const distro of await listWslDistros(spawnImpl)) {
+      const entry = { name: distro, key: 'failed', wrapper: leaseScript ? 'failed' : 'not-provided', path: null, target: null };
       try {
         const keyRes = await runPipedCommand(
           'wsl.exe',
-          ['-d', distro, '--', 'bash', '-c', 'mkdir -p ~/.config/switchboard && umask 077 && cat > ~/.config/switchboard/client-key'],
+          ['-d', distro, '--exec', 'bash', '-c', KEY_INSTALL_SCRIPT],
           Buffer.from(cleanToken + '\n', 'utf8'),
           spawnImpl,
           8000,
         );
-        if (keyRes.code !== 0) continue;
-
-        if (leaseScript) {
-          const binRes = await runPipedCommand(
-            'wsl.exe',
-            ['-d', distro, '--', 'bash', '-c', 'mkdir -p ~/.local/bin && cat > ~/.local/bin/switchboard-lease && chmod 755 ~/.local/bin/switchboard-lease && printf "%s" "$HOME/.local/bin/switchboard-lease"'],
-            Buffer.from(leaseScript, 'utf8'),
-            spawnImpl,
-            8000,
-          );
-          if (binRes.code === 0) {
-            const p = binRes.stdout.toString('utf8').trim();
-            if (p && !wslBinaryPaths.includes(p)) wslBinaryPaths.push(p);
-          }
-        }
-        wslDistros.push(distro);
+        entry.key = keyRes.code === 0 ? 'written' : 'failed';
       } catch {
-        // best-effort per distro
+        entry.key = 'failed';
       }
+      if (entry.key === 'written' && leaseScript) {
+        Object.assign(entry, await installWrapperInDistro(distro, leaseScript, { replaceSymlink, spawnImpl }));
+      }
+      distros.push(entry);
     }
   }
 
+  const provisioned = distros.filter((d) => d.key === 'written');
   return {
     ok: true,
     localKeyPath,
-    wslDistros,
-    wslBinaryPath: wslBinaryPaths[0] || '~/.local/bin/switchboard-lease',
+    wslDistros: provisioned.map((d) => d.name),
+    wslBinaryPath: provisioned.find((d) => d.path)?.path || '~/.local/bin/switchboard-lease',
+    distros,
+  };
+}
+
+/**
+ * The wrapper alone, into every distro, for the tray at startup: a distro provisioned by
+ * an older Switchboard gets the current wrapper, a matching copy is left as it is, and a
+ * symlink is never touched. No key is written, so nothing here needs the secret.
+ */
+export async function syncWslLeaseWrapper({
+  leaseScriptPath,
+  platform = process.platform,
+  spawnImpl = spawn,
+  replaceSymlink = false,
+} = {}) {
+  const leaseScript = readLeaseScript(leaseScriptPath);
+  if (platform !== 'win32' || !leaseScript) return { distros: [] };
+  const distros = [];
+  for (const distro of await listWslDistros(spawnImpl)) {
+    distros.push({ name: distro, ...(await installWrapperInDistro(distro, leaseScript, { replaceSymlink, spawnImpl })) });
+  }
+  return { distros };
+}
+
+/**
+ * Calls `onChange` shortly after `file` is written by anyone: the CLI (`gateway enable`,
+ * `gateway provision-client`), another tray, or a hand edit. Watches the folder, not the
+ * file, because an atomic save replaces the file and a watcher on the old inode goes
+ * quiet. Bursts of events for one save collapse into one call (`debounceMs`). Not
+ * persistent, so the watcher never keeps a process alive on its own. `active` is false
+ * when the folder cannot be watched; the caller then simply keeps the old behavior.
+ */
+export function createSettingsWatcher({
+  file,
+  onChange,
+  watchImpl = fs.watch,
+  debounceMs = 400,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  const dir = path.dirname(file);
+  const name = path.basename(file);
+  let timer = null;
+  let watcher = null;
+  try {
+    watcher = watchImpl(dir, { persistent: false }, (_event, filename) => {
+      if (filename && String(filename) !== name) return;
+      if (timer) clearTimer(timer);
+      timer = setTimer(() => {
+        timer = null;
+        try {
+          onChange();
+        } catch {
+          // the caller's own handler failed; the next change calls it again
+        }
+      }, debounceMs);
+    });
+    watcher?.on?.('error', () => {});
+  } catch {
+    watcher = null;
+  }
+  return {
+    active: Boolean(watcher),
+    close() {
+      if (timer) clearTimer(timer);
+      timer = null;
+      try { watcher?.close(); } catch { /* already closed */ }
+      watcher = null;
+    },
   };
 }
