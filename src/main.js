@@ -423,6 +423,7 @@ function createWindow() {
     ...restorableBounds(),
     minWidth: 420,
     minHeight: 560,
+    show: false,
     autoHideMenuBar: true,
     icon: path.join(here, '..', 'assets', 'icon-256.png'),
     webPreferences: {

@@ -755,8 +755,10 @@ test('main window and Usage Monitor share Light / Dark / System theme and green/
   assert.match(usageMonitorHtml, /\.meter-left\.hot \{ color: var\(--bar-hot\); \}/);
   assert.match(usageMonitorHtml, /\.meter-name \{\s*color: var\(--ink\);/);
   assert.match(usageMonitorHtml, /grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 320px\), 1fr\)\)/);
+  const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
   assert.match(usageMonitorHtml, /<strong>\$\{pct\}%<\/strong> used/);
   assert.match(usageMonitorHtml, /return ' &middot; Resets ' \+ esc\(timeStr\);/);
+  assert.match(main, /function createWindow\(\) \{[\s\S]*?show:\s*false,/);
 });
 
 
