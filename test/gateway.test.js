@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
 import { createGatewayKey } from '../core/gateway-keys.js';
-import { createGatewayServer, parseWslDistroList, provisionLocalAndWslClient } from '../core/gateway.js';
+import { createGatewayServer, parseWslDistroList, provisionLocalAndWslClient, parseWrapperInstallOutput, wrapperInstallScript, syncWslLeaseWrapper, createSettingsWatcher } from '../core/gateway.js';
 
 const SETUP_PREFIX = ['sk', 'ant', 'oat01'].join('-') + '-';
 
@@ -412,8 +412,8 @@ test('provisionLocalAndWslClient writes local client-key and pipes key + wrapper
           setImmediate(() => {
             if (args.includes('--list')) {
               for (const fn of stdoutHandlers) fn(utf16List);
-            } else if (args.join(' ').includes('printf')) {
-              for (const fn of stdoutHandlers) fn(Buffer.from('/home/testuser/.local/bin/switchboard-lease', 'utf8'));
+            } else if (args.join(' ').includes('switchboard-lease')) {
+              for (const fn of stdoutHandlers) fn(Buffer.from('installed /home/testuser/.local/bin/switchboard-lease', 'utf8'));
             }
             handlers.close?.(0);
           });
@@ -440,9 +440,189 @@ test('provisionLocalAndWslClient writes local client-key and pipes key + wrapper
   assert.deepEqual(res.wslDistros, ['Ubuntu', 'Debian']);
   assert.equal(res.wslBinaryPath, '/home/testuser/.local/bin/switchboard-lease');
   assert.equal(fs.readFileSync(res.localKeyPath, 'utf8'), secret + '\n');
+  assert.deepEqual(res.distros, [
+    { name: 'Ubuntu', key: 'written', wrapper: 'installed', path: '/home/testuser/.local/bin/switchboard-lease', target: null },
+    { name: 'Debian', key: 'written', wrapper: 'installed', path: '/home/testuser/.local/bin/switchboard-lease', target: null },
+  ]);
+  // --exec: wsl.exe hands the script to bash as given. After `--` the distro's shell
+  // reads the quotes and `$` a second time and a quoted script dies on them.
+  for (const call of calls.filter((c) => c.args[0] === '-d')) {
+    assert.equal(call.args[2], '--exec');
+    assert.ok(!call.args.includes('--'));
+  }
 
   // Verify the secret never appeared in any spawned command arguments
   for (const call of calls) {
     assert.ok(!call.args.join(' ').includes(secret));
   }
+});
+
+// The fake wsl.exe for the wrapper tests: answers the distro list, accepts the key file,
+// and answers the wrapper script per distro with what the real script prints.
+function fakeWslSpawn({ distros, wrapperAnswers, calls }) {
+  const list = Buffer.from(distros.join('\r\n') + '\r\n', 'utf16le');
+  return (file, args) => {
+    const stdinChunks = [];
+    const handlers = {};
+    const stdoutHandlers = [];
+    return {
+      stdin: {
+        write: (c) => stdinChunks.push(Buffer.from(c)),
+        end: () => {
+          const stdinText = Buffer.concat(stdinChunks).toString('utf8');
+          calls.push({ file, args, stdinText });
+          setImmediate(() => {
+            if (args.includes('--list')) {
+              for (const fn of stdoutHandlers) fn(list);
+              handlers.close?.(0);
+              return;
+            }
+            const distro = args[1];
+            const script = args[args.length - 1];
+            if (script.includes('switchboard-lease')) {
+              const answer = wrapperAnswers[distro] ?? { out: '', code: 1 };
+              for (const fn of stdoutHandlers) fn(Buffer.from(answer.out, 'utf8'));
+              handlers.close?.(answer.code ?? 0);
+              return;
+            }
+            handlers.close?.(0);
+          });
+        },
+      },
+      stdout: { on: (ev, fn) => { if (ev === 'data') stdoutHandlers.push(fn); } },
+      stderr: { on: () => {} },
+      on: (ev, fn) => { handlers[ev] = fn; },
+      kill: () => {},
+    };
+  };
+}
+
+test('parseWrapperInstallOutput reads the one line the install script prints', () => {
+  assert.deepEqual(parseWrapperInstallOutput('installed /home/u/.local/bin/switchboard-lease'), { wrapper: 'installed', path: '/home/u/.local/bin/switchboard-lease', target: null });
+  assert.deepEqual(parseWrapperInstallOutput('symlink /home/u/.local/bin/switchboard-lease -> /mnt/c/src/switchboard/bin/switchboard-lease'), { wrapper: 'symlink-kept', path: '/home/u/.local/bin/switchboard-lease', target: '/mnt/c/src/switchboard/bin/switchboard-lease' });
+  assert.equal(parseWrapperInstallOutput('unchanged /x').wrapper, 'unchanged');
+  assert.equal(parseWrapperInstallOutput('updated /x').wrapper, 'updated');
+  assert.equal(parseWrapperInstallOutput('replaced /x').wrapper, 'replaced');
+  assert.equal(parseWrapperInstallOutput('installed /x', 1).wrapper, 'failed', 'a non-zero exit is a failure whatever was printed');
+  assert.equal(parseWrapperInstallOutput('bash: mktemp: not found').wrapper, 'failed');
+  assert.equal(parseWrapperInstallOutput('').wrapper, 'failed');
+});
+
+test('the wrapper install script keeps a symlink unless told to replace it, and never writes through it', () => {
+  const keep = wrapperInstallScript(false);
+  const replace = wrapperInstallScript(true);
+  assert.match(keep, /if \[ -L "\$p" \]; then/);
+  assert.match(keep, /if \[ "0" = 1 \]; then rm -f "\$p"/, 'the replace branch is off');
+  assert.match(replace, /if \[ "1" = 1 \]; then rm -f "\$p"/, 'the replace branch is on');
+  assert.match(keep, /cmp -s "\$tmp" "\$p"/, 'a matching copy is left alone');
+  assert.match(keep, /cat > "\$tmp"/, 'the wrapper goes to a temp file first, never straight through the path');
+  assert.ok(!keep.includes('cat > "$p"'));
+});
+
+test('provisionLocalAndWslClient reports each distro, keeps a symlinked wrapper and replaces it only on request', async () => {
+  const dir = tempDir('sb-gw-');
+  const fakeScript = path.join(dir, 'switchboard-lease');
+  fs.writeFileSync(fakeScript, '#!/usr/bin/env bash\necho ok\n', 'utf8');
+  const secret = 'sb-key-0123456789abcdef0123456789abcdef01234567';
+  const calls = [];
+  const spawnImpl = fakeWslSpawn({
+    distros: ['Ubuntu', 'docker-desktop', 'Debian', 'Alpine'],
+    wrapperAnswers: {
+      Ubuntu: { out: 'symlink /home/u/.local/bin/switchboard-lease -> /mnt/c/src/switchboard/bin/switchboard-lease', code: 0 },
+      Debian: { out: 'unchanged /home/d/.local/bin/switchboard-lease', code: 0 },
+      Alpine: { out: 'bash: mktemp: not found', code: 127 },
+    },
+    calls,
+  });
+
+  const res = await provisionLocalAndWslClient({ token: secret, leaseScriptPath: fakeScript, homeDir: dir, platform: 'win32', spawnImpl });
+  assert.deepEqual(res.distros, [
+    { name: 'Ubuntu', key: 'written', wrapper: 'symlink-kept', path: '/home/u/.local/bin/switchboard-lease', target: '/mnt/c/src/switchboard/bin/switchboard-lease' },
+    { name: 'Debian', key: 'written', wrapper: 'unchanged', path: '/home/d/.local/bin/switchboard-lease', target: null },
+    { name: 'Alpine', key: 'written', wrapper: 'failed', path: null, target: null },
+  ]);
+  assert.deepEqual(res.wslDistros, ['Ubuntu', 'Debian', 'Alpine'], 'the key file reached every distro');
+  assert.equal(res.wslBinaryPath, '/home/u/.local/bin/switchboard-lease');
+  const wrapperCalls = calls.filter((c) => c.args[0] === '-d' && c.args[c.args.length - 1].includes('switchboard-lease'));
+  assert.equal(wrapperCalls.length, 3);
+  for (const c of wrapperCalls) {
+    assert.equal(c.args[2], '--exec');
+    assert.match(c.args[c.args.length - 1], /if \[ "0" = 1 \]/, 'symlinks are kept by default');
+    assert.equal(c.stdinText, '#!/usr/bin/env bash\necho ok\n', 'the wrapper rides on stdin');
+  }
+  for (const c of calls) assert.ok(!c.args.join(' ').includes(secret), 'the key never rides on a command line');
+
+  calls.length = 0;
+  const replaced = await provisionLocalAndWslClient({ token: secret, leaseScriptPath: fakeScript, homeDir: dir, platform: 'win32', spawnImpl, replaceSymlink: true });
+  assert.ok(calls.filter((c) => c.args[0] === '-d').some((c) => /if \[ "1" = 1 \]/.test(c.args[c.args.length - 1])), 'the replace flag reaches the script');
+  assert.equal(replaced.ok, true);
+
+  // No wrapper file: the key still goes out, and the wrapper is reported as not provided.
+  const noScript = await provisionLocalAndWslClient({ token: secret, leaseScriptPath: path.join(dir, 'missing'), homeDir: dir, platform: 'win32', spawnImpl: fakeWslSpawn({ distros: ['Ubuntu'], wrapperAnswers: {}, calls: [] }) });
+  assert.deepEqual(noScript.distros, [{ name: 'Ubuntu', key: 'written', wrapper: 'not-provided', path: null, target: null }]);
+  assert.equal(noScript.wslBinaryPath, '~/.local/bin/switchboard-lease');
+});
+
+test('syncWslLeaseWrapper refreshes the wrapper in every distro without a key, and does nothing off Windows or without the file', async () => {
+  const dir = tempDir('sb-gw-');
+  const fakeScript = path.join(dir, 'switchboard-lease');
+  fs.writeFileSync(fakeScript, '#!/usr/bin/env bash\necho v2\n', 'utf8');
+  const calls = [];
+  const spawnImpl = fakeWslSpawn({
+    distros: ['Ubuntu', 'Debian'],
+    wrapperAnswers: { Ubuntu: { out: 'updated /home/u/.local/bin/switchboard-lease' }, Debian: { out: 'symlink /home/d/.local/bin/switchboard-lease -> /home/d/src/switchboard/bin/switchboard-lease' } },
+    calls,
+  });
+  const res = await syncWslLeaseWrapper({ leaseScriptPath: fakeScript, platform: 'win32', spawnImpl });
+  assert.deepEqual(res.distros.map((d) => [d.name, d.wrapper]), [['Ubuntu', 'updated'], ['Debian', 'symlink-kept']]);
+  assert.ok(!calls.some((c) => c.args[c.args.length - 1].includes('client-key')), 'no key file is touched');
+  assert.deepEqual(await syncWslLeaseWrapper({ leaseScriptPath: fakeScript, platform: 'linux', spawnImpl }), { distros: [] });
+  assert.deepEqual(await syncWslLeaseWrapper({ leaseScriptPath: path.join(dir, 'missing'), platform: 'win32', spawnImpl }), { distros: [] });
+});
+
+test('createSettingsWatcher watches the folder, answers only for the settings file, and collapses a burst into one call', () => {
+  let listener = null;
+  let watched = null;
+  let closed = 0;
+  const timers = [];
+  const watchImpl = (dir, opts, fn) => { watched = { dir, opts }; listener = fn; return { close: () => { closed += 1; }, on: () => {} }; };
+  const setTimer = (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; };
+  const clearTimer = (t) => { t.cleared = true; };
+  let changes = 0;
+  const w = createSettingsWatcher({ file: path.join('X:', 'data', 'settings.json'), onChange: () => { changes += 1; }, watchImpl, debounceMs: 250, setTimer, clearTimer });
+  assert.equal(w.active, true);
+  assert.equal(watched.dir, path.join('X:', 'data'));
+  assert.equal(watched.opts.persistent, false, 'the watcher must not keep a process alive by itself');
+
+  listener('change', 'other.json');
+  assert.equal(timers.length, 0, 'another file in the folder is not a settings change');
+  listener('rename', 'settings.json.tmp');
+  assert.equal(timers.length, 0);
+  listener('rename', 'settings.json');
+  listener('change', 'settings.json');
+  listener('change', null);
+  assert.equal(timers.length, 3);
+  assert.equal(timers.filter((t) => !t.cleared).length, 1, 'each event in a burst replaces the pending timer');
+  assert.equal(timers[2].ms, 250);
+  timers[2].fn();
+  assert.equal(changes, 1);
+  w.close();
+  assert.equal(closed, 1);
+
+  const broken = createSettingsWatcher({ file: 'X:/data/settings.json', onChange: () => {}, watchImpl: () => { throw new Error('EPERM'); } });
+  assert.equal(broken.active, false, 'a folder that cannot be watched leaves the old behavior, not a crash');
+  broken.close();
+});
+
+test('the CLI registers the tray to start with Windows under the app id Electron uses, and provision-client is wired as designed', () => {
+  const cli = fs.readFileSync(new URL('../bin/cli.js', import.meta.url), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const m = /const LOGIN_ITEM_NAME = '([^']+)';/.exec(cli);
+  assert.ok(m, 'cli.js names the Run entry');
+  assert.equal(m[1], pkg.build.appId);
+  assert.match(cli, /if \(sub === 'provision-client'\)/);
+  assert.match(cli, /chooseProvisionKey\(enabled\.settings, \{ label, scope: enabled\.scope \}\)/, 'the key takes the gateway scope');
+  assert.match(cli, /leaseScriptPath: path\.join\(here, 'switchboard-lease'\)/, 'the wrapper is read beside cli.js, inside app.asar when packaged');
+  assert.doesNotMatch(cli, /say\([^\n]*chosen\.secret/, 'the secret is never printed');
+  assert.doesNotMatch(cli, /out\([^\n]*chosen\.secret/, 'the secret is never printed');
 });

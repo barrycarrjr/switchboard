@@ -771,3 +771,35 @@ test('an API key for a tool nobody uses here is none of Health\'s business', asy
   const checks = await runChecks({ env, fetchImpl: noFetch });
   assert.equal(checks.some((x) => x.id.startsWith('ignored-key-')), false);
 });
+
+test('a Claude lane that holds no setup token at all is a warning, with the one-command fix', async () => {
+  const account = { id: 'claude-work', provider: 'claude', label: 'Work', home: tmpHome() };
+  const checks = await runChecks({
+    accounts: [account],
+    env: envNone,
+    fetchImpl: noFetch,
+    settings: {
+      lanes: [
+        { id: 'lane-1', harness: 'claude', provider: 'claude', accountId: 'claude-work', billing: 'subscription' },
+        { id: 'lane-2', harness: 'claude', provider: 'claude', accountId: 'claude-work', billing: 'subscription' },
+        { id: 'lane-3', harness: 'codex', provider: 'codex', accountId: 'codex-work', billing: 'subscription' },
+        { id: 'lane-4', harness: 'claude', provider: 'claude', accountId: 'claude-work', billing: 'subscription' },
+      ],
+      laneTokens: {
+        'lane-2': { token: 'tok-live', accountId: 'claude-work', mintedAt: 1 },
+        'lane-4': { token: 'tok-dead', accountId: 'claude-work', mintedAt: 1, dead: true, deadReason: 'revoked or expired' },
+      },
+    },
+  });
+  const c = checks.find((x) => x.id === 'lane-token-missing-lane-1');
+  assert.equal(c.level, 'warn');
+  assert.equal(c.title, 'Lane lane-1 (Work) has no setup token');
+  assert.match(c.detail, /switchboard lane-token lane-1/);
+  assert.match(c.detail, /switchboard lane-token --missing/);
+  assert.equal(checks.find((x) => x.id === 'lane-token-missing-lane-2'), undefined, 'a live token is not a finding');
+  assert.equal(checks.find((x) => x.id === 'lane-token-missing-lane-3'), undefined, 'only Claude lanes carry setup tokens');
+  assert.equal(checks.find((x) => x.id === 'lane-token-missing-lane-4'), undefined, 'a dead token has its own line');
+  assert.ok(checks.find((x) => x.id === 'lane-token-lane-4'));
+  // No doctor text may send a caller inside WSL to a "folder mode" it never had.
+  assert.ok(!checks.some((x) => /folder mode/i.test(`${x.title} ${x.detail}`)));
+});

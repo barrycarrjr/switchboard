@@ -12,7 +12,7 @@ import { fetchAllProviderStatus } from '../core/provider-status.js';
 import { applyFix } from '../core/fixes.js';
 import { signinTerminal } from '../core/signin.js';
 import { signOutAccount, signoutSupported } from '../core/signout.js';
-import { loadSettings, saveSettings } from '../core/settings.js';
+import { loadSettings, saveSettings, settingsFile } from '../core/settings.js';
 // import { registerVaultDriver } from '../core/vault.js';
 import { validateLaneTokens, mergeLaneTokenResults } from '../core/lane-tokens.js';
 import { maybeUpdateAgy } from '../core/agy-updates.js';
@@ -62,7 +62,7 @@ import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
-import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway.js';
+import { createGatewayServer, provisionLocalAndWslClient, createSettingsWatcher, syncWslLeaseWrapper } from '../core/gateway.js';
 import { createGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -70,6 +70,21 @@ let win = null;
 let tray = null;
 let quitting = false;
 const gatewayServer = createGatewayServer();
+let settingsWatcher = null;
+
+/**
+ * The gateway as settings.json now says, applied to the running tray. Called when the
+ * file changes on disk: `switchboard gateway enable|disable|scope|port` and `gateway
+ * provision-client` write it from a terminal, and until this existed the listener only
+ * read it at tray launch, so a change from the CLI waited for a restart. start() is a
+ * no-op when the port and bind address already match, so the tray's own saves cost nothing.
+ */
+function applyGatewaySettings() {
+  const gw = normalizeGatewaySettings(loadSettings().gateway);
+  const change = gw.enabled ? gatewayServer.start() : gatewayServer.isRunning() ? gatewayServer.stop() : null;
+  if (!change) return;
+  change.then(() => refresh()).catch((err) => console.error('gateway settings change', err));
+}
 
 // One instance only: a second launch fronts the existing window.
 if (!app.requestSingleInstanceLock()) {
@@ -923,7 +938,13 @@ app.whenReady().then(async () => {
     gatewayServer.start().catch((err) => {
       console.error('gateway startup error', err);
     });
+    // The wrapper inside each WSL distro follows this version of the app; a copy that
+    // already matches is left alone, and so is a symlink (a developer's link into a checkout).
+    if (process.platform === 'win32') {
+      syncWslLeaseWrapper({ leaseScriptPath: path.join(here, '..', 'bin', 'switchboard-lease') }).catch(() => {});
+    }
   }
+  settingsWatcher = createSettingsWatcher({ file: settingsFile(), onChange: applyGatewaySettings });
 
   refreshTrayFacts();
 
@@ -946,7 +967,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => { /* stay in the tray */ });
-app.on('before-quit', () => { quitting = true; gatewayServer.stop().catch(() => {}); });
+app.on('before-quit', () => { quitting = true; settingsWatcher?.close(); gatewayServer.stop().catch(() => {}); });
 
 // ---- IPC: the renderer only ever talks to the core through these. ----
 
@@ -2084,16 +2105,16 @@ ipcMain.handle('sb:gatewayCreateKey', async (_e, { label, scope } = {}) => {
   try {
     const { settings, key, secret } = createGatewayKey(loadSettings(), { label, scope });
     saveSettings(settings);
+    // Every scope, `lan` included: a LAN gateway's own WSL distros and local callers use
+    // the same key file and wrapper, and leaving them out made a `lan` key a hand install.
     let provisioned = null;
-    if (key.scope === 'localhost' || key.scope === 'localhost-wsl') {
-      try {
-        provisioned = await provisionLocalAndWslClient({
-          token: secret,
-          leaseScriptPath: path.join(here, '..', 'bin', 'switchboard-lease'),
-        });
-      } catch {
-        provisioned = null;
-      }
+    try {
+      provisioned = await provisionLocalAndWslClient({
+        token: secret,
+        leaseScriptPath: path.join(here, '..', 'bin', 'switchboard-lease'),
+      });
+    } catch {
+      provisioned = null;
     }
     const status = await gatewayServer.status();
     return { ok: true, key, secret, provisioned, status };

@@ -61,6 +61,29 @@ export function laneTokenFor(settings, laneId) {
 }
 
 /**
+ * One word per lane for `lanes --json`, `status --json` and the doctor: `live` (a stored
+ * token the lane can hand out), `dead` (the vendor refused it), `unreadable` (encrypted
+ * under another user or machine), or `none`. The value itself never passes through here.
+ * Whether a live token still matches the folder's sign-in is the doctor's separate check.
+ */
+export function laneTokenState(settings, laneId) {
+  const entry = (settings?.laneTokens ?? {})[laneId];
+  if (!entry) return 'none';
+  if (entry.unreadable) return 'unreadable';
+  if (entry.dead) return 'dead';
+  return laneTokenFor(settings, laneId) ? 'live' : 'none';
+}
+
+/**
+ * The Claude lanes that hold no live token: what `lane-token --missing` mints one after
+ * another, what the doctor warns about, and what `gateway provision-client` lists at the
+ * end. Other harnesses carry no setup token, so they are never in this list.
+ */
+export function claudeLanesWithoutToken(settings) {
+  return (settings?.lanes ?? []).filter((lane) => lane?.harness === 'claude' && laneTokenState(settings, lane.id) !== 'live');
+}
+
+/**
  * Whether a stored token entry still belongs to the login its lane's folder carries.
  *
  * A token outlives the sign-in that minted it: re-signing the folder into a different

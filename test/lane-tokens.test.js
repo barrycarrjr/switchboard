@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, redactSetupToken, probeSetupToken } from '../core/lane-tokens.js';
+import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, redactSetupToken, probeSetupToken, laneTokenState, claudeLanesWithoutToken } from '../core/lane-tokens.js';
 import { buildLane } from '../core/lane-admin.js';
 
 const account = { id: 'claude-work', provider: 'claude', label: 'Work', home: 'X:\\p\\.claude-work' };
@@ -428,4 +428,30 @@ test('probe isolates the run: scratch config folder, only the probed token, othe
   assert.notEqual(options.env.CLAUDE_CONFIG_DIR, 'X:\\p\\.claude');
   assert.ok(options.env.CLAUDE_CONFIG_DIR.includes('switchboard-token-probe-'));
   assert.equal(options.env.PATH, 'x');
+});
+
+test('laneTokenState and claudeLanesWithoutToken name what the broker can lend', () => {
+  const codexLane = buildLane({ id: 'codex-work', provider: 'codex', label: 'Codex', home: 'X:/p/.codex' }, 'subscription', 'lane-2');
+  const settings = settingsWith({ 'lane-1': liveEntry() });
+  settings.lanes = [...settings.lanes, buildLane(account, 'subscription', 'lane-3'), codexLane];
+  assert.equal(laneTokenState(settings, 'lane-1'), 'live');
+  assert.equal(laneTokenState(settings, 'lane-3'), 'none');
+  assert.equal(laneTokenState(settings, 'lane-9'), 'none');
+  assert.equal(laneTokenState(settingsWith({ 'lane-1': liveEntry({ dead: true }) }), 'lane-1'), 'dead');
+  assert.equal(laneTokenState(settingsWith({ 'lane-1': { accountId: 'claude-work', unreadable: true } }), 'lane-1'), 'unreadable');
+  assert.equal(laneTokenState(settingsWith({ 'lane-1': { accountId: 'claude-work', token: '' } }), 'lane-1'), 'none', 'an empty token is no token');
+  assert.deepEqual(claudeLanesWithoutToken(settings).map((l) => l.id), ['lane-3'], 'live lanes and non-Claude lanes are left out');
+  assert.deepEqual(claudeLanesWithoutToken(settingsWith({ 'lane-1': liveEntry({ dead: true }) })).map((l) => l.id), ['lane-1'], 'a dead token needs minting again');
+  assert.deepEqual(claudeLanesWithoutToken({}), []);
+});
+
+test('lane-token --missing mints through the shared mintLaneToken, lane after lane, re-reading settings each time', () => {
+  const cli = cliSource();
+  assert.match(cli, /async function mintLaneToken\(\{ laneId, registry, settings \}\)/);
+  assert.match(cli, /const missing = claudeLanesWithoutToken\(settings\);/);
+  assert.match(cli, /await mintLaneToken\(\{ laneId: lane\.id, registry, settings: loadSettings\(\) \}\)/);
+  assert.match(cli, /const ok = await mintLaneToken\(\{ laneId, registry, settings \}\);\n\s+if \(!ok\) process\.exitCode = 1;/);
+  assert.match(cli, /setupToken: laneTokenState\(settings, lane\.id\)/, 'lanes --json carries the state, never the value');
+  assert.match(cli, /status\.laneTokens = /);
+  assert.doesNotMatch(cli, /folder mode\. Mint/, 'no user-facing text sends a caller inside WSL to a folder mode it never had');
 });

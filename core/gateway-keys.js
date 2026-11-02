@@ -352,3 +352,63 @@ export function recordGatewayKeyUse(settings, keyId, { accountId = null, laneId 
   };
   return { ...settings, gatewayKeys: existing };
 }
+
+/**
+ * The label `gateway provision-client` gives the key it creates when the machine has none.
+ */
+export const DEFAULT_PROVISION_LABEL = 'lease clients';
+
+/**
+ * The gateway turned on for provisioning, with an existing scope and port left exactly as
+ * they were. A gateway nobody configured gets the defaults (scope localhost-wsl); one that
+ * was configured keeps its scope in either direction, because a script must never widen
+ * or narrow a scope a person chose (decision of 2026-11-01: a broker on `lan` stays `lan`).
+ */
+export function gatewayEnabledSettings(settings = {}) {
+  const gw = normalizeGatewaySettings(settings?.gateway);
+  return {
+    settings: { ...settings, gateway: { ...gw, enabled: true } },
+    wasEnabled: gw.enabled,
+    fresh: settings?.gateway == null,
+    scope: gw.scope,
+    port: gw.port,
+  };
+}
+
+/**
+ * The key `gateway provision-client` installs here and in every WSL distro: a stored,
+ * readable key when there is one, else a new one. Either way the key carries the
+ * GATEWAY's scope. verifyGatewayKey checks a key against its own scope, so a
+ * `localhost-wsl` key on a `lan` gateway answers 403 `ip-outside-key-scope` to every
+ * caller on the LAN (found on a live machine on 2026-11-01). Preference among stored keys:
+ * the one whose label matches `label`, then one already on the gateway's scope, then the
+ * first readable one; a key this machine cannot decrypt is never picked. Pure: the caller
+ * saves the returned settings. `secret` is the token to install, never to print.
+ */
+export function chooseProvisionKey(settings = {}, { label = '', scope = null, now = Date.now() } = {}) {
+  const gwScope = normalizeGatewayScope(scope ?? normalizeGatewaySettings(settings?.gateway).scope);
+  const readable = Object.values(settings?.gatewayKeys ?? {})
+    .filter((e) => e && typeof e.token === 'string' && e.token.length > 0 && !e.unreadable);
+  const wanted = String(label ?? '').trim().toLowerCase();
+  const picked = (wanted ? readable.find((e) => String(e.label ?? '').trim().toLowerCase() === wanted) : null)
+    ?? readable.find((e) => e.scope === gwScope)
+    ?? readable[0]
+    ?? null;
+  if (!picked) {
+    const made = createGatewayKey(settings, { label: String(label ?? '').trim() || DEFAULT_PROVISION_LABEL, scope: gwScope, now });
+    return { settings: made.settings, key: made.key, secret: made.secret, created: true, scopeChanged: false, previousScope: null };
+  }
+  const scopeChanged = picked.scope !== gwScope;
+  const entry = scopeChanged ? { ...picked, scope: gwScope } : picked;
+  const next = scopeChanged
+    ? { ...settings, gatewayKeys: { ...(settings?.gatewayKeys ?? {}), [picked.id]: entry } }
+    : settings;
+  return {
+    settings: next,
+    key: publicGatewayKey(entry, now),
+    secret: entry.token,
+    created: false,
+    scopeChanged,
+    previousScope: scopeChanged ? picked.scope : null,
+  };
+}

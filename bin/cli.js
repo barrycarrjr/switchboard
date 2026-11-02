@@ -8,7 +8,7 @@ import { lastSharedQuota, sharedProviderQuota } from '../core/quota-cache.js';
 import { collectStatus, formatStatus } from '../core/status.js';
 import { loadSettings, saveSettings } from '../core/settings.js';
 import { addLane, removeLane, reorderLanes, setLaneBudget, unknownLaneIds, setLaneToken, removeLaneToken, BILLING_KINDS, resolveAllAccounts } from '../core/lane-admin.js';
-import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, probeSetupToken } from '../core/lane-tokens.js';
+import { laneTokenFor, laneTokenIdentityMatches, validateLaneTokens, mergeLaneTokenResults, extractSetupToken, probeSetupToken, laneTokenState, claudeLanesWithoutToken } from '../core/lane-tokens.js';
 import { readClaudeAccountIdentity } from '../core/quota.js';
 import { planDefaultSwitches, freshNotices } from '../core/watch.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
@@ -36,12 +36,20 @@ import {
   removeAutomation,
   toggleAutomation,
 } from '../core/automations.js';
-import { createGatewayServer } from '../core/gateway.js';
-import { createGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS } from '../core/gateway-keys.js';
+import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway.js';
+import { createGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS, chooseProvisionKey, gatewayEnabledSettings } from '../core/gateway-keys.js';
 import readline from 'node:readline/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const [cmd, ...args] = process.argv.slice(2);
 const out = (s) => process.stdout.write(s + '\n');
+const here = path.dirname(fileURLToPath(import.meta.url));
+// The value name Electron registers the tray under in the user's Run key: the app id from
+// package.json (`build.appId`), which is also the AppUserModelId. test/gateway.test.js
+// holds the two equal.
+const LOGIN_ITEM_NAME = 'io.switchboard.app';
+const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const providerList = Object.keys(PROVIDERS).join('|');
 
 function fmtWindow(w) {
@@ -98,6 +106,76 @@ async function promptUser(query) {
   } finally {
     rl.close();
   }
+}
+
+/**
+ * A yes/no question for the person at the terminal. `yes` (the --yes flag) answers yes
+ * without asking; no terminal, or `quiet` (--json), answers no, so nothing waits on a
+ * prompt nobody sees.
+ */
+async function askYes(question, { yes = false, quiet = false } = {}) {
+  if (yes) return true;
+  if (quiet || !process.stdin.isTTY) return false;
+  const answer = await promptUser(`${question} [y/N] `);
+  return answer === 'y' || answer === 'yes';
+}
+
+/**
+ * Whether the running tray's broker answers at `url` with `key`: ready (200), rejected
+ * (401 or 403: the key is not in the list the tray loaded), or down. The CLI's own
+ * server object is not the tray's, so the only honest check is over HTTP.
+ */
+async function probeBrokerInfo(url, key, { fetchImpl = fetch, timeoutMs = 3000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(url, { headers: { Authorization: `Bearer ${key}` }, signal: controller.signal });
+    if (res.status === 200) return 'ready';
+    if (res.status === 401 || res.status === 403) return 'rejected';
+    return 'down';
+  } catch {
+    return 'down';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * One line per distro for `gateway provision-client`, from provisionLocalAndWslClient's
+ * `distros` entry. Never the key.
+ */
+function describeDistroProvision(d) {
+  if (d.key !== 'written') return 'could not write the key file (is the distro running, and is its default user a normal user?)';
+  switch (d.wrapper) {
+    case 'installed': return `key file written; wrapper installed at ${d.path}`;
+    case 'updated': return `key file written; wrapper updated at ${d.path}`;
+    case 'unchanged': return `key file written; wrapper already current at ${d.path}`;
+    case 'replaced': return `key file written; the symlink at ${d.path} was replaced with a copy`;
+    case 'symlink-kept': return `key file written; ${d.path} is a symlink to ${d.target} and was left alone (--replace-symlink replaces it with a copy)`;
+    case 'not-provided': return 'key file written; no wrapper file to install';
+    default: return 'key file written; the wrapper could not be installed';
+  }
+}
+
+/**
+ * Whether the tray is registered to start with Windows, read from the Run key Electron
+ * writes. null when the question has no answer here (not Windows, or reg.exe failed).
+ */
+async function loginItemPresent() {
+  if (process.platform !== 'win32') return null;
+  return new Promise((resolve) => {
+    const child = spawn('reg.exe', ['query', RUN_KEY, '/v', LOGIN_ITEM_NAME], { windowsHide: true, stdio: 'ignore' });
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => resolve(code === 0));
+  });
+}
+
+async function addLoginItem(exePath) {
+  return new Promise((resolve) => {
+    const child = spawn('reg.exe', ['add', RUN_KEY, '/v', LOGIN_ITEM_NAME, '/t', 'REG_SZ', '/d', `"${exePath}"`, '/f'], { windowsHide: true, stdio: 'ignore' });
+    child.on('error', () => resolve(false));
+    child.on('close', (code) => resolve(code === 0));
+  });
 }
 
 /**
@@ -249,6 +327,132 @@ async function watchPass({ mode, apply }) {
   }
 
   return { decisions, thresholdEvents, accounts: reg.accounts };
+}
+
+/**
+ * The interactive mint for one lane, shared by `lane-token <laneId>` and `lane-token
+ * --missing`: runs `claude setup-token` in the lane's own account folder, takes the
+ * pasted token, checks it with a small real Claude run, and stores it. Prints what
+ * happened and answers true only when a token was stored. The caller decides the
+ * exit code, because `--missing` goes on to the next lane.
+ */
+async function mintLaneToken({ laneId, registry, settings }) {
+  const lane = settings.lanes.find((l) => l.id === laneId);
+  if (!lane) { out(`no lane with id "${laneId}"`); return false; }
+  if (lane.harness !== 'claude') {
+    out(`lane ${laneId} runs ${lane.harness}; only Claude lanes can carry a setup token`);
+    return false;
+  }
+  const account = registry.accounts.find((a) => a.id === lane.accountId);
+  if (!account) { out(`lane ${laneId} names an unregistered account (${lane.accountId})`); return false; }
+
+  const executable = await toolExecutable(lane.harness);
+  if (!executable) {
+    out(`Tool for harness '${lane.harness}' is not installed or not found on PATH.`);
+    return false;
+  }
+
+  // Same launch shape as `run`: cmd.exe for the batch shims npm writes on Windows,
+  // with the same unsafe-path guard.
+  let spawnFile = executable;
+  let spawnArgs = ['setup-token'];
+  if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable)) {
+    if (/[\u0000-\u001f"%]/.test(executable)) {
+      out(`Unsafe batch-shim path: ${executable}`);
+      return false;
+    }
+    spawnFile = 'cmd.exe';
+    spawnArgs = ['/d', '/s', '/v:off', '/c', executable, 'setup-token'];
+  }
+
+  // accountScopedEnv strips any inherited CLAUDE_CODE_OAUTH_TOKEN and pins
+  // CLAUDE_CONFIG_DIR to this lane's account folder, which structurally prevents
+  // the known trap where setup-token silently mints for whatever account the
+  // calling shell was already carrying.
+  const childEnv = accountScopedEnv(account, process.env);
+  out(`Minting a token for ${account.label} (${lane.accountId}). Complete the browser approval when asked.`);
+
+  out(`Claude's own sign-in tool runs next, in this terminal. Complete the browser`);
+  out(`approval; the tool then prints the minted token here. Copy it, and paste it`);
+  out(`at the prompt that follows. Switchboard checks it before storing anything.`);
+
+  const minted = await new Promise((resolve) => {
+    // The tool is interactive all the way through and renders its prompts only on
+    // a real console, so it gets the terminal unfiltered and Switchboard captures
+    // nothing. Capturing was tried and shipped in 0.16.0, and it HANGS: with
+    // stdout piped, the tool draws nothing and waits forever on a prompt nobody
+    // can see. The token therefore appears once on screen, printed by the
+    // vendor's own tool exactly as it would if run by hand; Switchboard itself
+    // still never prints it.
+    const child = spawn(spawnFile, spawnArgs, { stdio: 'inherit', env: childEnv });
+    child.on('error', (err) => resolve({ code: 1, launchError: err.message }));
+    child.on('close', (code) => resolve({ code }));
+  });
+
+  if (minted.launchError) {
+    out(`Failed to launch ${executable}: ${minted.launchError}`);
+    return false;
+  }
+  if (minted.code !== 0) {
+    out(`setup-token exited with code ${minted.code}, so nothing was stored`);
+    return false;
+  }
+
+  // Not promptUser: that helper lowercases its answer for y/N questions, and a
+  // token is case sensitive. Pasting echoes on screen, which adds nothing new,
+  // since the tool printed the same value directly above.
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let pasted;
+  try {
+    pasted = await rl.question('Paste the token that was just printed: ');
+  } finally {
+    rl.close();
+  }
+  const token = extractSetupToken(pasted);
+  if (!token) {
+    out('That did not contain a token, so nothing was stored. Run this command again to re-mint.');
+    return false;
+  }
+
+  // The minting login's identity is stamped into the stored entry, so dry-run can
+  // refuse to hand the token out after the folder is re-signed into a different
+  // account. No identity means nothing to stamp, and an unstamped fresh token
+  // would outlive any later re-sign-in unnoticed, so it is refused instead.
+  const identity = readClaudeAccountIdentity(account.home);
+  if (!identity) {
+    out(`No readable sign-in identity in ${account.home}, so nothing was stored. The lane's folder must be signed in; sign it in and mint again.`);
+    return false;
+  }
+
+  // One validation before anything is written: a real, minimal Claude run using
+  // the token, because that is the only thing that honestly answers whether the
+  // vendor honours it. The account usage endpoint refuses setup tokens outright
+  // even seconds after a successful mint (learned on the first real one), and
+  // auth status reports loggedIn for any well-shaped value. A token the vendor
+  // refuses must not be stored: automation would trust it and fail every run.
+  out('Checking the token with a small real Claude run; this can take a minute...');
+  const verdict = await probeSetupToken(token);
+  if (verdict === 'dead') {
+    out('Claude refused the pasted token, so nothing was stored. Check that the whole token was copied, and mint again.');
+    return false;
+  }
+  if (verdict === 'unreachable') {
+    out('The check could not run (network or tool failure), so the token is stored unverified; "lane-token --check" can retry the check later.');
+  }
+  // Settings are re-read here: the browser approval can take minutes, and the tray
+  // or another terminal may have written settings.json while we waited.
+  saveSettings(setLaneToken(loadSettings(), laneId, {
+    token,
+    accountId: account.id,
+    mintedAt: Date.now(),
+    organizationUuid: identity.organizationUuid,
+    accountUuid: identity.accountUuid,
+  }));
+  out(`Stored a lane token for ${account.label} (${token.length} characters; the value itself is never printed).`);
+  if (verdict === 'unknown') {
+    out(`The validation call could not run (network or endpoint failure); the token is stored anyway. Confirm later with: switchboard lane-token ${laneId} --check`);
+  }
+  return true;
 }
 
 async function main() {
@@ -934,8 +1138,15 @@ async function main() {
     // account is signed in, and how much of its allowance is left. This is the only
     // view of the machine available from somewhere else, so it errs towards detail.
     case 'status': {
-      const status = await collectStatus({ registry, settings: loadSettings() });
-      out(args.includes('--json') ? JSON.stringify(status, null, 2) : formatStatus(status));
+      const settings = loadSettings();
+      const status = await collectStatus({ registry, settings });
+      if (args.includes('--json')) {
+        // One word per lane for scripts (live, dead, unreadable, none). Never the value.
+        status.laneTokens = Object.fromEntries((settings.lanes ?? []).map((lane) => [lane.id, laneTokenState(settings, lane.id)]));
+        out(JSON.stringify(status, null, 2));
+        return;
+      }
+      out(formatStatus(status));
       return;
     }
     case 'accounts': {
@@ -1057,7 +1268,8 @@ async function main() {
 
       if (!sub || sub === 'list' || sub === '--json') {
         if (args.includes('--json')) {
-          out(JSON.stringify({ lanes: settings.lanes, spendPolicies: settings.spendPolicies }, null, 2));
+          // setupToken is one word per lane (live, dead, unreadable, none), never the value.
+          out(JSON.stringify({ lanes: settings.lanes.map((lane) => ({ ...lane, setupToken: laneTokenState(settings, lane.id) })), spendPolicies: settings.spendPolicies }, null, 2));
           return;
         }
         if (!settings.lanes.length) {
@@ -1166,11 +1378,38 @@ async function main() {
     case 'lane-token': {
       const settings = loadSettings();
       const laneId = args.find((a) => !a.startsWith('--'));
+
+      // Every Claude lane without a live token, one mint after another. Each mint waits
+      // on a browser approval and a paste, so it stays interactive, and settings are
+      // re-read per lane because each mint saves.
+      if (args.includes('--missing')) {
+        const missing = claudeLanesWithoutToken(settings);
+        if (!missing.length) { out('Every Claude lane holds a live setup token.'); return; }
+        out(`${missing.length} Claude lane${missing.length === 1 ? '' : 's'} without a live setup token: ${missing.map((l) => l.id).join(', ')}. Each mint opens a browser approval, and the token is pasted back here.`);
+        const failed = [];
+        for (const [i, lane] of missing.entries()) {
+          out('');
+          out(`Lane ${i + 1} of ${missing.length}: ${lane.id}`);
+          const ok = await mintLaneToken({ laneId: lane.id, registry, settings: loadSettings() });
+          if (!ok) failed.push(lane.id);
+        }
+        out('');
+        if (failed.length) {
+          out(`Not stored for: ${failed.join(', ')}. Run switchboard lane-token --missing again for those.`);
+          process.exitCode = 1;
+        } else {
+          out('Every Claude lane now holds a setup token.');
+        }
+        return;
+      }
+
       if (!laneId) {
         out('switchboard lane-token <laneId> [--remove|--check]');
+        out('switchboard lane-token --missing');
         out('  with no flag, mints a token for the lane\'s account via "claude setup-token" and stores it');
         out('  --remove   delete the stored token (the account sign-in is untouched)');
         out('  --check    ask the vendor whether the stored token is still honoured');
+        out('  --missing  mint for every Claude lane that holds no live token, one after another');
         process.exitCode = 1;
         return;
       }
@@ -1210,7 +1449,7 @@ async function main() {
         if (checked.changed) saveSettings(mergeLaneTokenResults(loadSettings(), checked));
         const outcome = checked.results.find((r) => r.laneId === laneId)?.outcome;
         if (outcome === 'dead') {
-          out(`the token for ${laneId} was revoked or expired, so automation reverts to folder mode. Mint a new one with: switchboard lane-token ${laneId}`);
+          out(`the token for ${laneId} was revoked or expired, so the lease broker and automation get no token from this lane (terminals on this machine still use its folder sign-in). Mint a new one with: switchboard lane-token ${laneId}`);
           process.exitCode = 1;
           return;
         }
@@ -1219,129 +1458,8 @@ async function main() {
         return;
       }
 
-      const lane = settings.lanes.find((l) => l.id === laneId);
-      if (!lane) { out(`no lane with id "${laneId}"`); process.exitCode = 1; return; }
-      if (lane.harness !== 'claude') {
-        out(`lane ${laneId} runs ${lane.harness}; only Claude lanes can carry a setup token`);
-        process.exitCode = 1;
-        return;
-      }
-      const account = registry.accounts.find((a) => a.id === lane.accountId);
-      if (!account) { out(`lane ${laneId} names an unregistered account (${lane.accountId})`); process.exitCode = 1; return; }
-
-      const executable = await toolExecutable(lane.harness);
-      if (!executable) {
-        out(`Tool for harness '${lane.harness}' is not installed or not found on PATH.`);
-        process.exitCode = 1;
-        return;
-      }
-
-      // Same launch shape as `run`: cmd.exe for the batch shims npm writes on Windows,
-      // with the same unsafe-path guard.
-      let spawnFile = executable;
-      let spawnArgs = ['setup-token'];
-      if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable)) {
-        if (/[\u0000-\u001f"%]/.test(executable)) {
-          out(`Unsafe batch-shim path: ${executable}`);
-          process.exitCode = 1;
-          return;
-        }
-        spawnFile = 'cmd.exe';
-        spawnArgs = ['/d', '/s', '/v:off', '/c', executable, 'setup-token'];
-      }
-
-      // accountScopedEnv strips any inherited CLAUDE_CODE_OAUTH_TOKEN and pins
-      // CLAUDE_CONFIG_DIR to this lane's account folder, which structurally prevents
-      // the known trap where setup-token silently mints for whatever account the
-      // calling shell was already carrying.
-      const childEnv = accountScopedEnv(account, process.env);
-      out(`Minting a token for ${account.label} (${lane.accountId}). Complete the browser approval when asked.`);
-
-      out(`Claude's own sign-in tool runs next, in this terminal. Complete the browser`);
-      out(`approval; the tool then prints the minted token here. Copy it, and paste it`);
-      out(`at the prompt that follows. Switchboard checks it before storing anything.`);
-
-      const minted = await new Promise((resolve) => {
-        // The tool is interactive all the way through and renders its prompts only on
-        // a real console, so it gets the terminal unfiltered and Switchboard captures
-        // nothing. Capturing was tried and shipped in 0.16.0, and it HANGS: with
-        // stdout piped, the tool draws nothing and waits forever on a prompt nobody
-        // can see. The token therefore appears once on screen, printed by the
-        // vendor's own tool exactly as it would if run by hand; Switchboard itself
-        // still never prints it.
-        const child = spawn(spawnFile, spawnArgs, { stdio: 'inherit', env: childEnv });
-        child.on('error', (err) => resolve({ code: 1, launchError: err.message }));
-        child.on('close', (code) => resolve({ code }));
-      });
-
-      if (minted.launchError) {
-        out(`Failed to launch ${executable}: ${minted.launchError}`);
-        process.exitCode = 1;
-        return;
-      }
-      if (minted.code !== 0) {
-        out(`setup-token exited with code ${minted.code}, so nothing was stored`);
-        process.exitCode = 1;
-        return;
-      }
-
-      // Not promptUser: that helper lowercases its answer for y/N questions, and a
-      // token is case sensitive. Pasting echoes on screen, which adds nothing new,
-      // since the tool printed the same value directly above.
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      let pasted;
-      try {
-        pasted = await rl.question('Paste the token that was just printed: ');
-      } finally {
-        rl.close();
-      }
-      const token = extractSetupToken(pasted);
-      if (!token) {
-        out('That did not contain a token, so nothing was stored. Run this command again to re-mint.');
-        process.exitCode = 1;
-        return;
-      }
-
-      // The minting login's identity is stamped into the stored entry, so dry-run can
-      // refuse to hand the token out after the folder is re-signed into a different
-      // account. No identity means nothing to stamp, and an unstamped fresh token
-      // would outlive any later re-sign-in unnoticed, so it is refused instead.
-      const identity = readClaudeAccountIdentity(account.home);
-      if (!identity) {
-        out(`No readable sign-in identity in ${account.home}, so nothing was stored. The lane's folder must be signed in; sign it in and mint again.`);
-        process.exitCode = 1;
-        return;
-      }
-
-      // One validation before anything is written: a real, minimal Claude run using
-      // the token, because that is the only thing that honestly answers whether the
-      // vendor honours it. The account usage endpoint refuses setup tokens outright
-      // even seconds after a successful mint (learned on the first real one), and
-      // auth status reports loggedIn for any well-shaped value. A token the vendor
-      // refuses must not be stored: automation would trust it and fail every run.
-      out('Checking the token with a small real Claude run; this can take a minute...');
-      const verdict = await probeSetupToken(token);
-      if (verdict === 'dead') {
-        out('Claude refused the pasted token, so nothing was stored. Check that the whole token was copied, and mint again.');
-        process.exitCode = 1;
-        return;
-      }
-      if (verdict === 'unreachable') {
-        out('The check could not run (network or tool failure), so the token is stored unverified; "lane-token --check" can retry the check later.');
-      }
-      // Settings are re-read here: the browser approval can take minutes, and the tray
-      // or another terminal may have written settings.json while we waited.
-      saveSettings(setLaneToken(loadSettings(), laneId, {
-        token,
-        accountId: account.id,
-        mintedAt: Date.now(),
-        organizationUuid: identity.organizationUuid,
-        accountUuid: identity.accountUuid,
-      }));
-      out(`Stored a lane token for ${account.label} (${token.length} characters; the value itself is never printed).`);
-      if (verdict === 'unknown') {
-        out(`The validation call could not run (network or endpoint failure); the token is stored anyway. Confirm later with: switchboard lane-token ${laneId} --check`);
-      }
+      const ok = await mintLaneToken({ laneId, registry, settings });
+      if (!ok) process.exitCode = 1;
       return;
     }
     // The quota watch, without the tray. Reads every account a decision could name, then
@@ -1753,6 +1871,75 @@ async function main() {
         out(`  Issued keys:  ${st.keys.length}`);
         return;
       }
+      // One command for what the Gateway tab does in clicks: broker on, a key with the
+      // gateway's scope, the key file here and in every WSL distro, the wrapper there.
+      // Then the two things only a person may decide, each asked (or --yes): the tray
+      // starting with Windows, and a lane for each Claude account without one. Prints
+      // one line per step and never the key.
+      if (sub === 'provision-client') {
+        const yes = args.includes('--yes') || args.includes('-y');
+        const replaceSymlink = args.includes('--replace-symlink');
+        const labelAt = args.indexOf('--label');
+        const label = labelAt >= 0 ? String(args[labelAt + 1] ?? '').trim() : '';
+        const say = (line) => { if (!asJson) out(line); };
+        const report = { gateway: null, key: null, localKeyPath: null, distros: [], broker: null, lanesWithoutToken: [], notes: [] };
+
+        const enabled = gatewayEnabledSettings(loadSettings());
+        const chosen = chooseProvisionKey(enabled.settings, { label, scope: enabled.scope });
+        saveSettings(chosen.settings);
+        report.gateway = { enabled: true, wasEnabled: enabled.wasEnabled, fresh: enabled.fresh, scope: enabled.scope, port: enabled.port };
+        report.key = { ...chosen.key, created: chosen.created, scopeChanged: chosen.scopeChanged, previousScope: chosen.previousScope };
+        say(`Gateway: ${enabled.wasEnabled ? 'already on' : 'turned on'} (scope ${enabled.scope}, port ${enabled.port}; ${enabled.fresh ? 'never configured before, so the default scope' : 'the scope was left as it was'})`);
+        say(`Key: ${chosen.key.label} (${chosen.key.id}) ${chosen.created ? 'created' : 'reused'} with scope ${chosen.key.scope}${chosen.scopeChanged ? `, was ${chosen.previousScope}. A key is checked against its own scope, so it now matches the gateway.` : ''}`);
+
+        const provisioned = await provisionLocalAndWslClient({ token: chosen.secret, leaseScriptPath: path.join(here, 'switchboard-lease'), replaceSymlink });
+        report.localKeyPath = provisioned.localKeyPath;
+        report.distros = provisioned.distros;
+        say(`Key file here: ${provisioned.localKeyPath}`);
+        if (process.platform === 'win32' && !provisioned.distros.length) say('WSL: no distro found (wsl --list --quiet), so nothing was installed there.');
+        for (const d of provisioned.distros) say(`  ${d.name}: ${describeDistroProvision(d)}`);
+
+        const brokerBase = `http://127.0.0.1:${enabled.port}`;
+        const broker = await probeBrokerInfo(`${brokerBase}/v1/info`, chosen.secret);
+        report.broker = { url: brokerBase, state: broker };
+        if (broker === 'ready') say(`Broker: answers at ${brokerBase} with this key.`);
+        else if (broker === 'rejected') say(`Broker: answers at ${brokerBase} but refused this key, so the tray still holds an older key list. Restart Switchboard.`);
+        else say(`Broker: nothing answers at ${brokerBase} yet. A running tray applies the setting within seconds; otherwise start Switchboard.`);
+
+        // The broker lives in the tray, so a tray that does not start with Windows leaves
+        // every caller without lanes after a restart. Asked, never assumed. Only the
+        // packaged app has an exe to register; a checkout run with node has not.
+        if (process.platform === 'win32' && /switchboard\.exe$/i.test(process.execPath) && (await loginItemPresent()) === false) {
+          say('Switchboard does not start with Windows yet, and the broker runs inside the tray, so every caller loses its lanes after a restart.');
+          if (await askYes('Start Switchboard with Windows?', { yes, quiet: asJson })) {
+            const added = await addLoginItem(process.execPath);
+            say(added ? 'Switchboard now starts with Windows.' : 'Could not write the Run entry; turn on "Start with Windows" in the tray menu.');
+            report.notes.push(added ? 'start-with-windows: enabled' : 'start-with-windows: failed');
+          } else {
+            report.notes.push('start-with-windows: declined');
+          }
+        }
+
+        // An account without a lane cannot be lent. Optional, asked per account.
+        const allAccounts = await resolveAllAccounts(registry);
+        for (const a of allAccounts.filter((x) => x.provider === 'claude' && !(loadSettings().lanes ?? []).some((l) => l.accountId === x.id))) {
+          if (!(await askYes(`Claude account "${a.label}" (${a.id}) has no lane, so the broker cannot lend it. Add a subscription lane for it?`, { yes, quiet: asJson }))) continue;
+          try {
+            const added = addLane(loadSettings(), { accountId: a.id }, allAccounts);
+            saveSettings(added.settings);
+            say(`  added lane ${added.lane.id} for ${a.label}`);
+            report.notes.push(`lane-added: ${added.lane.id}`);
+          } catch (e) {
+            say(`  could not add a lane for ${a.id}: ${String(e.message || e)}`);
+          }
+        }
+
+        const missing = claudeLanesWithoutToken(loadSettings());
+        report.lanesWithoutToken = missing.map((l) => l.id);
+        if (missing.length) say(`Lanes without a live setup token, which the broker cannot lend yet: ${missing.map((l) => l.id).join(', ')}. Mint them with: switchboard lane-token --missing`);
+        if (asJson) out(JSON.stringify(report, null, 2));
+        return;
+      }
       if (sub === 'scope') {
         const wanted = args[1];
         if (!wanted) throw new Error('usage: switchboard gateway scope <localhost|localhost-wsl|lan>');
@@ -1794,7 +1981,7 @@ async function main() {
         await gwServer.stop();
         return;
       }
-      throw new Error(`unknown gateway subcommand: ${sub}. Use status|serve|enable|disable|scope|port`);
+      throw new Error(`unknown gateway subcommand: ${sub}. Use status|serve|enable|disable|scope|port|provision-client`);
     }
     case 'keys': {
       const sub = args[0] ?? 'list';
@@ -1859,8 +2046,9 @@ async function main() {
       out('  doctor                      health checks');
       out('  quota                       per-account usage');
       out('  lanes [...]                 the failover pool: list, add, remove, order, budget');
-      out('  lane-token <laneId> [--remove|--check]   mint, delete or validate the token a lane hands to automation');
-      out('  gateway [status|serve|enable|disable|scope|port]   manage the local pass-through API gateway');
+      out('  lane-token <laneId> [--remove|--check] | --missing   mint, delete or validate the token a lane hands to automation; --missing mints for every Claude lane without one');
+      out('  gateway [status|serve|enable|disable|scope|port]   manage the local pass-through API gateway and lease broker');
+      out('  gateway provision-client [--label <text>] [--replace-symlink] [--yes] [--json]   broker on, a key with the gateway scope, key file and wrapper here and in every WSL distro');
       out('  keys [list|create|revoke]   manage client keys (sb-key-...) for the gateway');
       out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
       out('  notify [--webhook <url>] [--command <cmd>] [--threshold <w=pct>] [--test] [--json]   manage notification hooks');

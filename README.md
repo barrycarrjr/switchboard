@@ -361,8 +361,8 @@ address and drops any that need an API key.
 The core (`core/`, `bin/cli.js`) is plain Node with no Electron dependency; the tray shell
 is a thin skin over it. `switchboard` is also a CLI: `status`, `accounts`, `add`,
 `remove`, `use`, `color`, `detect`, `providers`, `doctor`, `quota`, `lanes`, `lane-token`,
-`watch`, `notify`, `mcp`, `dry-run` and `run`. Running it with no command prints the same
-list with a line each.
+`gateway`, `keys`, `watch`, `notify`, `mcp`, `dry-run` and `run`. Running it with no command
+prints the same list with a line each.
 
 Everything the tray decides, the CLI decides the same way, because both call the same code
 in `core/`. That is what makes a machine with no desktop usable: `switchboard lanes` edits
@@ -402,16 +402,44 @@ so a lane folder later signed in to a different account stops receiving the toke
 Health says why) instead of quietly billing the account the token was minted for; a
 folder with no readable sign-in identity refuses to mint until it is signed in.
 `lane-token <laneId> --check` asks the vendor whether the
-stored token is still honoured, and `lane-token <laneId> --remove` deletes it. The token
+stored token is still honoured, and `lane-token <laneId> --remove` deletes it.
+`lane-token --missing` runs the mint for every Claude lane that holds no live token, one
+lane after another, so a machine with several lanes is done in one sitting. The token
 never appears in `lanes --json`, the tray, a config export, or anything Switchboard
 itself prints; the one place it is ever visible is the mint step above, where the
-vendor's own tool shows it to you once.
+vendor's own tool shows it to you once. What does appear is one word per lane:
+`lanes --json` carries it as `setupToken` (`live`, `dead`, `unreadable` or `none`) and
+`status --json` as the `laneTokens` map, and Health warns about a Claude lane with no
+token at all, because the lease broker can only lend a lane that holds one. Terminals on
+this machine never notice a missing token (they use the folder sign-in); a caller inside
+WSL or on another machine gets nothing from that lane.
 `switchboard dry-run --json --with-token` adds the token to the JSON for the calling
 process only, and only when the caller passes the flag; a token the vendor has revoked
 is marked dead, stops being emitted, and shows up as a Health warning saying to mint a
 new one, while the lane itself keeps running on its folder sign-in. Uninstalling
 Switchboard leaves `settings.json` behind in `%APPDATA%\Switchboard`, so remove lane
 tokens first if the machine is being retired.
+
+`switchboard gateway provision-client [--label <text>] [--replace-symlink] [--yes] [--json]`
+does in one command what the Gateway tab does in clicks. It turns the lease broker on (a
+gateway configured before keeps its scope and port exactly as they were, in either
+direction; one never configured gets `localhost-wsl`), reuses the stored client key or
+creates one, and gives that key the gateway's scope, because a key is checked against its
+own scope and a `localhost-wsl` key on a `lan` gateway refuses every caller on the LAN.
+Then it writes the key file on Windows (`~/.config/switchboard/client-key`) and in every
+WSL distro except Docker's, copies `bin/switchboard-lease` to
+`~/.local/bin/switchboard-lease` in each, and prints one line per distro, never the key
+itself. A wrapper that is a symlink (a developer's link into a checkout) is kept and
+named; `--replace-symlink` replaces it with a copy. It then asks two things a script may
+not decide alone, unless `--json`: to start Switchboard with Windows when it does not
+(the broker lives in the tray, so without that every caller loses its lanes after a
+restart), and to add a lane for each Claude account that has none; `--yes` answers yes to
+both. It ends with the lanes that hold no setup token, which `lane-token --missing` mints.
+The tray watches `settings.json`, so `gateway enable`, `disable`, `scope`, `port` and
+`provision-client` take effect within a second while it runs; and at every start the tray
+refreshes the wrapper in each distro when the file differs from this version's, leaving
+symlinks alone. A key created in the Gateway tab is installed the same way whatever its
+scope, `lan` included.
 
 `switchboard watch` is the quota watch without the tray. `--once` takes a single pass, for
 Task Scheduler or cron; without it, it stays running and takes a pass every five minutes,
