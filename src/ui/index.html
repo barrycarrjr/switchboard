@@ -2942,7 +2942,8 @@ async function renderGateway() {
       const tr = el('tr');
       tr.appendChild(el('td', '', esc(e.id)));
       tr.appendChild(el('td', '', esc(t3EnvStateText(e.state))));
-      const detailTd = el('td', '', esc(e.detail));
+      const advice = (e.signInsTodo ?? []).map((x) => `<br>${esc(x.what)}: ${esc(x.how)}`).join('');
+      const detailTd = el('td', '', esc(e.detail) + advice);
       detailTd.style.color = 'var(--muted)';
       tr.appendChild(detailTd);
       const actionTd = el('td');

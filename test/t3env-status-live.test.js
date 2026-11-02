@@ -84,3 +84,21 @@ test('t3 sign-in saves what it finds even when there is nothing to sign in', asy
   assert.deepEqual(after.signInsMissing, [], 'the stale note about Codex is cleared');
   assert.ok(after.signInsCheckedAt > before, 'with the time of this reading');
 });
+
+test('the how-to for each sign-in still to do is saved per account and shown by status', async () => {
+  const { signInsTodo, t3EnvironmentStatus } = await import('../core/t3env.js');
+  const rows = [
+    { provider: 'codex', account: 'codex-work', what: 'Codex (Work)', state: 'signed-in', how: 'a' },
+    { provider: 'codex', account: 'codex-work-2', what: 'Codex (Work)', state: 'needs-sign-in', how: 'CODEX_HOME=~/.codex-t3/work_2 codex login --device-auth' },
+    { provider: 'antigravity', account: 'antigravity', what: 'Antigravity', state: 'not-installed', how: 'install Node.js on that machine first (x), then in T3' },
+  ];
+  const todo = signInsTodo(rows);
+  assert.deepEqual(todo.map((x) => x.key), ['codex:codex-work-2', 'antigravity:antigravity'], 'two accounts with one label keep their own advice');
+  assert.match(todo[0].how, /work_2/);
+  const unknown = signInsTodo([{ provider: 'codex', account: 'codex-default', what: 'Codex', state: 'unknown', how: 'Codex there could not say' }], { signInsMissing: ['Codex'] });
+  assert.deepEqual(unknown.map((x) => x.how), ['Codex there could not say'], 'an unreadable state keeps the item, with this reading\'s own honest advice, also for a record saved before');
+  const s = rememberSignIns({ t3Environments: { 'wsl:U': { id: 'wsl:U', lastOk: true } } }, 'wsl:U', rows, { now: 5 });
+  const [e] = t3EnvironmentStatus(s, { now: 5 });
+  assert.deepEqual(e.signInsTodo.map((x) => x.what), ['Codex (Work)', 'Antigravity']);
+  assert.deepEqual(e.signInsMissing, ['Codex (Work)', 'Antigravity']);
+});

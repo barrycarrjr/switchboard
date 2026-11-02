@@ -165,6 +165,63 @@ test('inspection asks Codex in each account\'s folder and counts T3\'s Antigravi
   assert.equal(p.antigravityRuntime, true);
 });
 
+// A PATH without node: only the tools the inspection itself needs.
+function noNodePath(home) {
+  const bin = path.join(home, 'nonode');
+  fs.mkdirSync(bin);
+  for (const t of ['bash', 'base64', 'tr', 'cat', 'head', 'tail', 'basename', 'dirname', 'cut', 'grep', 'ip', 'awk', 'which', 'readlink', 'curl', 'mktemp', 'cp', 'rm', 'timeout', 'setsid', 'sha256sum', 'sleep']) {
+    const real = spawnSync('bash', ['-c', `command -v ${t}`], { encoding: 'utf8' }).stdout.trim();
+    if (real) fs.symlinkSync(real, path.join(bin, t));
+  }
+  return bin;
+}
+// A stand-in login shell: \`body\` decides what `command -v node` gives, from the flags it got.
+function fakeShell(home, body) {
+  const f = path.join(home, 'fakeshell');
+  fs.writeFileSync(f, `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+  return f;
+}
+const probe = (home, PATH, SHELL) => {
+  const r = spawnSync(path.join(PATH, 'bash'), ['-s'], { input: inspectScript({ antigravity: true, wsl: true }), env: { PATH, HOME: home, SHELL }, encoding: 'utf8' });
+  return parseInspect(r.stdout);
+};
+
+test('Node.js is asked about only when Antigravity is in use', { skip }, () => {
+  const home = freshHome();
+  const r = spawnSync('bash', ['-s'], { input: inspectScript({}), env: { PATH: process.env.PATH, HOME: home }, encoding: 'utf8' });
+  assert.equal(parseInspect(r.stdout).nodeState, null);
+});
+
+test('a node only an interactive login shell can see (nvm) counts as found, as it does for T3', { skip }, () => {
+  const home = freshHome();
+  const PATH = noNodePath(home);
+  // Answers only when asked the way T3 asks (-ilc), as nvm's lines in ~/.bashrc behave.
+  const shell = fakeShell(home, 'if [ "$1" = -ilc ]; then echo /home/u/.nvm/versions/node/v22/bin/node; else exit 1; fi');
+  assert.equal(probe(home, PATH, shell).nodeState, 'found');
+});
+
+test('no node anywhere is "missing", with the OS family for the install command', { skip }, () => {
+  const home = freshHome();
+  const p = probe(home, noNodePath(home), fakeShell(home, 'exit 1'));
+  assert.equal(p.nodeState, 'missing');
+  assert.ok(fs.existsSync('/etc/os-release') ? p.osFamily.length > 0 : true, 'the OS family is read when node is missing');
+});
+
+test('a login shell that does not answer in time gives "unknown", never "missing"', { skip }, () => {
+  const home = freshHome();
+  const started = Date.now();
+  const p = probe(home, noNodePath(home), fakeShell(home, 'sleep 30'));
+  assert.equal(p.nodeState, 'unknown');
+  assert.ok(Date.now() - started < 20000, 'bounded by the timeout');
+});
+
+test('a node seen through the Windows PATH inside WSL is not the Linux one', { skip }, () => {
+  const home = freshHome();
+  const PATH = noNodePath(home);
+  const shell = fakeShell(home, 'echo /mnt/c/Program Files/nodejs/node');
+  assert.notEqual(probe(home, PATH, shell).nodeState, 'found');
+});
+
 test('a settings file T3 changed after inspection is left alone and reported as a conflict', { skip }, () => {
   const home = freshHome();
   const sfile = path.join(home, '.t3', 'userdata', 'settings.json');

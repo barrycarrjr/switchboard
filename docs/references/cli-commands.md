@@ -146,7 +146,10 @@ switchboard t3 forget <wsl:<distro>|ssh:<host>>
   Security). Antigravity's sign-in belongs to T3 itself, kept apart from the `agy` command's,
   so it is done in T3: pick the environment, then Settings, Providers, Antigravity (Install
   first where T3 has not installed its Antigravity program there yet), then Sign in; T3 shows
-  a link to open in your own browser. Codex's usage reaches T3 through the Switchboard hub;
+  a link to open in your own browser. T3 cannot install Antigravity on a machine without
+  Node.js, so on such a machine the advice starts with installing Node.js 22, with the command
+  for that system (NodeSource for Debian, Ubuntu and Fedora families). `t3 status` prints the
+  how-to under each machine for every sign-in still to do. Codex's usage reaches T3 through the Switchboard hub;
   T3 reads Antigravity's itself once signed in. Grok and Junie need their own sign-in on each
   machine where they are used.
 - An ssh machine needs the gateway on scope `lan`. The scope is never changed from here; a

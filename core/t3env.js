@@ -383,7 +383,7 @@ const SCRIPT_HEAD = [
  * target's key. `defaultRoutePort` adds the default-route host on that port, which is Windows
  * only from inside WSL; on a LAN machine it is the router, and the key must never go there.
  */
-export function inspectScript({ brokerUrls = [], defaultRoutePort = null, codexHomes = [] } = {}) {
+export function inspectScript({ brokerUrls = [], defaultRoutePort = null, codexHomes = [], antigravity = false, wsl = false } = {}) {
   for (const h of codexHomes) if (!/^\.codex(-t3\/[a-z0-9_]+)?$/.test(h)) throw new Error(`unexpected Codex folder ${h}`);
   const urls = brokerUrls.map(shq).join(' ');
   const viaRoute = Number.isInteger(defaultRoutePort) ? ` \${gw:+"http://$gw:${defaultRoutePort}"}` : '';
@@ -439,9 +439,39 @@ export function inspectScript({ brokerUrls = [], defaultRoutePort = null, codexH
     // T3 installs its own Antigravity program per machine (from that environment's provider
     // settings); until it has, there is nothing to sign in to.
     'r=no; for v in "$HOME"/.t3/tools/antigravity-acp/*/versions/*; do [ -d "$v" ] && r=yes && break; done; emit agruntime "$r"',
+    ...(antigravity ? nodeProbeLines({ wsl }) : []),
     'emit done 1',
     '',
   ].join('\n');
+}
+
+/**
+ * Whether Node.js is on the machine, asked only when Antigravity is in use (T3 cannot install or
+ * run its Antigravity program without it). T3 reads its PATH from an interactive login shell, so
+ * that is what is asked when node is not on the plain PATH: that is where nvm and similar tools
+ * put it. The shell runs detached (setsid, so an interactive shell cannot stop waiting for a
+ * terminal), bounded by timeout with a kill, writing to a file rather than a pipe (a job the
+ * profile leaves running would hold a pipe open). Emits nodestate found, missing or unknown (the
+ * shell did not answer in time, or failed): only "missing" leads to install advice. Inside WSL a
+ * node seen through the Windows PATH (/mnt/...) is not the Linux one; elsewhere /mnt is an
+ * ordinary folder. The OS family, read only when node is missing, picks the install command.
+ */
+function nodeProbeLines({ wsl = false } = {}) {
+  const skip = wsl ? 'case "$x" in /mnt/*) continue ;; esac; ' : '';
+  return [
+    `nb=""; ns=missing; while IFS= read -r x; do ${skip}nb="$x"; break; done < <(which -a node 2>/dev/null)`,
+    'if [ -z "$nb" ]; then',
+    '  f="$(mktemp)"',
+    '  if command -v setsid >/dev/null 2>&1; then setsid timeout -k 2 8 "${SHELL:-bash}" -ilc "command -v node" </dev/null >"$f" 2>/dev/null; c=$?',
+    '  else timeout -k 2 8 "${SHELL:-bash}" -lc "command -v node" </dev/null >"$f" 2>/dev/null; c=$?; fi',
+    `  x="$(grep '^/' "$f" | tail -n1)"; rm -f "$f"`,
+    ...(wsl ? ['  case "$x" in /mnt/*) x="" ;; esac'] : []),
+    '  if [ -n "$x" ]; then nb="$x"; elif [ "$c" != 1 ] && [ "$c" != 0 ]; then ns=unknown; fi',
+    'fi',
+    '[ -n "$nb" ] && ns=found',
+    'emit nodestate "$ns"',
+    `if [ "$ns" = missing ]; then os=""; [ -r /etc/os-release ] && os="$(. /etc/os-release 2>/dev/null; printf "%s %s" "\${ID:-}" "\${ID_LIKE:-}")"; emit osfamily "$os"; fi`,
+  ];
 }
 
 /** `@@name=<base64>` lines into { name: value } (repeated names into arrays where listed). */
@@ -507,6 +537,10 @@ export function parseInspect(text) {
     codexStatus: Object.fromEntries(raw.codexstatus.map((v) => v.split(' '))),
     antigravityTokenProfiles: raw.agtoken,
     antigravityRuntime: raw.agruntime == null ? null : raw.agruntime === 'yes',
+    // found, missing or unknown; null when Node.js was not asked about. Only "missing" leads to
+    // install advice, so a check that could not tell never becomes a definite answer.
+    nodeState: raw.nodestate ?? null,
+    osFamily: raw.osfamily ?? '',
     missingTools: String(raw.missing ?? '').trim().split(/\s+/).filter(Boolean),
   };
 }
@@ -724,7 +758,7 @@ export async function setupT3Environment(target, deps, { replaceSymlink = false,
   let applied = null;
   let keySecret = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const res = await deps.run(target, inspectScript({ ...inspectOpts, codexHomes: codexAccounts.map((a) => a.relHome) }), runOpts);
+    const res = await deps.run(target, inspectScript({ ...inspectOpts, codexHomes: codexAccounts.map((a) => a.relHome), antigravity: wantAntigravity, wsl: target.kind === 'wsl' }), runOpts);
     inspected = parseInspect(res.stdout);
     if (!inspected) {
       const why = (res.stderr || '').trim().split(/\r?\n/).slice(-3).join(' ');
@@ -887,7 +921,8 @@ export function signInsFor(target, inspected, codexAccounts, { antigravityIds = 
   for (const acc of codexAccounts) {
     const what = acc.shadow ? `Codex (${acc.label})` : 'Codex';
     if (!inspected.codexBin) {
-      out.push({ provider: 'codex', account: acc.id, what, state: 'not-installed', how: 'install Codex on that machine so it is on its PATH (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder), then run this again' });
+      const nodeFirst = inspected.nodeState === 'missing' ? `install Node.js first (${nodeInstallCommand(inspected.osFamily)}), then ` : '';
+      out.push({ provider: 'codex', account: acc.id, what, state: 'not-installed', how: `${nodeFirst}install Codex on that machine so it is on its PATH (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder), then run this again` });
       continue;
     }
     const seen = inspected.codexStatus?.[acc.relHome];
@@ -904,15 +939,33 @@ export function signInsFor(target, inspected, codexAccounts, { antigravityIds = 
     const profiles = new Set(inspected.antigravityTokenProfiles ?? []);
     const signedIn = antigravityIds.some((id) => profiles.has(antigravityProfileName(id)));
     const installed = inspected.antigravityRuntime !== false;
+    // T3 cannot install its Antigravity program without Node.js ("Antigravity requires
+    // Node.js"), so a machine where it is not installed yet and Node.js is definitely missing is
+    // told that first, with the command to get it. An installed program proves T3 found Node.js,
+    // so it is never contradicted by the probe.
+    const nodeFirst = !installed && inspected.nodeState === 'missing'
+      ? `install Node.js on that machine first (${nodeInstallCommand(inspected.osFamily)}), then `
+      : '';
     out.push({
       provider: 'antigravity', account: 'antigravity', what: 'Antigravity',
       state: signedIn ? 'signed-in' : installed ? 'needs-sign-in' : 'not-installed',
-      how: installed
-        ? 'in T3, pick this environment, then Settings, Providers, Antigravity, Sign in; T3 shows a link to open in your own browser'
-        : 'in T3, pick this environment, then Settings, Providers, Antigravity: Install first, then Sign in; T3 shows a link to open in your own browser',
+      how: `${nodeFirst}in T3, pick this environment, then Settings, Providers, Antigravity${installed ? ',' : ': Install first, then'} Sign in; T3 shows a link to open in your own browser`,
     });
   }
   return out;
+}
+
+/**
+ * How to install Node.js on a machine, by its OS family (ID and ID_LIKE from /etc/os-release):
+ * NodeSource's Node 22 (a current long-term release), because the distributions' own packages
+ * are older (Ubuntu 24.04 ships 18). The setup script is saved to a file first, so a failed
+ * download stops the command instead of quietly installing the distribution's older package.
+ */
+export function nodeInstallCommand(osFamily = '') {
+  const words = String(osFamily).toLowerCase().split(/\s+/);
+  if (words.some((w) => w === 'debian' || w === 'ubuntu')) return 'curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh && sudo -E bash /tmp/nodesource_setup.sh && sudo apt-get install -y nodejs';
+  if (words.some((w) => ['fedora', 'rhel', 'centos'].includes(w))) return 'curl -fsSL https://rpm.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh && sudo bash /tmp/nodesource_setup.sh && sudo dnf install -y nodejs';
+  return 'Node.js 22 from https://nodejs.org';
 }
 
 /**
@@ -996,8 +1049,11 @@ export function rememberT3Environment(settings, target, report, { leaseSha = nul
     // Only a run that actually asked the machine replaces what is known about its sign-ins.
     signInsCheckedAt: report.signInsChecked ? now : (prev?.signInsCheckedAt ?? null),
     signInsMissing: report.signInsChecked
-      ? missingSignIns(report.signIns ?? [], prev?.signInsMissing)
+      ? signInsTodo(report.signIns ?? [], prev).map((x) => x.what)
       : (prev?.signInsMissing ?? []),
+    signInsTodo: report.signInsChecked
+      ? signInsTodo(report.signIns ?? [], prev)
+      : (prev?.signInsTodo ?? []),
     codexAccounts: report.signInsChecked ? report.codexAccountIds : (prev?.codexAccounts ?? null),
     antigravity: report.signInsChecked ? report.antigravity : (prev?.antigravity ?? null),
     leaseSha: report.error ? (prev?.leaseSha ?? null) : leaseSha,
@@ -1015,19 +1071,33 @@ export function rememberSignIns(settings, targetId, signIns, { now = Date.now() 
   // A reading older than the one already saved (two commands at once) does not replace it.
   if (prev.signInsCheckedAt && prev.signInsCheckedAt > now) return settings;
   const envs = { ...settings.t3Environments };
-  envs[targetId] = { ...prev, signInsMissing: missingSignIns(signIns, prev.signInsMissing), signInsCheckedAt: now, lastAttemptError: null };
+  envs[targetId] = {
+    ...prev, signInsMissing: signInsTodo(signIns, prev).map((x) => x.what), signInsTodo: signInsTodo(signIns, prev),
+    signInsCheckedAt: now, lastAttemptError: null,
+  };
   return { ...settings, t3Environments: envs };
 }
 
 /**
- * The sign-ins still to do, from a reading: those signed out or not installed. One Codex could
- * not report on (a timeout, a broken config) keeps what was known about it before, rather than
- * being guessed either way.
+ * The sign-ins still to do, from a reading, as [{ key, what, how }] so `t3 status` and the
+ * Gateway tab can say how (install Node.js first, where to click in T3) and not only what.
+ * Keyed by provider and account, since two accounts can share a label. Those signed out or not
+ * installed are listed. One Codex could not report on (a timeout, a broken config) stays listed
+ * only if it was listed before, with this reading's own "could not tell" advice rather than an
+ * older one this reading may contradict. `previous` is the saved environment (a record saved by
+ * an older version has only the names, which are matched instead).
  */
-export function missingSignIns(signIns, previous = []) {
+export function signInsTodo(signIns, previous = {}) {
+  const before = new Set([...(previous?.signInsTodo ?? []).map((x) => x.key), ...(previous?.signInsMissing ?? [])]);
   return signIns
-    .filter((x) => x.state === 'needs-sign-in' || x.state === 'not-installed' || (x.state === 'unknown' && (previous ?? []).includes(x.what)))
-    .map((x) => x.what);
+    .filter((x) => x.state === 'needs-sign-in' || x.state === 'not-installed'
+      || (x.state === 'unknown' && (before.has(`${x.provider}:${x.account}`) || before.has(x.what))))
+    .map((x) => ({ key: `${x.provider}:${x.account}`, what: x.what, how: x.how ?? '' }));
+}
+
+/** The names of the sign-ins still to do, from a reading and the names listed before. */
+export function missingSignIns(signIns, previous = []) {
+  return signInsTodo(signIns, { signInsMissing: previous }).map((x) => x.what);
 }
 
 /** Record a failed attempt to ask an environment, with its reason; its last reading is kept. */
@@ -1096,6 +1166,6 @@ export function t3EnvironmentStatus(settings, { leaseSha = null, lendableIds = [
     else if (e.signInsCheckedAt) detail += `; sign-ins checked ${checked}`;
     detail += `; set up ${ageText(e.lastSetupAt, now)}`;
     if (e.lastAttemptError) detail += `; could not reach it ${ageText(e.lastAttemptAt, now)} (${e.lastAttemptError})`;
-    return { id: e.id, kind: e.kind, name: e.name, state, detail, wrapperOld, signInsMissing: e.signInsMissing ?? [], signInsCheckedAt: e.signInsCheckedAt ?? null, lastSetupAt: e.lastSetupAt ?? null };
+    return { id: e.id, kind: e.kind, name: e.name, state, detail, wrapperOld, signInsMissing: e.signInsMissing ?? [], signInsTodo: (e.signInsTodo ?? []).filter((x) => x.how), signInsCheckedAt: e.signInsCheckedAt ?? null, lastSetupAt: e.lastSetupAt ?? null };
   });
 }

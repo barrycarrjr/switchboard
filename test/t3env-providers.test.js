@@ -229,3 +229,25 @@ test('t3 status asks every machine now, saves what it hears, and marks one that 
   assert.match(w.detail, /still to sign in: Codex \(checked .* ago\); .*could not reach it just now/);
   assert.equal(rememberSignIns({}, 'nope', []).t3Environments, undefined, 'an environment not remembered is not created');
 });
+
+test('a machine without Node.js is told to install it before Antigravity, with the command for its system', async () => {
+  const { nodeInstallCommand } = await import('../core/t3env.js');
+  const t = { id: 'ssh:w', kind: 'ssh', name: 'w' };
+  const base = { codexStatus: {}, antigravityTokenProfiles: [], antigravityRuntime: false, osFamily: 'ubuntu debian' };
+  const [noNode] = signInsFor(t, { ...base, nodeState: 'missing' }, [], { antigravityIds: ['antigravity_1'] });
+  assert.equal(noNode.state, 'not-installed');
+  assert.match(noNode.how, /^install Node\.js on that machine first \(curl -fsSL https:\/\/deb\.nodesource\.com\/setup_22\.x -o \/tmp\/nodesource_setup\.sh && sudo -E bash \/tmp\/nodesource_setup\.sh && sudo apt-get install -y nodejs\), then in T3, .*Install first, then Sign in/);
+  for (const nodeState of ['found', 'unknown', null]) {
+    const [row] = signInsFor(t, { ...base, nodeState }, [], { antigravityIds: ['antigravity_1'] });
+    assert.doesNotMatch(row.how, /Node\.js/, `no Node.js advice when node is ${nodeState}: a check that could not tell is not a "no"`);
+  }
+  const [installed] = signInsFor(t, { ...base, nodeState: 'missing', antigravityRuntime: true }, [], { antigravityIds: ['antigravity_1'] });
+  assert.equal(installed.state, 'needs-sign-in', 'T3 installed Antigravity, so it found Node.js, whatever the probe says');
+  assert.doesNotMatch(installed.how, /Node\.js/);
+  const [done] = signInsFor(t, { ...base, nodeState: 'missing', antigravityTokenProfiles: [antigravityProfileName('antigravity_1')] }, [], { antigravityIds: ['antigravity_1'] });
+  assert.equal(done.state, 'signed-in');
+  const [codex] = signInsFor(t, { ...base, codexBin: null, nodeState: 'missing' }, two.filter((a) => !a.shadow));
+  assert.match(codex.how, /^install Node\.js first \(.*\), then install Codex/, 'npm needs Node.js, so the Codex step says so first');
+  assert.match(nodeInstallCommand('fedora'), /rpm\.nodesource\.com.*-o \/tmp\/nodesource_setup\.sh && .*dnf install -y nodejs/);
+  assert.equal(nodeInstallCommand('arch'), 'Node.js 22 from https://nodejs.org');
+});

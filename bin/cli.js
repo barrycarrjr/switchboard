@@ -2023,7 +2023,10 @@ async function main() {
         const list = args.includes('--saved') ? currentT3Status() : await liveT3Status();
         if (asJson) { out(JSON.stringify(list, null, 2)); return; }
         if (!list.length) { out('No T3 environment set up yet. Run: switchboard t3 setup [wsl:<distro>|ssh:<host> ...]'); return; }
-        for (const e of list) out(`${e.id}  ${e.state}  ${e.detail}`);
+        for (const e of list) {
+          out(`${e.id}  ${e.state}  ${e.detail}`);
+          for (const x of e.signInsTodo ?? []) out(`    ${x.what}: ${x.how}`);
+        }
         if (list.some((e) => e.state !== 'ok')) out('Run "switchboard t3 setup --all" to bring them up to date.');
         return;
       }

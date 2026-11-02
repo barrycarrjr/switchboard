@@ -186,7 +186,7 @@ const askTimeoutMs = (codexAccounts) => 60000 + 20000 * codexAccounts.length;
  */
 export async function checkT3SignIns(target, { run = runScript, codexAccounts, antigravity }) {
   const askedAt = Date.now();
-  const res = await run(target, inspectScript({ codexHomes: codexAccounts.map((a) => a.relHome) }), { timeoutMs: askTimeoutMs(codexAccounts) });
+  const res = await run(target, inspectScript({ codexHomes: codexAccounts.map((a) => a.relHome), antigravity: Boolean(antigravity), wsl: target.kind === 'wsl' }), { timeoutMs: askTimeoutMs(codexAccounts) });
   const inspected = parseInspect(res.stdout);
   if (!inspected) return { error: (res.stderr || '').trim().split(/\r?\n/).filter(Boolean).pop() || 'no answer' };
   if (antigravity && (!inspected.t3 || inspected.settingsError)) return { error: `its T3 settings could not be read${inspected.settingsError ? ` (${inspected.settingsError})` : ''}` };
