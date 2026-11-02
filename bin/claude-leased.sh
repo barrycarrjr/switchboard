@@ -28,13 +28,18 @@ fi
 
 self="$(readlink -f "${BASH_SOURCE[0]}")"
 bin="${CLAUDE_BIN:-}"
+# Without CLAUDE_BIN: the native installer's place first. Under `wsl.exe --exec` the
+# distro home's bin is not on PATH, while the Windows PATH is appended through
+# interop, so a bare PATH search found nothing or, worse, the Windows claude (2026-11-01).
+if [ -z "$bin" ] && [ -x "$HOME/.local/bin/claude" ]; then bin="$HOME/.local/bin/claude"; fi
 if [ -z "$bin" ]; then
     while read -r candidate; do
         [ "$(readlink -f "$candidate")" = "$self" ] && continue
+        case "$candidate" in /mnt/*) continue ;; esac # a Windows claude seen through interop is not the Linux one
         bin="$candidate"; break
     done < <(which -a claude 2>/dev/null)
 fi
-[ -n "$bin" ] && [ -x "$bin" ] || { echo "claude-leased: no real claude found; set CLAUDE_BIN" >&2; exit 78; }
+[ -n "$bin" ] && [ -x "$bin" ] || { echo "claude-leased: no real claude found (CLAUDE_BIN=${CLAUDE_BIN:-unset}, no $HOME/.local/bin/claude, none on PATH outside /mnt); set CLAUDE_BIN" >&2; exit 78; }
 
 # curl calls read the key from a config file on stdin, so it never appears in a process list.
 call() { # call <method> <url> [json-body]
