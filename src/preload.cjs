@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('sb', {
   gatewaySetScope: (scope) => ipcRenderer.invoke('sb:gatewaySetScope', scope),
   gatewaySetPort: (port) => ipcRenderer.invoke('sb:gatewaySetPort', port),
   gatewayCreateKey: (opts) => ipcRenderer.invoke('sb:gatewayCreateKey', opts ?? {}),
+  gatewayUpdateKey: (opts) => ipcRenderer.invoke('sb:gatewayUpdateKey', opts ?? {}),
   gatewayRevokeKey: (keyId) => ipcRenderer.invoke('sb:gatewayRevokeKey', keyId),
   gatewayInstallClient: (keyId) => ipcRenderer.invoke('sb:gatewayInstallClient', keyId ?? null),
   notifySettings: () => ipcRenderer.invoke('sb:notifySettings'),

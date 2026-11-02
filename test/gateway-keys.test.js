@@ -18,6 +18,7 @@ import {
   normalizeGatewayScope,
   recordGatewayKeyUse,
   revokeGatewayKey,
+  updateGatewayKey,
   verifyGatewayKey,
 } from '../core/gateway-keys.js';
 
@@ -189,4 +190,41 @@ test('chooseProvisionKey creates a key with the gateway scope when none is store
   const explicit = chooseProvisionKey(first.settings, { scope: 'localhost-wsl', now: 5 });
   assert.equal(explicit.key.id, first.key.id);
   assert.equal(explicit.scopeChanged, false, 'an explicit scope argument wins over the settings');
+});
+
+test('updateGatewayKey updates label and scope in place without rotating secret', () => {
+  let settings = { gateway: { enabled: true, port: 8318, scope: 'lan' }, gatewayKeys: {} };
+
+  const created = createGatewayKey(settings, { label: 'Initial Label', scope: 'localhost', now: 1700000000000 });
+  settings = created.settings;
+  const secret = created.secret;
+
+  // Initially blocked on LAN because key scope is 'localhost'
+  const blockedLan = verifyGatewayKey(settings, secret, '192.168.27.50');
+  assert.equal(blockedLan.ok, false);
+  assert.equal(blockedLan.status, 403);
+  assert.equal(blockedLan.reason, 'ip-outside-key-scope');
+
+  // Update label and scope in place
+  const updated = updateGatewayKey(settings, created.key.id, {
+    label: 'WSL Ubuntu & Slack Bridge',
+    scope: 'lan',
+    now: 1700000010000,
+  });
+  settings = updated.settings;
+  assert.equal(updated.key.id, created.key.id);
+  assert.equal(updated.key.label, 'WSL Ubuntu & Slack Bridge');
+  assert.equal(updated.key.scope, 'lan');
+  assert.equal(updated.key.hint, created.key.hint);
+
+  // Same secret now succeeds from LAN with new label
+  const allowedLan = verifyGatewayKey(settings, secret, '192.168.27.50');
+  assert.equal(allowedLan.ok, true);
+  assert.equal(allowedLan.key.label, 'WSL Ubuntu & Slack Bridge');
+  assert.equal(allowedLan.key.scope, 'lan');
+
+  // Validation errors
+  assert.throws(() => updateGatewayKey(settings, 'missing-id', { label: 'X' }), /no gateway key with id/);
+  assert.throws(() => updateGatewayKey(settings, created.key.id, { label: '   ' }), /a label for the client key is required/);
+  assert.throws(() => updateGatewayKey(settings, created.key.id, { scope: 'invalid-scope' }), /invalid gateway scope/);
 });

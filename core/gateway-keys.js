@@ -224,6 +224,32 @@ export function createGatewayKey(settings, { label, scope = DEFAULT_GATEWAY_SCOP
 }
 
 /**
+ * Pure key update: updates label and/or scope for an existing key entry by id without rotating its secret.
+ */
+export function updateGatewayKey(settings, keyId, { label, scope, now = Date.now() } = {}) {
+  const existing = { ...(settings?.gatewayKeys ?? {}) };
+  const entry = existing[keyId];
+  if (!entry) throw new Error(`no gateway key with id "${keyId}"`);
+
+  const updated = { ...entry };
+  if (label !== undefined) {
+    const cleanLabel = String(label ?? '').trim();
+    if (!cleanLabel) throw new Error('a label for the client key is required');
+    if (cleanLabel.length > 80) throw new Error('key label must be 80 characters or fewer');
+    updated.label = cleanLabel;
+  }
+  if (scope !== undefined) {
+    updated.scope = normalizeGatewayScope(scope);
+  }
+
+  existing[keyId] = updated;
+  const nextSettings = { ...settings, gatewayKeys: existing };
+  return {
+    settings: nextSettings,
+    key: publicGatewayKey(updated, now),
+  };
+}
+/**
  * Pure key revocation: removes the key entry by id.
  */
 export function revokeGatewayKey(settings, keyId) {

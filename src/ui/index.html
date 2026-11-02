@@ -365,6 +365,13 @@
   .gw-table td{padding:8px;border-bottom:1px solid #f0f2f5;vertical-align:middle}
   .gw-table tr:last-child td{border-bottom:none}
   .gw-code{font-family:Consolas,monospace;font-size:.76rem;background:#f4f6f8;border:1px solid var(--line);border-radius:5px;padding:2px 6px;color:#344054}
+  .gw-key-label{font-weight:600;color:var(--ink);cursor:pointer;padding:2px 6px;margin:-2px -6px;border-radius:5px;border:1px dashed transparent;display:inline-flex;align-items:center;gap:5px;transition:background .12s,border-color .12s}
+  .gw-key-label:hover{background:#f3f4f6;border-color:#cbd5e1}
+  .gw-key-label .gw-edit-hint{font-size:.68rem;color:var(--muted);opacity:0;transition:opacity .12s;font-weight:400}
+  .gw-key-label:hover .gw-edit-hint{opacity:1}
+  .gw-key-label-input{font:inherit;font-size:.8rem;font-weight:600;padding:3px 7px;border:1px solid var(--accent);border-radius:5px;outline:none;min-width:160px;background:#fff;color:var(--ink)}
+  .gw-scope-select{font:inherit;font-size:.76rem;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);cursor:pointer}
+  .gw-scope-select:hover{border-color:#cbd5e1}
   .gw-snippet{background:#111827;color:#f9fafb;border-radius:8px;padding:10px 12px;font-family:Consolas,monospace;font-size:.76rem;line-height:1.5;overflow-x:auto;display:flex;align-items:center;justify-content:space-between;gap:10px}
   .gw-secret-banner{background:#ecfdf3;border:1px solid #abefc6;border-radius:9px;padding:10px 12px;margin-bottom:10px;display:flex;flex-direction:column;gap:6px}
   .gw-feed-outcome{font-size:.72rem;font-weight:600;padding:2px 7px;border-radius:99px;background:#e6f4ea;color:var(--ok)}
@@ -2512,17 +2519,98 @@ async function renderGateway() {
     const tbody = el('tbody');
     for (const k of st.keys) {
       const tr = el('tr');
-      const scopeShort = k.scope === 'localhost' ? 'Localhost' : k.scope === 'lan' ? 'LAN + WSL' : 'Local + WSL';
       const routeText = k.lastAccountLabel
         ? `${esc(k.lastAccountLabel)} (${esc(formatGatewayTimeAgo(k.lastUsedAt))})`
         : 'Not used yet';
-      tr.innerHTML = `
-        <td><b>${esc(k.label)}</b></td>
-        <td><span class="gw-code">${esc(k.hint)}</span></td>
-        <td>${esc(scopeShort)}</td>
-        <td style="color:var(--muted)">${routeText}</td>
-        <td>${Number(k.requestsToday) || 0} req</td>
-      `;
+
+      // 1. Click-to-edit Client Label cell
+      const labelTd = el('td');
+      const labelSpan = el('span', 'gw-key-label');
+      labelSpan.title = 'Click to rename client key';
+      labelSpan.appendChild(document.createTextNode(k.label));
+      const editHint = el('span', 'gw-edit-hint', '✎');
+      labelSpan.appendChild(editHint);
+      labelSpan.addEventListener('click', () => {
+        const input = el('input', 'gw-key-label-input');
+        input.type = 'text';
+        input.value = k.label;
+        input.maxLength = 80;
+        let committed = false;
+        const commit = async () => {
+          if (committed) return;
+          committed = true;
+          const nextLabel = input.value.trim();
+          if (!nextLabel || nextLabel === k.label) {
+            renderGateway();
+            return;
+          }
+          const res = await sb.gatewayUpdateKey({ keyId: k.id, label: nextLabel });
+          if (!res?.ok) {
+            toast('Could not rename key: ' + (res?.error || 'unknown error'));
+            renderGateway();
+            return;
+          }
+          if (lastCreatedGatewaySecret?.id === k.id) {
+            lastCreatedGatewaySecret.label = res.key.label;
+          }
+          toast(`Renamed key to "${res.key.label}".`);
+          renderGateway();
+        };
+        input.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') {
+            ev.preventDefault();
+            input.blur();
+          } else if (ev.key === 'Escape') {
+            ev.preventDefault();
+            committed = true;
+            renderGateway();
+          }
+        });
+        input.addEventListener('blur', () => { void commit(); });
+        labelTd.replaceChildren(input);
+        input.focus();
+        input.select();
+      });
+      labelTd.appendChild(labelSpan);
+      tr.appendChild(labelTd);
+
+      // 2. Key Hint cell
+      const hintTd = el('td');
+      hintTd.innerHTML = `<span class="gw-code">${esc(k.hint)}</span>`;
+      tr.appendChild(hintTd);
+
+      // 3. Inline Scope selector cell
+      const scopeTd = el('td');
+      const rowScopeSelect = el('select', 'gw-scope-select');
+      rowScopeSelect.title = 'Change allowed network scope for this key';
+      rowScopeSelect.appendChild(new Option('Local + WSL', 'localhost-wsl'));
+      rowScopeSelect.appendChild(new Option('LAN + WSL', 'lan'));
+      rowScopeSelect.appendChild(new Option('Localhost only', 'localhost'));
+      rowScopeSelect.value = k.scope || 'localhost-wsl';
+      rowScopeSelect.addEventListener('change', async () => {
+        const nextScope = rowScopeSelect.value;
+        const res = await sb.gatewayUpdateKey({ keyId: k.id, scope: nextScope });
+        if (!res?.ok) {
+          toast('Could not update key scope: ' + (res?.error || 'unknown error'));
+          renderGateway();
+          return;
+        }
+        toast(`Updated "${k.label}" scope to ${gatewayScopeLabel(res.key.scope)}.`);
+        renderGateway();
+      });
+      scopeTd.appendChild(rowScopeSelect);
+      tr.appendChild(scopeTd);
+
+      // 4. Last Route & Today cells
+      const routeTd = el('td');
+      routeTd.style.color = 'var(--muted)';
+      routeTd.innerHTML = routeText;
+      tr.appendChild(routeTd);
+
+      const todayTd = el('td');
+      todayTd.textContent = `${Number(k.requestsToday) || 0} req`;
+      tr.appendChild(todayTd);
+
       const actionTd = el('td');
       actionTd.style.textAlign = 'right';
       actionTd.appendChild(cardButton('Revoke', async () => {
@@ -2696,7 +2784,7 @@ async function renderGateway() {
       }
       // Avoid clobbering while typing a new key label
       const activeEl = document.activeElement;
-      if (activeEl && activeEl.tagName === 'INPUT' && $('#tab-gateway').contains(activeEl)) return;
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'SELECT') && $('#tab-gateway').contains(activeEl)) return;
       renderGateway();
     }, 5000);
   }
