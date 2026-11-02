@@ -361,7 +361,7 @@ address and drops any that need an API key.
 The core (`core/`, `bin/cli.js`) is plain Node with no Electron dependency; the tray shell
 is a thin skin over it. `switchboard` is also a CLI: `status`, `accounts`, `add`,
 `remove`, `use`, `color`, `detect`, `providers`, `doctor`, `quota`, `lanes`, `lane-token`,
-`gateway`, `keys`, `watch`, `notify`, `mcp`, `dry-run` and `run`. Running it with no command
+`gateway`, `t3`, `keys`, `watch`, `notify`, `mcp`, `dry-run` and `run`. Running it with no command
 prints the same list with a line each.
 
 Everything the tray decides, the CLI decides the same way, because both call the same code
@@ -440,6 +440,18 @@ The tray watches `settings.json`, so `gateway enable`, `disable`, `scope`, `port
 refreshes the wrapper in each distro when the file differs from this version's, leaving
 symlinks alone. A key created in the Gateway tab is installed the same way whatever its
 scope, `lan` included.
+
+`switchboard t3 setup [wsl:<distro>|ssh:<host> ...]` (or the T3 Code Environments card on
+the Gateway tab) points T3 Code on a WSL distro or another machine at the Claude accounts
+the broker lends, so T3 there needs no Claude sign-in. It installs the key and wrapper as
+above, writes one small wrapper per Claude account, and adds one T3 provider per account,
+an "any account" provider, and the Switchboard quota hub to T3's settings on that machine.
+It keeps entries made there by hand (and the conversations on them), removes nothing,
+backs T3's settings up first, and ends by sending each account one short message from that
+machine to prove it works. Codex, Grok, Antigravity and Junie cannot be lent, so it lists
+them as still needing a sign-in there. Health warns when an environment's setup failed or
+its wrapper is older than this Switchboard. The full behaviour is in
+`docs/references/cli-commands.md`.
 
 `switchboard watch` is the quota watch without the tray. `--once` takes a single pass, for
 Task Scheduler or cron; without it, it stays running and takes a pass every five minutes,

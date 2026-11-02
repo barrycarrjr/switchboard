@@ -37,6 +37,7 @@ import {
   toggleAutomation,
 } from '../core/automations.js';
 import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway.js';
+import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, forgetT3 } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS, chooseProvisionKey, gatewayEnabledSettings } from '../core/gateway-keys.js';
 import readline from 'node:readline/promises';
 import path from 'node:path';
@@ -1256,7 +1257,7 @@ async function main() {
     }
     case 'doctor': {
       const installedIds = new Set((await detectInstalled()).filter((t) => t.installed).map((t) => t.id));
-      const checks = await runChecks({ accounts: registry.accounts, settings: loadSettings(), isInstalled: (id) => installedIds.has(id) });
+      const checks = await runChecks({ accounts: registry.accounts, settings: loadSettings(), isInstalled: (id) => installedIds.has(id), t3LeaseSha: currentLeaseSha() });
       const mark = { ok: 'OK  ', info: 'INFO', warn: 'WARN', bad: 'FAIL' };
       for (const c of checks) out(`${mark[c.level]}  ${c.title}\n      ${c.detail}`);
       if (checks.some((c) => c.level === 'bad')) process.exitCode = 1;
@@ -2010,6 +2011,56 @@ async function main() {
       }
       throw new Error(`unknown gateway subcommand: ${sub}. Use status|serve|enable|disable|scope|port|provision-client`);
     }
+    // Point T3 Code environments (WSL distros, other machines over ssh) at the Claude
+    // accounts the broker lends, so they need no sign-in of their own. See core/t3env.js.
+    case 't3': {
+      const sub = args[0] ?? 'status';
+      const asJson = args.includes('--json');
+      if (sub === 'status') {
+        const list = currentT3Status();
+        if (asJson) { out(JSON.stringify(list, null, 2)); return; }
+        if (!list.length) { out('No T3 environment set up yet. Run: switchboard t3 setup [wsl:<distro>|ssh:<host> ...]'); return; }
+        for (const e of list) out(`${e.id}  ${e.state}  ${e.detail}`);
+        if (list.some((e) => e.state !== 'ok')) out('Run "switchboard t3 setup --all" to bring them up to date.');
+        return;
+      }
+      if (sub === 'forget') {
+        const id = args[1];
+        if (!id || id.startsWith('--')) throw new Error('usage: switchboard t3 forget <wsl:<distro>|ssh:<host>>');
+        forgetT3(id);
+        out(`Forgot ${id}. Nothing on that machine was changed.`);
+        return;
+      }
+      if (sub === 'setup') {
+        const specs = args.slice(1).filter((a) => !a.startsWith('--'));
+        const all = args.includes('--all');
+        const targets = await resolveT3Targets(specs, { all });
+        if (!targets.length) {
+          const why = all ? 'No T3 environment has been set up before, so --all has nothing to do.' : 'No WSL distro found. Name a target: switchboard t3 setup ssh:<host>';
+          out(asJson ? JSON.stringify({ ok: false, error: why, reports: [] }, null, 2) : why);
+          process.exitCode = 1;
+          return;
+        }
+        const reports = await runT3Setup(targets, {
+          replaceSymlink: args.includes('--replace-symlink'),
+          prove: !args.includes('--no-proof'),
+          onProgress: (line) => { if (!asJson) out(line); },
+        });
+        if (reports.some((r) => !r.ok)) process.exitCode = 1;
+        if (asJson) { out(JSON.stringify(reports, null, 2)); return; }
+        for (const r of reports) {
+          out('');
+          out(`${r.target}: ${r.ok ? 'ready' : 'NOT ready'}${r.error ? ` (${r.error})` : ''}`);
+          for (const p of r.proof ?? []) out(`  ${p.ok ? 'ok    ' : p.cooling ? 'COOLING' : 'FAILED'} ${p.label}${p.ok ? '' : p.cooling ? ' (out of allowance right now; not a setup fault)' : `: exit ${p.code ?? '?'} ${p.detail.split(/\r?\n/).filter(Boolean).pop() ?? ''}`}`);
+          for (const s of r.skipped ?? []) out(`  not added: ${s.label} (${s.reason})`);
+          for (const l of r.leftovers ?? []) out(`  left alone: ${l.displayName} (${l.note})`);
+          for (const s of r.signIns ?? []) out(`  still needs its own sign-in there: ${s.provider} (${s.how})`);
+        }
+        if (reports.some((r) => !r.ok)) process.exitCode = 1;
+        return;
+      }
+      throw new Error(`unknown t3 subcommand: ${sub}. Use status|setup|forget`);
+    }
     case 'keys': {
       const sub = args[0] ?? 'list';
       const asJson = args.includes('--json');
@@ -2100,7 +2151,7 @@ async function main() {
       throw new Error(`unknown keys subcommand: ${sub}. Use list|create|update|rename|scope|revoke`);
     }
     default:
-      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|gateway|keys|watch|notify|mcp|customizations|automations|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|gateway|t3|keys|watch|notify|mcp|customizations|automations|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> [folder]   leave out the folder for a brand-new account`);
@@ -2115,6 +2166,9 @@ async function main() {
       out('  lane-token <laneId> [--remove|--check] | --missing   mint, delete or validate the token a lane hands to automation; --missing mints for every Claude lane without one');
       out('  gateway [status|serve|enable|disable|scope|port]   manage the local pass-through API gateway and lease broker');
       out('  gateway provision-client [--label <text>] [--replace-symlink] [--yes] [--json]   broker on, a key with the gateway scope, key file and wrapper here and in every WSL distro');
+      out('  t3 setup [wsl:<distro>|ssh:<host> ...] [--all] [--replace-symlink] [--no-proof] [--json]   give T3 Code there one provider per Claude account, borrowed from the broker (no target: every WSL distro)');
+      out('  t3 status [--json]          the T3 environments set up so far and whether any is out of date');
+      out('  t3 forget <wsl:<distro>|ssh:<host>>   stop listing and checking one (nothing on it is changed)');
       out('  keys [list|create|update|revoke]   manage client keys (sb-key-...) for the gateway');
       out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
       out('  notify [--webhook <url>] [--command <cmd>] [--threshold <w=pct>] [--test] [--json]   manage notification hooks');

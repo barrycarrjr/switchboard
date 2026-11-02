@@ -2497,6 +2497,36 @@ function buildGatewayExportSnippet(endpointUrl, keyHintOrSecret) {
 }
 
 let openGatewayQuickConnectKeyId = null;
+// The last T3 environment setup's lines, shown under the card until the next render that clears them.
+let lastT3SetupLines = null;
+let t3SetupBusy = false;
+
+// The words a T3 environment's state is shown with on the Gateway tab.
+function t3EnvStateText(state) {
+  if (state === 'ok') return 'Ready';
+  if (state === 'stale') return 'Out of date';
+  if (state === 'failed') return 'Not working';
+  return 'Unknown';
+}
+
+// One result line per environment after a setup, with the accounts that failed their proof
+// run, anything left alone and what still needs its own sign-in there.
+function t3SetupSummary(res) {
+  const lines = [...(res?.lines ?? [])];
+  for (const r of res?.reports ?? []) {
+    lines.push(`${r.target}: ${r.ok ? 'ready' : 'NOT ready'}${r.error ? ` (${r.error})` : ''}`);
+    for (const p of r.proof ?? []) {
+      if (p.ok) continue;
+      if (p.cooling) lines.push(`  ${p.label} not proven: the account is out of allowance right now`);
+      else lines.push(`  ${p.label} did not answer: ${String(p.detail || '').split('\n').filter(Boolean).pop() || `exit ${p.code}`}`);
+    }
+    for (const s of r.skipped ?? []) lines.push(`  not added: ${s.label} (${s.reason})`);
+    for (const l of r.leftovers ?? []) lines.push(`  left alone: ${l.displayName} (${l.note})`);
+    for (const s of r.signIns ?? []) lines.push(`  still needs its own sign-in there: ${s.provider} (${s.how})`);
+  }
+  if (!res?.reports && res?.error) lines.push(res.error);
+  return lines;
+}
 
 async function renderGateway() {
   const seq = beginRender('gateway');
@@ -2878,6 +2908,90 @@ async function renderGateway() {
   }, { primary: true }));
   newKeyArea.appendChild(form);
   grid.appendChild(keysCard);
+
+  // 4b. T3 Code environments: give a WSL distro or another machine one T3 provider per
+  //     Claude account, borrowed from this broker, with no sign-in there. Same code as
+  //     `switchboard t3 setup`.
+  const { card: t3Card } = cardShell({
+    titleId: 'gw-t3',
+    title: 'T3 Code Environments',
+    person: 'Point T3 Code on WSL or another machine at these Claude accounts, so it needs no sign-in of its own',
+  });
+  let t3State = null;
+  try { t3State = await sb.t3EnvState(); } catch { t3State = null; }
+  if (!isCurrentRender('gateway', seq)) return;
+  const runT3Setup = async (targets, btn) => {
+    if (t3SetupBusy) return;
+    t3SetupBusy = true;
+    if (btn) { btn.disabled = true; btn.textContent = 'Setting up... (proving each account takes up to a minute)'; }
+    let res;
+    try { res = await sb.t3EnvSetup({ targets }); } catch (e) { res = { ok: false, error: String(e.message || e) }; }
+    t3SetupBusy = false;
+    lastT3SetupLines = t3SetupSummary(res);
+    toast(res?.ok ? 'T3 environment ready: every account answered through Switchboard.' : 'T3 environment setup did not finish cleanly; see the card for why.');
+    renderGateway();
+  };
+  const envs = t3State?.environments ?? [];
+  const { area: t3Area } = cardArea(t3Card, 'Set up so far (' + envs.length + ')');
+  if (envs.length) {
+    const table = el('table', 'gw-table');
+    table.innerHTML = '<thead><tr><th>Environment</th><th>State</th><th>Detail</th><th></th></tr></thead>';
+    const tbody = el('tbody');
+    for (const e of envs) {
+      const tr = el('tr');
+      tr.appendChild(el('td', '', esc(e.id)));
+      tr.appendChild(el('td', '', esc(t3EnvStateText(e.state))));
+      const detailTd = el('td', '', esc(e.detail));
+      detailTd.style.color = 'var(--muted)';
+      tr.appendChild(detailTd);
+      const actionTd = el('td');
+      actionTd.style.cssText = 'text-align:right;white-space:nowrap';
+      const again = cardButton('Set up again', () => runT3Setup([e.id], again));
+      again.style.marginRight = '6px';
+      actionTd.appendChild(again);
+      actionTd.appendChild(cardButton('Forget', async () => {
+        if (!confirm(`Stop listing and checking ${e.id}? Nothing on that machine is changed; its T3 entries keep working while its key is valid.`)) return;
+        const res = await sb.t3EnvForget(e.id);
+        toast(res?.ok ? `Forgot ${e.id}.` : 'Could not forget it: ' + (res?.error || 'unknown error'));
+        renderGateway();
+      }));
+      tr.appendChild(actionTd);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    t3Area.appendChild(table);
+  } else {
+    t3Area.appendChild(el('div', 'muted', 'None yet. Pick a WSL distro or type a machine reachable with ssh (a key sign-in, no password), then Set up.'));
+  }
+  const { area: t3NewArea } = cardArea(t3Card, 'Set up an environment', 'note-area');
+  const t3Form = el('div', 'card-form');
+  const t3Pick = el('select');
+  t3Pick.appendChild(new Option('Another machine (ssh)...', ''));
+  for (const d of t3State?.distros ?? []) t3Pick.appendChild(new Option(`WSL: ${d}`, `wsl:${d}`));
+  if (t3State?.distros?.length) t3Pick.value = `wsl:${t3State.distros[0]}`;
+  t3Form.appendChild(t3Pick);
+  const t3Host = el('input');
+  t3Host.placeholder = 'ssh host or alias (e.g. worker01 or me@10.0.0.5)';
+  t3Host.style.cssText = 'flex:1;min-width:190px;font:inherit;font-size:.82rem;padding:5px 9px;border:1px solid var(--line);border-radius:6px';
+  t3Form.appendChild(t3Host);
+  const t3Go = cardButton(t3SetupBusy ? 'Setting up...' : 'Set up', () => {
+    const host = t3Host.value.trim();
+    const target = host ? `ssh:${host}` : t3Pick.value;
+    if (!target) { toast('Pick a WSL distro or type an ssh host first.'); t3Host.focus(); return; }
+    runT3Setup([target], t3Go);
+  }, { primary: true });
+  t3Form.appendChild(t3Go);
+  t3NewArea.appendChild(t3Form);
+  if (lastT3SetupLines?.length) {
+    const log = el('div', 'gw-snippet');
+    const pre = el('span', '', esc(lastT3SetupLines.join('\n')));
+    pre.style.whiteSpace = 'pre-wrap';
+    log.appendChild(pre);
+    log.appendChild(cardButton('Dismiss', () => { lastT3SetupLines = null; renderGateway(); }));
+    t3NewArea.appendChild(log);
+  }
+  if (!t3State?.ok) t3NewArea.appendChild(el('div', 'muted', 'Could not read the environment list: ' + esc(t3State?.error || 'no answer')));
+  grid.appendChild(t3Card);
 
   // 5. Live Connections & Failover Feed Card
   const { card: feedCard } = cardShell({

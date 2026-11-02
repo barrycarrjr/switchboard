@@ -812,3 +812,19 @@ test('a Claude lane that holds no setup token at all is a warning, with the one-
   // No doctor text may send a caller inside WSL to a "folder mode" it never had.
   assert.ok(!checks.some((x) => /folder mode/i.test(`${x.title} ${x.detail}`)));
 });
+
+test('a T3 environment whose setup failed, or whose wrapper is older than this Switchboard, is a warning with the command that fixes it', async () => {
+  const settings = {
+    lanes: [], laneTokens: {},
+    t3Environments: {
+      'ssh:w': { id: 'ssh:w', kind: 'ssh', name: 'w', lastOk: false, lastError: 'w cannot reach the broker', accounts: [] },
+      'wsl:U': { id: 'wsl:U', kind: 'wsl', name: 'U', lastOk: true, accounts: [], leaseSha: 'old' },
+      'wsl:V': { id: 'wsl:V', kind: 'wsl', name: 'V', lastOk: true, accounts: [], leaseSha: 'new' },
+    },
+  };
+  const checks = await runChecks({ settings, env: envNone, fetchImpl: noFetch, t3LeaseSha: 'new' });
+  const t3 = checks.filter((c) => c.id.startsWith('t3-env-'));
+  assert.deepEqual(t3.map((c) => c.id).sort(), ['t3-env-ssh:w', 't3-env-wsl:U']);
+  assert.match(t3.find((c) => c.id === 't3-env-ssh:w').detail, /cannot reach the broker.*switchboard t3 setup ssh:w/);
+  assert.match(t3.find((c) => c.id === 't3-env-wsl:U').title, /out of date/);
+});

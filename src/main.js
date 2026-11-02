@@ -63,6 +63,7 @@ import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
 import { createGatewayServer, provisionLocalAndWslClient, createSettingsWatcher, syncWslLeaseWrapper } from '../core/gateway.js';
+import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, refreshStaleT3Environments, withT3Lock, forgetT3, wslDistrosCached } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -1197,6 +1198,13 @@ app.whenReady().then(async () => {
     if (process.platform === 'win32') {
       syncWslLeaseWrapper({ leaseScriptPath: path.join(here, '..', 'bin', 'switchboard-lease') }).catch(() => {});
     }
+    // A T3 environment on another machine (or a distro) set up by an older Switchboard gets
+    // this version's wrapper files the same way, in the background. Only one whose wrapper
+    // is out of date is touched, and only its wrapper files: no key is issued (a revoked
+    // one stays revoked) and T3's settings there are not written. A machine that is off or
+    // would ask for a password (ssh runs with BatchMode) keeps its last record; Health shows
+    // the failed attempt beside it.
+    refreshStaleT3Environments().catch(() => {});
   }
   settingsWatcher = createSettingsWatcher({ file: settingsFile(), onChange: applyGatewaySettings });
 
@@ -1777,7 +1785,7 @@ ipcMain.handle('sb:doctor', async () => {
   // Settings ride along so a dead lane token surfaces here; the checks only ever name
   // the lane and account, never the token value.
   const installedIds = new Set((await detectInstalled()).filter((t) => t.installed).map((t) => t.id));
-  return runChecks({ accounts, loginStates, settings: loadSettings(), isInstalled: (id) => installedIds.has(id) });
+  return runChecks({ accounts, loginStates, settings: loadSettings(), isInstalled: (id) => installedIds.has(id), t3LeaseSha: currentLeaseSha() });
 });
 
 // A vendor status page belongs to the tool, not to any one account, so this needs
@@ -2626,6 +2634,39 @@ ipcMain.handle('sb:gatewayRevokeKey', async (_e, keyId) => {
     saveSettings(next);
     const status = await gatewayServer.status();
     return { ok: true, status };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// T3 Code environments (Gateway tab). The tray and the `switchboard t3` command share
+// core/t3env-run.js; one setup runs at a time, shared with the start-up refresh.
+ipcMain.handle('sb:t3EnvState', async () => {
+  try {
+    return { ok: true, environments: currentT3Status(), distros: await wslDistrosCached() };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+ipcMain.handle('sb:t3EnvSetup', async (_e, { targets = [], replaceSymlink = false } = {}) => {
+  const lines = [];
+  try {
+    const res = await withT3Lock(async () => {
+      const resolved = await resolveT3Targets(Array.isArray(targets) ? targets.map(String) : []);
+      if (!resolved.length) return { ok: false, error: 'No environment to set up.' };
+      const reports = await runT3Setup(resolved, { replaceSymlink: Boolean(replaceSymlink), onProgress: (l) => lines.push(l) });
+      return { ok: reports.every((r) => r.ok), reports, lines };
+    });
+    if (res.busy) return { ok: false, error: 'A setup is already running.' };
+    return res.value;
+  } catch (e) {
+    return { ok: false, error: String(e.message || e), lines };
+  }
+});
+ipcMain.handle('sb:t3EnvForget', async (_e, targetId) => {
+  try {
+    forgetT3(String(targetId));
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
   }

@@ -413,8 +413,10 @@ export function gatewayEnabledSettings(settings = {}) {
  */
 export function chooseProvisionKey(settings = {}, { label = '', scope = null, now = Date.now() } = {}) {
   const gwScope = normalizeGatewayScope(scope ?? normalizeGatewaySettings(settings?.gateway).scope);
+  // A key made for one T3 environment (`switchboard t3 setup`) belongs to that machine alone;
+  // installing it here as well would mean revoking it to retire that machine cuts this one off.
   const readable = Object.values(settings?.gatewayKeys ?? {})
-    .filter((e) => e && typeof e.token === 'string' && e.token.length > 0 && !e.unreadable);
+    .filter((e) => e && typeof e.token === 'string' && e.token.length > 0 && !e.unreadable && e.purpose !== 't3-environment');
   const wanted = String(label ?? '').trim().toLowerCase();
   const picked = (wanted ? readable.find((e) => String(e.label ?? '').trim().toLowerCase() === wanted) : null)
     ?? readable.find((e) => e.scope === gwScope)

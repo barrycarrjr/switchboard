@@ -6,6 +6,7 @@ import { readUserEnv, readMachineEnv } from './env.js';
 import { accountScopedEnv, CLAUDE_CREDENTIAL_ENV_VARS, CREDENTIAL_ENV_VARS, PROVIDERS } from './accounts.js';
 import { toEpochMs, readClaudeAccountIdentity } from './quota.js';
 import { laneTokenIdentityMatches, laneTokenState } from './lane-tokens.js';
+import { lendableClaudeAccounts, t3EnvironmentStatus } from './t3env.js';
 import { cliLaunch } from './cli-launch.js';
 
 const runFile = promisify(execFile);
@@ -337,6 +338,7 @@ export async function runChecks({
   env = { user: readUserEnv, machine: readMachineEnv, process: readProcessEnv },
   fetchImpl = fetch,
   isInstalled = null,
+  t3LeaseSha = null,
   now = Date.now(),
 } = {}) {
   const checks = [];
@@ -536,6 +538,23 @@ export async function runChecks({
       title: `Lane token for ${account.label} no longer matches the folder sign-in`,
       detail: `Lane ${laneId}'s folder is signed in as a different account than the token was minted for (or its sign-in identity is unreadable, or the entry carries no identity stamp), so the lease broker and automation stop receiving the token rather than billing the wrong account; terminals on this machine still use the folder sign-in. Sign the folder back in, or mint a fresh token with: switchboard lane-token ${laneId}`,
       fix: mintFix(laneId, account.label),
+    });
+  }
+
+  // 6b. T3 Code environments pointed at the broker (`switchboard t3 setup`): one whose last
+  //     setup or proof run failed cannot borrow, and one whose wrapper is older than this
+  //     Switchboard, or that lacks an account added since, is missing something. Each says
+  //     the command that puts it right; nothing here reaches out to the machine itself.
+  const lendableIds = lendableClaudeAccounts({ accounts }, settings ?? {}).lendable.map((a) => a.id);
+  for (const env of t3EnvironmentStatus(settings ?? {}, { leaseSha: t3LeaseSha, lendableIds })) {
+    if (env.state === 'ok') continue;
+    checks.push({
+      id: `t3-env-${env.id}`,
+      level: 'warn',
+      title: env.state === 'failed'
+        ? `T3 environment ${env.id} cannot borrow accounts from Switchboard`
+        : `T3 environment ${env.id} is out of date`,
+      detail: `${env.detail}. Run: switchboard t3 setup ${env.id} (or the Set up again button on the Gateway tab).`,
     });
   }
 

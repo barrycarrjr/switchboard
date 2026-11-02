@@ -1815,7 +1815,7 @@ export function parseWrapperInstallOutput(text, code = 0) {
   return { wrapper: m[1] === 'symlink' ? 'symlink-kept' : m[1], path: m[2], target: m[3] ?? null };
 }
 
-async function listWslDistros(spawnImpl) {
+export async function listWslDistros(spawnImpl = spawn) {
   try {
     const listRes = await runPipedCommand('wsl.exe', ['--list', '--quiet'], null, spawnImpl, 5000);
     return listRes.code === 0 ? parseWslDistroList(listRes.stdout) : [];

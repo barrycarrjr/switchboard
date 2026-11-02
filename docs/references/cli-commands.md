@@ -87,3 +87,66 @@ switchboard watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]
 Changing the machine default is a Windows facility (`setx`, user-scope environment). On any
 other platform the watch says so and reports rather than pretending to switch; `switchboard
 run` still routes by lane, because it scopes the account to the child process instead.
+
+## `switchboard t3`
+
+Points T3 Code environments (a WSL distro, or another machine reached with ssh) at the
+Claude accounts the lease broker lends, so T3 there needs no Claude sign-in of its own.
+
+```
+switchboard t3 setup [wsl:<distro>|ssh:<host> ...] [--all] [--replace-symlink] [--no-proof] [--json]
+switchboard t3 status [--json]
+switchboard t3 forget <wsl:<distro>|ssh:<host>>
+```
+
+- A bare name is a WSL distro when one by that name exists, otherwise an ssh host (an alias
+  from `~/.ssh/config` works). With no target, every WSL distro is set up. `--all` sets up
+  again every environment set up before.
+- ssh runs with `BatchMode=yes`: the machine must accept a key sign-in, because a password
+  prompt cannot be answered on a pipe. Everything sent to the target (the key included)
+  travels inside a script on stdin, never on a command line.
+- On the target it checks Claude Code, curl, node or python3, the GNU tools the scripts use
+  (`base64`, `sha256sum`, `mktemp`, `timeout`, `cp`), that T3 has run there, and that the
+  broker answers. Then it writes, in this order: the client key (kept when the broker
+  already accepts the one there; otherwise the environment gets its own key labelled
+  `T3 <name>`, which `gateway provision-client` never reuses for this machine),
+  `~/.config/switchboard/broker-url` for an ssh machine (or `broker-port` inside WSL when
+  the port is not 8318), `~/.local/bin/switchboard-lease`, one
+  `~/.local/bin/t3-claude-<account>` per account the broker can lend, T3's quota hub key
+  (kept equal to the machine's client key), and last T3's `settings.json`.
+- T3 gets one provider per account (`Claude - <label> (Switchboard)`, in the account's
+  color) and one "any account" provider that lets the broker pick the account with the most
+  room, plus the Switchboard quota hub under Usage providers (moved, not duplicated, when the
+  broker's address changes). New providers leave T3's config-folder field empty, so Claude
+  there reads the same settings and MCP servers as the plain `claude` command; the account
+  comes from the lent token. Entries made by hand before are adopted with their ids, names,
+  colors and config folders, so conversations on them keep working, and a hand-written
+  wrapper that differs is copied to `<name>.before-switchboard-<time>` before it is
+  replaced. Nothing is removed or turned off; a Claude entry on the machine's own sign-in is
+  listed as left alone. The previous settings file is kept as
+  `settings.json.before-switchboard-<time>`, a settings file that cannot be read is never
+  overwritten, and if T3 saved the file while the setup ran it is planned again.
+- The proof sends one short message per account through its wrapper on the target (Haiku),
+  from the home folder, and reports which answered. An account out of allowance at that
+  moment is reported as such and does not make the environment fail. `--no-proof` skips it.
+- A symlinked `switchboard-lease` (a developer's link into a checkout) is left alone and
+  named; `--replace-symlink` installs a copy instead.
+- It ends with what still needs its own sign-in on that machine: Codex (`codex login
+  --device-auth`) when it is installed there and signed out, and Grok, Antigravity and
+  Junie, which Switchboard cannot lend.
+- An ssh machine needs the gateway on scope `lan`. The scope is never changed from here; a
+  narrower one is reported with the command that widens it.
+- A target that never answered, or refused before anything was written, is not remembered.
+  A remembered one that does not answer keeps its last result, with the failed attempt and
+  its age shown beside it.
+- `t3 status` lists each environment as ready, out of date (its lease wrapper is older than
+  this Switchboard, an account was added, or the broker's port or address moved) or not
+  working (the last setup or proof failed, or its key was revoked), each with its age.
+  Health shows the same. At start the tray refreshes the wrapper files of an environment
+  whose wrapper is out of date, and only those: it never issues a key (a revoked key stays
+  revoked), never writes T3's settings and never proves. `t3 forget` stops listing one;
+  nothing on the machine is changed. The Gateway tab's T3 Code Environments card does all of
+  this in clicks.
+- The lease wrapper itself passes `--version` and `--help` straight to claude without
+  borrowing (T3 checks each provider with `--version` every few minutes), refuses to run
+  claude when a lease carries no credential, and reports a session ended by a stop signal.
