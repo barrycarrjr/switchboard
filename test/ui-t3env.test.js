@@ -35,7 +35,7 @@ test('after a setup the card names every account that did not answer and every s
       proof: [{ ok: true, label: 'first' }, { ok: false, label: 'second', code: 1, detail: 'claude-leased: lane x\nInvalid API key' }],
       skipped: [{ label: 'third', reason: 'its lane token is dead' }],
       leftovers: [{ displayName: 'Claude', note: 'uses this machine\'s own Claude sign-in, not Switchboard' }],
-      signIns: [{ provider: 'Codex', how: 'codex login --device-auth' }],
+      signIns: [{ what: 'Codex', state: 'needs-sign-in', how: 'run: switchboard t3 sign-in wsl:Ubuntu' }, { what: 'Antigravity', state: 'signed-in', how: 'x' }],
     }],
   });
   assert.deepEqual(lines, [
@@ -44,7 +44,7 @@ test('after a setup the card names every account that did not answer and every s
     '  second did not answer: Invalid API key',
     '  not added: third (its lane token is dead)',
     '  left alone: Claude (uses this machine\'s own Claude sign-in, not Switchboard)',
-    '  still needs its own sign-in there: Codex (codex login --device-auth)',
+    '  still to sign in: Codex: run: switchboard t3 sign-in wsl:Ubuntu',
   ]);
 });
 

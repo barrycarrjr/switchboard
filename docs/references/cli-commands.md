@@ -96,6 +96,7 @@ Claude accounts the lease broker lends, so T3 there needs no Claude sign-in of i
 ```
 switchboard t3 setup [wsl:<distro>|ssh:<host> ...] [--all] [--replace-symlink] [--no-proof] [--json]
 switchboard t3 status [--json]
+switchboard t3 sign-in <wsl:<distro>|ssh:<host>>
 switchboard t3 forget <wsl:<distro>|ssh:<host>>
 ```
 
@@ -131,9 +132,23 @@ switchboard t3 forget <wsl:<distro>|ssh:<host>>
   moment is reported as such and does not make the environment fail. `--no-proof` skips it.
 - A symlinked `switchboard-lease` (a developer's link into a checkout) is left alone and
   named; `--replace-symlink` installs a copy instead.
-- It ends with what still needs its own sign-in on that machine: Codex (`codex login
-  --device-auth`) when it is installed there and signed out, and Grok, Antigravity and
-  Junie, which Switchboard cannot lend.
+- Codex and Antigravity get the same entries the main machine has: one Codex entry per Codex
+  account Switchboard knows (the account whose folder here is `.codex` uses `~/.codex` there;
+  each other one gets its own sign-in folder under `~/.codex-t3`, which T3 keeps apart as that
+  entry's shadow home), and, when this machine's T3 has Antigravity turned on or Switchboard
+  has an Antigravity lane, one enabled Antigravity entry. An entry already there, on or off,
+  is left as it is; a hand-made Codex entry on another folder is listed as left alone. Neither can be lent: OpenAI and Google offer no long-lived
+  subscription token, and copies of a sign-in log each other out. So each account is signed in
+  once per machine, and the setup asks each machine which are already done and lists only the
+  missing ones; a Codex state it cannot read is shown as unknown, not as signed out. For Codex, `switchboard t3 sign-in <target>` runs `codex login --device-auth`
+  on that machine for each account still signed out (making its folder first), in this terminal: Codex shows a link and
+  a code to enter in your browser (device code sign-in must be on in ChatGPT, under Settings,
+  Security). Antigravity's sign-in belongs to T3 itself, kept apart from the `agy` command's,
+  so it is done in T3: pick the environment, then Settings, Providers, Antigravity (Install
+  first where T3 has not installed its Antigravity program there yet), then Sign in; T3 shows
+  a link to open in your own browser. Codex's usage reaches T3 through the Switchboard hub;
+  T3 reads Antigravity's itself once signed in. Grok and Junie need their own sign-in on each
+  machine where they are used.
 - An ssh machine needs the gateway on scope `lan`. The scope is never changed from here; a
   narrower one is reported with the command that widens it.
 - A target that never answered, or refused before anything was written, is not remembered.

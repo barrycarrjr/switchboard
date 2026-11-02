@@ -448,8 +448,10 @@ above, writes one small wrapper per Claude account, and adds one T3 provider per
 an "any account" provider, and the Switchboard quota hub to T3's settings on that machine.
 It keeps entries made there by hand (and the conversations on them), removes nothing,
 backs T3's settings up first, and ends by sending each account one short message from that
-machine to prove it works. Codex, Grok, Antigravity and Junie cannot be lent, so it lists
-them as still needing a sign-in there. Health warns when an environment's setup failed or
+machine to prove it works. Codex and Antigravity cannot be lent, so it adds the same Codex
+and Antigravity entries the main machine has and lists only the sign-ins still missing on
+that machine; `switchboard t3 sign-in <target>` runs Codex's one-time device-code sign-in
+there, and Antigravity's is done in T3 itself. Health warns when an environment's setup failed or
 its wrapper is older than this Switchboard. The full behaviour is in
 `docs/references/cli-commands.md`.
 

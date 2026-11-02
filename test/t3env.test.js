@@ -273,7 +273,8 @@ test('a full setup on a new machine gives it its own key, every wrapper, the T3 
   assert.deepEqual(Object.keys(written.providerInstances).sort(), ['claudeAgent_sb_account_2', 'claudeAgent_sb_any', 'claudeAgent_sb_default', 'claudeAgent_sb_third']);
   assert.ok(written.usageLimitSources['cliproxy-192.0.2.10-8318']);
   assert.ok(r.steps.some((s) => /Saved the broker address/.test(s)), 'a LAN machine is told where the broker is');
-  assert.ok(r.signIns.some((s) => /Grok/.test(s.provider)));
+  assert.deepEqual(r.signIns, [], 'no Codex account and no Antigravity in this setup, so nothing to sign in');
+  assert.ok(r.notes.some((n) => /Grok and Junie/.test(n)), 'the Grok and Junie note comes from core, for the CLI and the tray alike');
 });
 
 test('a key the broker already accepts on the target is kept, and a second setup reuses the key it made', async () => {

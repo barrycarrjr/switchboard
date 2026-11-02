@@ -2522,7 +2522,8 @@ function t3SetupSummary(res) {
     }
     for (const s of r.skipped ?? []) lines.push(`  not added: ${s.label} (${s.reason})`);
     for (const l of r.leftovers ?? []) lines.push(`  left alone: ${l.displayName} (${l.note})`);
-    for (const s of r.signIns ?? []) lines.push(`  still needs its own sign-in there: ${s.provider} (${s.how})`);
+    for (const s of (r.signIns ?? []).filter((x) => x.state !== 'signed-in')) lines.push(`  still to sign in: ${s.what}: ${s.how}`);
+    for (const n of r.notes ?? []) lines.push(`  ${n}`);
   }
   if (!res?.reports && res?.error) lines.push(res.error);
   return lines;

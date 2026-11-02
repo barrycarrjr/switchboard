@@ -158,6 +158,41 @@ function basename(p) {
 }
 
 /**
+ * The Codex accounts Switchboard knows, each with the folder its sign-in lives in on a target,
+ * relative to the home folder. The account whose folder here is Codex's own default (.codex)
+ * uses ~/.codex there too, the way T3's built-in Codex entry does; every other account gets its
+ * own folder under ~/.codex-t3, which T3 keeps apart as that entry's "shadow home" (the
+ * account's auth.json) while sharing the rest of ~/.codex. The folder follows the account, not
+ * its place in the list, so removing or re-adding an account never hands one account's
+ * sign-in to another. No account registered means no Codex entries: nothing is invented.
+ * Codex cannot be lent (OpenAI offers no long-lived subscription token, and copies of a sign-in
+ * log each other out), so each account is signed in once on each machine, into this folder.
+ */
+export function codexAccountsFor(registry) {
+  const accounts = (registry?.accounts ?? []).filter((a) => a?.provider === 'codex' && ID_CHARS.test(String(a.id ?? '')));
+  const isDefault = (a) => String(a.home ?? '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() === '.codex';
+  const plain = accounts.find(isDefault) ?? null;
+  return accounts.map((a) => ({
+    id: a.id,
+    label: String(a.label ?? a.id),
+    relHome: a === plain ? '.codex' : `.codex-t3/${slug(a.id.replace(/^codex-/, ''))}`,
+    shadow: a !== plain,
+  }));
+}
+
+/** The folder name T3 gives an Antigravity entry's private profile: SHA-256 of its id. */
+export function antigravityProfileName(instanceId) {
+  return crypto.createHash('sha256').update(String(instanceId), 'utf8').digest('hex');
+}
+
+/** The ids of the enabled Antigravity entries in a T3 settings object. */
+export function enabledAntigravityIds(settings) {
+  return Object.entries(settings?.providerInstances ?? {})
+    .filter(([, inst]) => inst?.driver === 'antigravity' && inst.enabled !== false)
+    .map(([id]) => id);
+}
+
+/**
  * The target's T3 settings with one provider per lendable account, an "any account" provider,
  * and the quota hub, plus a list of what changed and what was left alone.
  *
@@ -175,7 +210,7 @@ function basename(p) {
  * - Nothing is removed or disabled. A Claude entry that is not Switchboard's is reported.
  * Pure: returns the new settings object and never mutates `current`.
  */
-export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers = {}, hubUrl = null } = {}) {
+export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers = {}, hubUrl = null, codexAccounts = null, antigravity = false } = {}) {
   if (!home || !String(home).startsWith('/')) throw new Error('the target home folder is required');
   const bin = `${home}/.local/bin`;
   const settings = current && typeof current === 'object' ? structuredClone(current) : {};
@@ -287,6 +322,46 @@ export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers =
     }
   }
 
+  // Codex: one entry per account. The first is the plain entry on ~/.codex (T3's built-in
+  // "codex"); an existing Codex entry with no shadow home is that one. Each further account is
+  // the entry whose shadow home is its folder. Only missing entries are added; an existing one
+  // keeps everything a person set on it.
+  const onDefaultHome = (inst) => ['', '~/.codex', `${home}/.codex`].includes(String(inst.config?.homePath ?? '').trim());
+  const claimedCodex = new Set();
+  for (const acc of codexAccounts ?? []) {
+    const shadowAbs = acc.shadow ? `${home}/${acc.relHome}` : '';
+    const isMine = (inst) => inst?.driver === 'codex' && onDefaultHome(inst) && (acc.shadow
+      ? [shadowAbs, `~/${acc.relHome}`].includes(String(inst.config?.shadowHomePath ?? ''))
+      : !String(inst.config?.shadowHomePath ?? '').trim());
+    const found = Object.keys(instances).find((id) => isMine(instances[id]));
+    if (found) { claimedCodex.add(found); continue; }
+    const id = !acc.shadow && !('codex' in instances) ? 'codex' : newId(`codex_sb_${slug(acc.id.replace(/^codex-/, ''))}`);
+    claimedCodex.add(id);
+    instances[id] = {
+      driver: 'codex',
+      ...(acc.shadow ? { displayName: `Codex - ${acc.label} (Switchboard)` } : {}),
+      enabled: true,
+      config: { binaryPath: 'codex', homePath: '', shadowHomePath: shadowAbs, launchArgs: '', customModels: [] },
+    };
+    changes.push(`added ${id} (Codex${acc.shadow ? `, ${acc.label}` : ''})`);
+  }
+
+  if (codexAccounts) {
+    for (const [id, inst] of Object.entries(instances)) {
+      if (inst?.driver !== 'codex' || claimedCodex.has(id)) continue;
+      leftovers.push({ id, displayName: inst.displayName ?? id, note: `a Codex entry on its own folder (${inst.config?.shadowHomePath || inst.config?.homePath || 'unknown'}); its sign-in is not checked` });
+    }
+  }
+
+  // Antigravity: T3 shows a built-in entry that stays off until one is added, so the main
+  // machine carries an added, enabled entry (antigravity_1). The same is added when the machine
+  // has no Antigravity entry at all; one that is there, on or turned off, is left as it is.
+  if (antigravity && !Object.values(instances).some((inst) => inst?.driver === 'antigravity')) {
+    const id = newId('antigravity_1');
+    instances[id] = { driver: 'antigravity', enabled: true };
+    changes.push(`added ${id} (Antigravity)`);
+  }
+
   return { settings, changes, leftovers, wrapperFiles, adoptedFiles: [...adoptedFiles], hubId };
 }
 
@@ -308,7 +383,8 @@ const SCRIPT_HEAD = [
  * target's key. `defaultRoutePort` adds the default-route host on that port, which is Windows
  * only from inside WSL; on a LAN machine it is the router, and the key must never go there.
  */
-export function inspectScript({ brokerUrls = [], defaultRoutePort = null } = {}) {
+export function inspectScript({ brokerUrls = [], defaultRoutePort = null, codexHomes = [] } = {}) {
+  for (const h of codexHomes) if (!/^\.codex(-t3\/[a-z0-9_]+)?$/.test(h)) throw new Error(`unexpected Codex folder ${h}`);
   const urls = brokerUrls.map(shq).join(' ');
   const viaRoute = Number.isInteger(defaultRoutePort) ? ` \${gw:+"http://$gw:${defaultRoutePort}"}` : '';
   return [
@@ -345,7 +421,24 @@ export function inspectScript({ brokerUrls = [], defaultRoutePort = null } = {})
     'for w in "$HOME"/.local/bin/t3-claude-*; do [ -f "$w" ] || continue; emit wrapper "$(basename "$w")"$\'\\n\'"$(head -c 4096 "$w")"; done',
     'for f in "$HOME"/.t3/userdata/secrets/usage-limit-source-*.bin; do [ -f "$f" ] && emit hubsecret "$(basename "$f")"; done',
     // A codex seen through WSL interop (/mnt/...) is the Windows one, not installed here.
-    'cx="$(command -v codex 2>/dev/null)"; case "$cx" in ""|/mnt/*) emit codex not-installed ;; *) if timeout 15 codex login status </dev/null >/dev/null 2>&1; then emit codex signed-in; else emit codex not-signed-in; fi ;; esac',
+    // T3 finds programs through the login shell's PATH, which a plain `bash -s` lacks, so the
+    // usual install places are tried first, then PATH without the Windows copy WSL adds, then
+    // the login shell.
+    'cx=""; [ -x "$HOME/.local/bin/codex" ] && cx="$HOME/.local/bin/codex"',
+    'if [ -z "$cx" ]; then for x in $(which -a codex 2>/dev/null); do case "$x" in /mnt/*) ;; *) cx="$x"; break ;; esac; done; fi',
+    'if [ -z "$cx" ]; then x="$(timeout 10 "${SHELL:-bash}" -lc "command -v codex" </dev/null 2>/dev/null | tail -n1)"; case "$x" in /*) case "$x" in /mnt/*) ;; *) cx="$x" ;; esac ;; esac; fi',
+    'emit codexbin "$cx"',
+    // Each account's sign-in is asked of Codex itself, in the folder that account uses.
+    // Codex refuses a CODEX_HOME that does not exist, and a folder that is not there has no
+    // sign-in. "Not logged in" is the only answer read as signed out; anything else (a broken
+    // config, a timeout) is reported as unknown rather than guessed.
+    ...codexHomes.map((h) => `if [ -n "$cx" ]; then if [ ! -d "$HOME/${h}" ]; then emit codexstatus '${h} not-signed-in'; else o="$(CODEX_HOME="$HOME/${h}" timeout 15 "$cx" login status </dev/null 2>&1)"; c=$?; if [ $c = 0 ]; then emit codexstatus '${h} signed-in'; elif printf '%s' "$o" | grep -qi 'not logged in'; then emit codexstatus '${h} not-signed-in'; else emit codexstatus "${h} unknown"; fi; fi; fi`),
+    // T3 keeps its own Antigravity sign-in in a private profile per entry, apart from the agy
+    // command's; a token file there is that sign-in.
+    'for t in "$HOME"/.t3/userdata/providers/antigravity/*/antigravity-acp/acp_token.json; do [ -s "$t" ] && emit agtoken "$(basename "$(dirname "$(dirname "$t")")")"; done',
+    // T3 installs its own Antigravity program per machine (from that environment's provider
+    // settings); until it has, there is nothing to sign in to.
+    'r=no; for v in "$HOME"/.t3/tools/antigravity-acp/*/versions/*; do [ -d "$v" ] && r=yes && break; done; emit agruntime "$r"',
     'emit done 1',
     '',
   ].join('\n');
@@ -369,7 +462,7 @@ export function parseMarkedOutput(text, repeated = []) {
 
 /** The inspect output as a plain object the planner reads. */
 export function parseInspect(text) {
-  const raw = parseMarkedOutput(text, ['probe', 'wrapper', 'hubsecret']);
+  const raw = parseMarkedOutput(text, ['probe', 'wrapper', 'hubsecret', 'codexstatus', 'agtoken']);
   if (raw.done !== '1') return null;
   const probes = raw.probe.map((p) => {
     const [url, code] = p.split(' ');
@@ -410,7 +503,10 @@ export function parseInspect(text) {
     wrappers,
     wrapperTexts,
     hubSecrets: raw.hubsecret,
-    codex: raw.codex,
+    codexBin: raw.codexbin || null,
+    codexStatus: Object.fromEntries(raw.codexstatus.map((v) => v.split(' '))),
+    antigravityTokenProfiles: raw.agtoken,
+    antigravityRuntime: raw.agruntime == null ? null : raw.agruntime === 'yes',
     missingTools: String(raw.missing ?? '').trim().split(/\s+/).filter(Boolean),
   };
 }
@@ -615,16 +711,20 @@ export async function setupT3Environment(target, deps, { replaceSymlink = false,
   if (!lendable.length) return fail('Switchboard has no Claude account it can lend (each needs a lane with a live setup token).');
 
   const port = report.port;
+  // The start-up refresh writes no entries, so it neither checks nor records sign-ins.
+  const codexAccounts = refreshOnly ? [] : (deps.codexAccounts ?? []);
+  const wantAntigravity = !refreshOnly && deps.antigravity === true;
   const inspectOpts = target.kind === 'ssh'
     ? { brokerUrls: [deps.brokerUrl] }
     : { brokerUrls: deps.wslBrokerUrls ?? [`http://127.0.0.1:${port}`], defaultRoutePort: port };
-  const runOpts = { timeoutMs: 60000 };
+  // Each Codex account's status check may take up to 15 s on its own.
+  const runOpts = { timeoutMs: 60000 + 20000 * codexAccounts.length };
 
   let inspected = null;
   let applied = null;
   let keySecret = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const res = await deps.run(target, inspectScript(inspectOpts), runOpts);
+    const res = await deps.run(target, inspectScript({ ...inspectOpts, codexHomes: codexAccounts.map((a) => a.relHome) }), runOpts);
     inspected = parseInspect(res.stdout);
     if (!inspected) {
       const why = (res.stderr || '').trim().split(/\r?\n/).slice(-3).join(' ');
@@ -669,6 +769,8 @@ export async function setupT3Environment(target, deps, { replaceSymlink = false,
       accounts: lendable,
       wrappers: inspected.wrappers,
       hubUrl: deps.hubUrl ?? null,
+      codexAccounts,
+      antigravity: wantAntigravity,
     });
     report.leftovers = merged.leftovers;
     const hubSecretFile = merged.hubId && (!refreshOnly || inspected.settings?.usageLimitSources?.[merged.hubId])
@@ -735,9 +837,17 @@ export async function setupT3Environment(target, deps, { replaceSymlink = false,
   }
   if (!applied) return fail(`T3 kept changing its settings on ${target.id}; try again in a moment.`);
 
-  report.signIns = [];
-  if (inspected.codex === 'not-signed-in') report.signIns.push({ provider: 'Codex', how: 'codex login --device-auth' });
-  report.signIns.push({ provider: 'Grok, Antigravity, Junie', how: 'sign in on that machine if you use them there; Switchboard cannot lend them' });
+  report.notes = [OTHER_SIGN_INS_NOTE];
+  if (!refreshOnly) {
+    report.signIns = signInsFor(target, inspected, codexAccounts, {
+      antigravityIds: wantAntigravity ? enabledAntigravityIds(applied.merged.settings) : null,
+    });
+    report.signInsChecked = true;
+    report.codexAccountIds = codexAccounts.map((a) => a.id);
+    report.antigravity = wantAntigravity;
+  }
+  const missing = report.signIns.filter((x) => x.state !== 'signed-in');
+  if (report.signIns.length) step(missing.length ? `Still to sign in on this machine: ${missing.map((x) => x.what).join(', ')}.` : `Signed in here already: ${report.signIns.map((x) => x.what).join(', ')}.`);
 
   if (prove && !refreshOnly) {
     const files = applied.wrappers.map((w) => w.file);
@@ -765,6 +875,62 @@ export async function setupT3Environment(target, deps, { replaceSymlink = false,
     report.ok = true;
   }
   return report;
+}
+
+/**
+ * What each non-lendable provider needs on this machine, one line per account:
+ * { provider, account, what, state: signed-in | needs-sign-in | not-installed, how }.
+ */
+export const OTHER_SIGN_INS_NOTE = 'Grok and Junie, if you use them there, need their own sign-in on that machine.';
+export function signInsFor(target, inspected, codexAccounts, { antigravityIds = null } = {}) {
+  const out = [];
+  for (const acc of codexAccounts) {
+    const what = acc.shadow ? `Codex (${acc.label})` : 'Codex';
+    if (!inspected.codexBin) {
+      out.push({ provider: 'codex', account: acc.id, what, state: 'not-installed', how: 'install Codex on that machine so it is on its PATH (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder), then run this again' });
+      continue;
+    }
+    const seen = inspected.codexStatus?.[acc.relHome];
+    const state = seen === 'signed-in' ? 'signed-in' : seen === 'unknown' ? 'unknown' : 'needs-sign-in';
+    const manual = acc.shadow ? `mkdir -p ~/${acc.relHome} && CODEX_HOME=~/${acc.relHome} codex login --device-auth` : 'codex login --device-auth';
+    out.push({
+      provider: 'codex', account: acc.id, what, state,
+      how: state === 'unknown'
+        ? `Codex there could not say whether it is signed in (check: ${acc.shadow ? `CODEX_HOME=~/${acc.relHome} ` : ''}codex login status)`
+        : `run: switchboard t3 sign-in ${target.id} (or on that machine: ${manual}). Turn on device code sign-in in ChatGPT first: Settings, Security.`,
+    });
+  }
+  if (antigravityIds?.length) {
+    const profiles = new Set(inspected.antigravityTokenProfiles ?? []);
+    const signedIn = antigravityIds.some((id) => profiles.has(antigravityProfileName(id)));
+    const installed = inspected.antigravityRuntime !== false;
+    out.push({
+      provider: 'antigravity', account: 'antigravity', what: 'Antigravity',
+      state: signedIn ? 'signed-in' : installed ? 'needs-sign-in' : 'not-installed',
+      how: installed
+        ? 'in T3, pick this environment, then Settings, Providers, Antigravity, Sign in; T3 shows a link to open in your own browser'
+        : 'in T3, pick this environment, then Settings, Providers, Antigravity: Install first, then Sign in; T3 shows a link to open in your own browser',
+    });
+  }
+  return out;
+}
+
+/**
+ * The command that runs Codex's device-code sign-in for one account on the target, attached
+ * to this terminal so the code and link show and the person can finish it. The folder must
+ * exist first (Codex refuses a CODEX_HOME that does not); the runner makes it. Nothing secret
+ * is on the command line: Codex prints a one-time code and the sign-in happens in the browser.
+ */
+export function codexSignInCommand(target, { codexBin, home, relHome }) {
+  if (!/^\/[^\s'"`$\\]+$/.test(String(codexBin ?? ''))) throw new Error('the Codex program path on the target is not usable');
+  if (!/^\/[^\s'"`$\\]*$/.test(String(home ?? ''))) throw new Error('the target home folder is not usable');
+  if (!/^\.codex(-t3\/[a-z0-9_]+)?$/.test(String(relHome ?? ''))) throw new Error(`unexpected Codex folder ${relHome}`);
+  const codexHome = `${home}/${relHome}`;
+  if (target.kind === 'wsl') return { file: 'wsl.exe', args: ['-d', target.name, '--exec', 'env', `CODEX_HOME=${codexHome}`, codexBin, 'login', '--device-auth'] };
+  if (target.kind === 'ssh') {
+    return { file: 'ssh', args: ['-t', '-o', 'ConnectTimeout=10', '--', target.name, `CODEX_HOME=${shq(codexHome)} ${shq(codexBin)} login --device-auth`] };
+  }
+  throw new Error(`unknown environment kind ${target.kind}`);
 }
 
 /**
@@ -827,6 +993,12 @@ export function rememberT3Environment(settings, target, report, { leaseSha = nul
     lastAttemptError: null,
     accounts: (report.accounts ?? []).map((a) => a.id),
     proofFailed: (report.proof ?? []).filter((r) => !r.ok && !r.cooling).map((r) => r.label),
+    // Only a run that actually asked the machine replaces what is known about its sign-ins.
+    signInsMissing: report.signInsChecked
+      ? (report.signIns ?? []).filter((x) => x.state !== 'signed-in').map((x) => x.what)
+      : (prev?.signInsMissing ?? []),
+    codexAccounts: report.signInsChecked ? report.codexAccountIds : (prev?.codexAccounts ?? null),
+    antigravity: report.signInsChecked ? report.antigravity : (prev?.antigravity ?? null),
     leaseSha: report.error ? (prev?.leaseSha ?? null) : leaseSha,
   };
   return { ...settings, t3Environments: envs };
@@ -859,9 +1031,13 @@ function ageText(ms, now) {
  * Each line carries its age, and a failed attempt to reach it since, so a reading is never
  * passed off as current.
  */
-export function t3EnvironmentStatus(settings, { leaseSha = null, lendableIds = [], port = null, brokerUrl = null, now = Date.now() } = {}) {
+export function t3EnvironmentStatus(settings, { leaseSha = null, lendableIds = [], codexIds = [], antigravity = false, port = null, brokerUrl = null, now = Date.now() } = {}) {
   return Object.values(settings?.t3Environments ?? {}).map((e) => {
     const missing = lendableIds.filter((id) => !(e.accounts ?? []).includes(id));
+    // Codex and Antigravity entries are part of a setup too: a Codex account registered since,
+    // or an environment set up before they were added, is missing them.
+    const missingCodex = codexIds.filter((id) => !(e.codexAccounts ?? []).includes(id));
+    const missingAntigravity = antigravity && e.antigravity !== true;
     const wrapperOld = Boolean(leaseSha && e.leaseSha && e.leaseSha !== leaseSha);
     const keyGone = Boolean(e.keyId && !settings?.gatewayKeys?.[e.keyId]);
     const moved = [
@@ -876,12 +1052,14 @@ export function t3EnvironmentStatus(settings, { leaseSha = null, lendableIds = [
     } else if (keyGone) {
       state = 'failed';
       detail = 'the client key it was given has been revoked';
-    } else if (wrapperOld || missing.length || moved.length) {
+    } else if (wrapperOld || missing.length || missingCodex.length || missingAntigravity || moved.length) {
       state = 'stale';
-      detail = [wrapperOld ? 'the lease wrapper there is out of date' : null, missing.length ? `not yet set up for ${missing.join(', ')}` : null, ...moved].filter(Boolean).join('; ');
+      detail = [wrapperOld ? 'the lease wrapper there is out of date' : null, missing.length ? `not yet set up for ${missing.join(', ')}` : null,
+        missingCodex.length ? `no Codex entry yet for ${missingCodex.join(', ')}` : null, missingAntigravity ? 'no Antigravity entry yet' : null, ...moved].filter(Boolean).join('; ');
     }
+    if (e.signInsMissing?.length) detail += `; still to sign in: ${e.signInsMissing.join(', ')}`;
     detail += `; set up ${ageText(e.lastSetupAt, now)}`;
     if (e.lastAttemptError) detail += `; could not reach it ${ageText(e.lastAttemptAt, now)}`;
-    return { id: e.id, kind: e.kind, name: e.name, state, detail, wrapperOld, lastSetupAt: e.lastSetupAt ?? null };
+    return { id: e.id, kind: e.kind, name: e.name, state, detail, wrapperOld, signInsMissing: e.signInsMissing ?? [], lastSetupAt: e.lastSetupAt ?? null };
   });
 }

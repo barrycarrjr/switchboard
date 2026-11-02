@@ -1,13 +1,16 @@
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSettings, saveSettings } from './settings.js';
 import { loadRegistry } from './accounts.js';
+import { t3SettingsFile } from './t3colors.js';
 import { detectGatewayHostIp, gatewayEnabledSettings } from './gateway-keys.js';
 import { listWslDistros, inspectLaneLeaseCredential } from './gateway.js';
 import {
   parseT3Target, setupT3Environment, rememberT3Environment, forgetT3Environment, keyForEnvironment, runScript,
-  t3EnvironmentStatus, lendableClaudeAccounts, sha256,
+  t3EnvironmentStatus, lendableClaudeAccounts, sha256, codexAccountsFor, inspectScript, parseInspect, signInsFor,
+  codexSignInCommand, enabledAntigravityIds,
 } from './t3env.js';
 
 /**
@@ -25,6 +28,18 @@ export function readLeaseScript(file = LEASE_SCRIPT_PATH) {
 /** The hash of the lease wrapper this Switchboard ships, or null when it cannot be read. */
 export function currentLeaseSha() {
   try { return sha256(readLeaseScript()); } catch { return null; }
+}
+
+/**
+ * Whether Antigravity is in use here, so other machines get it too: this machine's T3 has an
+ * enabled Antigravity entry, or Switchboard has an Antigravity lane. Someone who never uses it
+ * gets no Antigravity entry and no reminder to sign in.
+ */
+export function usesAntigravity({ t3File = t3SettingsFile(), settings = loadSettings() } = {}) {
+  try {
+    if (enabledAntigravityIds(JSON.parse(fs.readFileSync(t3File, 'utf8'))).length) return true;
+  } catch { /* no T3 settings here */ }
+  return (settings.lanes ?? []).some((l) => l?.harness === 'antigravity');
 }
 
 /** The broker's own lending rule, so setup offers exactly the accounts the broker will lend. */
@@ -103,6 +118,8 @@ export async function runT3Setup(targets, { replaceSymlink = false, prove = true
           brokerUrl: addresses.lanUrl,
           wslBrokerUrls: addresses.wslUrls,
           hubUrl: addresses.lanUrl,
+          codexAccounts: codexAccountsFor(registry),
+          antigravity: usesAntigravity(),
           createKey: (s, label) => keyForEnvironment(s, label),
           run: (t, script, opts) => run(t, script, opts),
         }, { replaceSymlink, prove, refreshOnly });
@@ -151,5 +168,57 @@ export function currentT3Status({ hostIp = null } = {}) {
   const settings = loadSettings();
   const addresses = brokerAddresses(settings, { hostIp });
   const lendableIds = lendableClaudeAccounts(loadRegistry(), settings, { canLend: brokerCanLend(settings) }).lendable.map((a) => a.id);
-  return t3EnvironmentStatus(settings, { leaseSha: currentLeaseSha(), lendableIds, port: addresses.port, brokerUrl: addresses.lanUrl });
+  const codexIds = codexAccountsFor(loadRegistry()).map((a) => a.id);
+  return t3EnvironmentStatus(settings, { leaseSha: currentLeaseSha(), lendableIds, codexIds, antigravity: usesAntigravity({ settings }), port: addresses.port, brokerUrl: addresses.lanUrl });
+}
+
+/**
+ * `switchboard t3 sign-in <target>`: Codex's one-time device-code sign-in for every Codex
+ * account that is not signed in on that machine yet, each attached to this terminal so the code
+ * and link show. Antigravity's sign-in lives inside T3 and is only reported. When a sign-in ran,
+ * the machine is asked again so the remembered list is current; if it cannot be asked, the list
+ * is left as it was and that is said. Returns the Codex rows (what this command acts on) and
+ * the Antigravity row separately. `spawnImpl`, `run` and `resolve` exist for tests.
+ */
+export async function runT3SignIn(targetSpec, { onProgress = () => {}, spawnImpl = spawn, run = runScript, resolve = resolveTargets, antigravity = null } = {}) {
+  const [target] = await resolve([targetSpec]);
+  const codexAccounts = codexAccountsFor(loadRegistry());
+  if (!codexAccounts.length) onProgress('Switchboard knows no Codex account, so there is nothing to sign in.');
+  const ask = async () => parseInspect((await run(target, inspectScript({ codexHomes: codexAccounts.map((a) => a.relHome) }), { timeoutMs: 60000 + 20000 * codexAccounts.length })).stdout);
+  let inspected = await ask();
+  if (!inspected) throw new Error(`could not reach ${target.id}`);
+  const wantAntigravity = antigravity ?? usesAntigravity();
+  const listFor = (insp) => signInsFor(target, insp, codexAccounts, { antigravityIds: wantAntigravity ? enabledAntigravityIds(insp.settings) : null });
+  const todo = listFor(inspected).filter((x) => x.provider === 'codex' && x.state === 'needs-sign-in');
+  if (codexAccounts.length && !inspected.codexBin) onProgress(`Codex is not installed on ${target.id}; install it there first (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder).`);
+  else if (codexAccounts.length && !todo.length) onProgress(`Every Codex account is already signed in on ${target.id}.`);
+  for (const item of todo) {
+    const acc = codexAccounts.find((a) => a.id === item.account);
+    // Codex refuses a CODEX_HOME that does not exist yet.
+    await run(target, `set -u\nmkdir -p "$HOME/${acc.relHome}"\n`, { timeoutMs: 30000 });
+    onProgress(`Signing in ${item.what} on ${target.id}. Codex shows a link and a code: open the link in your browser and enter the code. (Device code sign-in must be on in ChatGPT: Settings, Security.)`);
+    const { file, args } = codexSignInCommand(target, { codexBin: inspected.codexBin, home: inspected.home, relHome: acc.relHome });
+    const code = await new Promise((done) => {
+      const child = spawnImpl(file, args, { stdio: 'inherit' });
+      child.on('error', () => done(null));
+      child.on('close', (c) => done(c));
+    });
+    onProgress(code === 0 ? `  ${item.what}: done.` : `  ${item.what}: the sign-in did not finish (exit ${code ?? 'unknown'}).`);
+  }
+  if (todo.length) {
+    const again = await ask();
+    if (again) inspected = again;
+    else onProgress(`Could not ask ${target.id} again, so its saved list of missing sign-ins was left as it was.`);
+    if (again) {
+      const settings = loadSettings();
+      if (settings.t3Environments?.[target.id]) {
+        const envs = { ...settings.t3Environments };
+        envs[target.id] = { ...envs[target.id], signInsMissing: listFor(again).filter((x) => x.state !== 'signed-in').map((x) => x.what) };
+        saveSettings({ ...settings, t3Environments: envs });
+      }
+    }
+  }
+  const all = listFor(inspected);
+  for (const x of all.filter((y) => y.state !== 'signed-in')) onProgress(`Still to sign in: ${x.what} (${x.how})`);
+  return { codex: all.filter((x) => x.provider === 'codex'), antigravity: all.find((x) => x.provider === 'antigravity') ?? null };
 }

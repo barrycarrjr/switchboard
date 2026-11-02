@@ -145,6 +145,26 @@ test('inspection names the GNU tools a machine lacks', { skip }, () => {
   assert.deepEqual(parseInspect(r.stdout).missingTools, ['sha256sum', 'timeout']);
 });
 
+test('inspection asks Codex in each account\'s folder and counts T3\'s Antigravity sign-ins', { skip }, () => {
+  const home = freshHome();
+  const bin = path.join(home, 'tools');
+  fs.mkdirSync(bin);
+  // A stand-in codex: signed in when the folder it is pointed at holds an auth.json.
+  fs.writeFileSync(path.join(bin, 'codex'), '#!/usr/bin/env bash\n[ "$1 $2" = "login status" ] && [ -f "$CODEX_HOME/auth.json" ]\n', { mode: 0o755 });
+  fs.mkdirSync(path.join(home, '.codex'));
+  fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{}');
+  const acp = path.join(home, '.t3', 'userdata', 'providers', 'antigravity', 'abc', 'antigravity-acp');
+  fs.mkdirSync(acp, { recursive: true });
+  fs.writeFileSync(path.join(acp, 'acp_token.json'), '{"x":1}');
+  fs.mkdirSync(path.join(home, '.t3', 'tools', 'antigravity-acp', 'linux-x64', 'versions', 'v1'), { recursive: true });
+  const r = spawnSync('bash', ['-s'], { input: inspectScript({ codexHomes: ['.codex', '.codex-t3/work'] }), env: { PATH: `${bin}:${process.env.PATH}`, HOME: home }, encoding: 'utf8' });
+  const p = parseInspect(r.stdout);
+  assert.equal(p.codexBin, path.join(bin, 'codex'));
+  assert.deepEqual(p.codexStatus, { '.codex': 'signed-in', '.codex-t3/work': 'not-signed-in' });
+  assert.deepEqual(p.antigravityTokenProfiles, ['abc'], 'the profile that holds the token is named');
+  assert.equal(p.antigravityRuntime, true);
+});
+
 test('a settings file T3 changed after inspection is left alone and reported as a conflict', { skip }, () => {
   const home = freshHome();
   const sfile = path.join(home, '.t3', 'userdata', 'settings.json');
