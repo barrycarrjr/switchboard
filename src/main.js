@@ -1618,26 +1618,33 @@ ipcMain.handle('sb:register', (_e, candidate) => {
   return { ok: true, account };
 });
 
-ipcMain.handle('sb:fix', (_e, action, args) => {
+ipcMain.handle('sb:fix', async (_e, action, args) => {
   // Minting a lane token needs a person at a real console (see laneTokenTerminal), so this
   // fix opens one rather than changing anything itself. The window's own lane-token command
   // stores the token, and the settings watcher picks it up.
   if (action === 'mint-lane-token') {
     const laneId = String(args?.laneId ?? '');
-    if (!loadSettings().lanes?.some((l) => l.id === laneId && l.harness === 'claude')) {
-      throw new Error(`no Claude lane with id "${laneId}"`);
-    }
+    const lane = loadSettings().lanes?.find((l) => l.id === laneId && l.harness === 'claude');
+    if (!lane) throw new Error(`no Claude lane with id "${laneId}"`);
+    const account = registry().accounts.find((a) => a.id === lane.accountId);
+    if (!account) throw new Error(`lane ${laneId} names an unregistered account (${lane.accountId})`);
+    if (!claudeExecutablePromise) claudeExecutablePromise = toolExecutable('claude');
+    const claudePath = await claudeExecutablePromise;
+    if (!claudePath) throw new Error('Claude Code is not installed or not on PATH');
     const { command, env: tokenEnv } = laneTokenTerminal({
       laneId,
-      label: args?.label,
+      label: account.label,
       exePath: process.execPath,
       cliPath: path.join(here, '..', 'bin', 'cli.js'),
+      claudePath,
     });
     spawn('cmd.exe', ['/c', 'start', 'powershell', '-NoExit', '-Command', command], {
       detached: true,
       stdio: 'ignore',
       windowsHide: false,
-      env: { ...process.env, ...tokenEnv },
+      // The lane's own folder, with any inherited Claude token stripped, so setup-token
+      // mints for this account and no other (the same scoping the sign-in window uses).
+      env: { ...accountScopedEnv(account, process.env), ...tokenEnv },
     }).unref();
     return { ok: true, did: 'A window has opened. Approve in the browser, then paste the token back into that window.' };
   }

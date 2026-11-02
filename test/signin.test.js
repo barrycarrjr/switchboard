@@ -95,21 +95,33 @@ test('a lane of every tool starts without API keys inherited from the calling sh
   assert.equal(accountScopedEnv({ provider: 'gemini', home: 'C:\\p\\.gemini' }, shell).GOOGLE_CLOUD_PROJECT, 'my-project');
 });
 
-test('the Get new token window runs the app as Node on its own lane-token command, all values in the environment', () => {
-  const exePath = "C:\Program Files\Jo's apps\Switchboard.exe";
-  const cliPath = 'C:\Program Files\Switchboard\resources\app.asar\bin\cli.js';
+/**
+ * The Get new token window. PowerShell runs Claude's sign-in tool and reads the paste
+ * itself, because the app run as Node has no console input and the tool drew nothing under
+ * it (2026-11-02). Only the storing goes to Switchboard's own command.
+ */
+test('the Get new token window runs setup-token on its own console and hands only the paste to Switchboard', () => {
+  const exePath = "C:\\Program Files\\Jo's apps\\Switchboard.exe";
+  const cliPath = 'C:\\Program Files\\Switchboard\\resources\\app.asar\\bin\\cli.js';
+  const claudePath = 'D:\\tools\\claude\\claude.exe';
   const laneId = "lane-1'; calc; $x='";
   const label = "Jo's %PATH% account";
-  const { command, env } = laneTokenTerminal({ laneId, label, exePath, cliPath });
-  assert.equal(command, 'Write-Host $env:SWITCHBOARD_TOKEN_BANNER -ForegroundColor Cyan; '
-    + "Start-Process -FilePath $env:SWITCHBOARD_EXE -ArgumentList ([char]34 + $env:SWITCHBOARD_CLI + [char]34), 'lane-token', $env:SWITCHBOARD_LANE_ID -NoNewWindow -Wait");
+  const { command, env } = laneTokenTerminal({ laneId, label, exePath, cliPath, claudePath });
+  const steps = command.split('; ');
+  assert.equal(steps[1], '& $env:SWITCHBOARD_CLAUDE setup-token', 'the sign-in tool runs on the window console, not under the app');
+  assert.match(command, /if \(\$LASTEXITCODE -ne 0\) \{[^}]*return \}/, 'a failed sign-in stops before the paste prompt');
+  assert.match(command, /\$env:SWITCHBOARD_NEW_LANE_TOKEN = Read-Host 'Paste the token that was just printed'/);
+  assert.match(command, /Start-Process -FilePath \$env:SWITCHBOARD_EXE -ArgumentList \(\[char\]34 \+ \$env:SWITCHBOARD_CLI \+ \[char\]34\), 'lane-token', \$env:SWITCHBOARD_LANE_ID, '--from-env' -NoNewWindow -Wait/,
+    'PowerShell does not wait for a windowed program started with &');
+  assert.ok(command.indexOf("$env:ELECTRON_RUN_AS_NODE = '1'") > command.indexOf('setup-token'), 'the app runs as Node only for the storing step');
+  assert.match(command, /Remove-Item Env:\\SWITCHBOARD_NEW_LANE_TOKEN, Env:\\ELECTRON_RUN_AS_NODE$/, 'the pasted token does not linger in the window');
   assert.equal(command.includes('"'), false, 'no double quote for cmd.exe to reinterpret');
-  assert.match(command, /-Wait$/, 'PowerShell does not wait for a windowed program started with &');
-  assert.equal(env.ELECTRON_RUN_AS_NODE, '1', 'the app executable runs cli.js as Node, as switchboard.cmd does');
-  assert.equal(env.SWITCHBOARD_EXE, exePath);
-  assert.equal(env.SWITCHBOARD_CLI, cliPath);
-  assert.equal(env.SWITCHBOARD_LANE_ID, laneId);
+  assert.equal(env.ELECTRON_RUN_AS_NODE, undefined, 'not set for the sign-in tool');
+  assert.deepEqual(
+    [env.SWITCHBOARD_CLAUDE, env.SWITCHBOARD_EXE, env.SWITCHBOARD_CLI, env.SWITCHBOARD_LANE_ID],
+    [claudePath, exePath, cliPath, laneId],
+  );
   assert.match(env.SWITCHBOARD_TOKEN_BANNER, /Jo's %PATH% account/);
   assert.match(env.SWITCHBOARD_TOKEN_BANNER, /browser never shows it/, 'says where the token appears, since the browser only says signed in');
-  for (const v of [exePath, cliPath, laneId, label, 'calc']) assert.equal(command.includes(v), false);
+  for (const v of [exePath, cliPath, claudePath, laneId, label, 'calc']) assert.equal(command.includes(v), false);
 });

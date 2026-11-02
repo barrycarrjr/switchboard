@@ -336,7 +336,7 @@ async function watchPass({ mode, apply }) {
  * happened and answers true only when a token was stored. The caller decides the
  * exit code, because `--missing` goes on to the next lane.
  */
-async function mintLaneToken({ laneId, registry, settings }) {
+async function mintLaneToken({ laneId, registry, settings, fromEnv = false }) {
   const lane = settings.lanes.find((l) => l.id === laneId);
   if (!lane) { out(`no lane with id "${laneId}"`); return false; }
   if (lane.harness !== 'claude') {
@@ -345,6 +345,23 @@ async function mintLaneToken({ laneId, registry, settings }) {
   }
   const account = registry.accounts.find((a) => a.id === lane.accountId);
   if (!account) { out(`lane ${laneId} names an unregistered account (${lane.accountId})`); return false; }
+
+  // --from-env: the Health panel's token window already ran `claude setup-token` and read
+  // the paste itself, because this process cannot (below). Only checking and storing is left.
+  if (fromEnv) {
+    return storeLaneToken({ laneId, account, pasted: process.env.SWITCHBOARD_NEW_LANE_TOKEN || '' });
+  }
+
+  // Run as Node by the packaged app (switchboard.cmd), this process gets no console for its
+  // input: stdin.isTTY is undefined even in a real terminal window, so the sign-in tool it
+  // starts with that input draws nothing and waits forever, and the paste prompt cannot
+  // read. Probed in a console window on 2026-11-02 after the browser said "all set" and no
+  // token ever appeared. Say where minting does work instead of hanging.
+  if (!process.stdin.isTTY) {
+    out('This terminal cannot run Claude\'s sign-in tool through Switchboard, so nothing was minted.');
+    out('Open Switchboard, go to Health, and click "Get new token" on this lane.');
+    return false;
+  }
 
   const executable = await toolExecutable(lane.harness);
   if (!executable) {
@@ -408,6 +425,15 @@ async function mintLaneToken({ laneId, registry, settings }) {
   } finally {
     rl.close();
   }
+  return storeLaneToken({ laneId, account, pasted });
+}
+
+/**
+ * The second half of a mint: take the token out of what was pasted, check it with a real
+ * Claude run, and store it stamped with the folder's sign-in identity. Answers true only
+ * when a token was stored.
+ */
+async function storeLaneToken({ laneId, account, pasted }) {
   const token = extractSetupToken(pasted);
   if (!token) {
     out('That did not contain a token, so nothing was stored. Run this command again to re-mint.');
@@ -1410,6 +1436,7 @@ async function main() {
         out('  --remove   delete the stored token (the account sign-in is untouched)');
         out('  --check    ask the vendor whether the stored token is still honoured');
         out('  --missing  mint for every Claude lane that holds no live token, one after another');
+        out('  --from-env store the token in SWITCHBOARD_NEW_LANE_TOKEN instead of minting (used by the Health panel window)');
         process.exitCode = 1;
         return;
       }
@@ -1458,7 +1485,7 @@ async function main() {
         return;
       }
 
-      const ok = await mintLaneToken({ laneId, registry, settings });
+      const ok = await mintLaneToken({ laneId, registry, settings, fromEnv: args.includes('--from-env') });
       if (!ok) process.exitCode = 1;
       return;
     }

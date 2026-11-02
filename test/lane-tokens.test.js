@@ -447,10 +447,14 @@ test('laneTokenState and claudeLanesWithoutToken name what the broker can lend',
 
 test('lane-token --missing mints through the shared mintLaneToken, lane after lane, re-reading settings each time', () => {
   const cli = cliSource();
-  assert.match(cli, /async function mintLaneToken\(\{ laneId, registry, settings \}\)/);
+  assert.match(cli, /async function mintLaneToken\(\{ laneId, registry, settings, fromEnv = false \}\)/);
   assert.match(cli, /const missing = claudeLanesWithoutToken\(settings\);/);
   assert.match(cli, /await mintLaneToken\(\{ laneId: lane\.id, registry, settings: loadSettings\(\) \}\)/);
-  assert.match(cli, /const ok = await mintLaneToken\(\{ laneId, registry, settings \}\);\n\s+if \(!ok\) process\.exitCode = 1;/);
+  assert.match(cli, /const ok = await mintLaneToken\(\{ laneId, registry, settings, fromEnv: args\.includes\('--from-env'\) \}\);\n\s+if \(!ok\) process\.exitCode = 1;/);
+  // Run by the packaged app, the command has no console input, and the sign-in tool it
+  // started drew nothing and waited (2026-11-02): it must refuse and point at the button.
+  assert.match(cli, /if \(!process\.stdin\.isTTY\) \{\n\s+out\('This terminal cannot run Claude/);
+  assert.match(cli, /return storeLaneToken\(\{ laneId, account, pasted: process\.env\.SWITCHBOARD_NEW_LANE_TOKEN \|\| '' \}\);/);
   assert.match(cli, /setupToken: laneTokenState\(settings, lane\.id\)/, 'lanes --json carries the state, never the value');
   assert.match(cli, /status\.laneTokens = /);
   assert.doesNotMatch(cli, /folder mode\. Mint/, 'no user-facing text sends a caller inside WSL to a folder mode it never had');
