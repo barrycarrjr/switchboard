@@ -177,7 +177,7 @@ test('t3 sign-in makes the folder, runs Codex\'s sign-in only for the accounts t
     asked += 1;
     const status = asked === 1 ? 'not-signed-in' : 'signed-in';
     const t3 = JSON.stringify({ providerInstances: { antigravity_1: { driver: 'antigravity', enabled: true } } });
-    return { stdout: [mark('home', '/home/u'), mark('codexbin', '/usr/bin/codex'), mark('codexstatus', `.codex ${status}`), mark('settings', t3), mark('settingssha', 'x'), mark('done', '1')].join('\n') };
+    return { stdout: [mark('home', '/home/u'), mark('codexbin', '/usr/bin/codex'), mark('codexstatus', `.codex ${status}`), mark('t3', 'yes'), mark('settings', t3), mark('settingssha', 'x'), mark('done', '1')].join('\n') };
   };
   const spawned = [];
   const spawnImpl = (file, args) => {
@@ -200,4 +200,32 @@ test('t3 sign-in does not ask the machine twice when there was nothing to sign i
   const res = await runT3SignIn('ssh:w', { run, spawnImpl: () => { throw new Error('nothing to run'); }, antigravity: false, resolve: async () => [{ id: 'ssh:w', kind: 'ssh', name: 'w' }] });
   assert.equal(asked, 1);
   assert.equal(res.antigravity, null);
+});
+
+test('a saved list of missing sign-ins says how old it is', () => {
+  const U = { id: 'wsl:U', kind: 'wsl', name: 'U' };
+  const s = rememberT3Environment({}, U, { ok: true, reached: true, accounts: [], proof: [], signInsChecked: true, codexAccountIds: [], antigravity: true, signIns: [{ what: 'Antigravity', state: 'needs-sign-in' }] }, { leaseSha: 'v1', now: 1_000_000_000 });
+  const [e] = t3EnvironmentStatus(s, { leaseSha: 'v1', antigravity: true, now: 1_000_000_000 + 51 * 60000 });
+  assert.match(e.detail, /still to sign in: Antigravity \(checked 51 min ago\)/);
+});
+
+test('t3 status asks every machine now, saves what it hears, and marks one that did not answer', async () => {
+  const { saveSettings, loadSettings } = await import('../core/settings.js');
+  const { rememberSignIns } = await import('../core/t3env.js');
+  const { liveT3Status } = await import('../core/t3env-run.js');
+  saveRegistry({ accounts: [{ id: 'codex-default', provider: 'codex', label: 'Default', home: '/u/.codex' }] });
+  const env = (id, kind, name) => ({ id, kind, name, lastOk: true, lastSetupAt: Date.now() - 3600000, accounts: [], codexAccounts: ['codex-default'], antigravity: false, signInsMissing: ['Codex'], signInsCheckedAt: Date.now() - 3600000 });
+  saveSettings({ ...loadSettings(), t3Environments: { 'wsl:U': env('wsl:U', 'wsl', 'U'), 'ssh:w': env('ssh:w', 'ssh', 'w') } });
+  const run = async (t) => (t.kind === 'ssh'
+    ? { stdout: '', stderr: 'ssh: connect to host w port 22: Connection refused' }
+    : { stdout: [mark('home', '/home/u'), mark('codexbin', '/usr/bin/codex'), mark('codexstatus', '.codex signed-in'), mark('settingssha', 'none'), mark('done', '1')].join('\n') });
+  const list = await liveT3Status({ run, antigravity: false, resolve: async (ids) => ids.map((id) => ({ id, kind: id.split(':')[0], name: id.split(':')[1] })) });
+  const u = list.find((e) => e.id === 'wsl:U');
+  const w = list.find((e) => e.id === 'ssh:w');
+  assert.equal(u.reached, true);
+  assert.doesNotMatch(u.detail, /still to sign in/, 'the fresh reading replaced the old note');
+  assert.deepEqual(loadSettings().t3Environments['wsl:U'].signInsMissing, [], 'and was saved, for the Gateway tab and Health');
+  assert.equal(w.reached, false);
+  assert.match(w.detail, /still to sign in: Codex \(checked .* ago\); .*could not reach it just now/);
+  assert.equal(rememberSignIns({}, 'nope', []).t3Environments, undefined, 'an environment not remembered is not created');
 });

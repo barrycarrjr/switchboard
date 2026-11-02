@@ -37,7 +37,7 @@ import {
   toggleAutomation,
 } from '../core/automations.js';
 import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway.js';
-import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, forgetT3, runT3SignIn } from '../core/t3env-run.js';
+import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, forgetT3, runT3SignIn, liveT3Status } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS, chooseProvisionKey, gatewayEnabledSettings } from '../core/gateway-keys.js';
 import readline from 'node:readline/promises';
 import path from 'node:path';
@@ -2014,10 +2014,13 @@ async function main() {
     // Point T3 Code environments (WSL distros, other machines over ssh) at the Claude
     // accounts the broker lends, so they need no sign-in of their own. See core/t3env.js.
     case 't3': {
-      const sub = args[0] ?? 'status';
+      // A bare `switchboard t3`, or one with only flags, is the status.
+      const sub = !args[0] || args[0].startsWith('--') ? 'status' : args[0];
       const asJson = args.includes('--json');
       if (sub === 'status') {
-        const list = currentT3Status();
+        // Asks each machine live unless --saved; a machine that does not answer shows its saved
+        // reading with its age.
+        const list = args.includes('--saved') ? currentT3Status() : await liveT3Status();
         if (asJson) { out(JSON.stringify(list, null, 2)); return; }
         if (!list.length) { out('No T3 environment set up yet. Run: switchboard t3 setup [wsl:<distro>|ssh:<host> ...]'); return; }
         for (const e of list) out(`${e.id}  ${e.state}  ${e.detail}`);
@@ -2177,7 +2180,7 @@ async function main() {
       out('  gateway [status|serve|enable|disable|scope|port]   manage the local pass-through API gateway and lease broker');
       out('  gateway provision-client [--label <text>] [--replace-symlink] [--yes] [--json]   broker on, a key with the gateway scope, key file and wrapper here and in every WSL distro');
       out('  t3 setup [wsl:<distro>|ssh:<host> ...] [--all] [--replace-symlink] [--no-proof] [--json]   give T3 Code there one provider per Claude account, borrowed from the broker (no target: every WSL distro)');
-      out('  t3 status [--json]          the T3 environments set up so far and whether any is out of date');
+      out('  t3 status [--saved] [--json]   the T3 environments set up so far, their sign-ins asked of each machine now (--saved: last reading, no network)');
       out('  t3 sign-in <wsl:<distro>|ssh:<host>>   sign each Codex account in on that machine (once; Codex shows a code for your browser)');
       out('  t3 forget <wsl:<distro>|ssh:<host>>   stop listing and checking one (nothing on it is changed)');
       out('  keys [list|create|update|revoke]   manage client keys (sb-key-...) for the gateway');

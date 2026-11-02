@@ -95,7 +95,7 @@ Claude accounts the lease broker lends, so T3 there needs no Claude sign-in of i
 
 ```
 switchboard t3 setup [wsl:<distro>|ssh:<host> ...] [--all] [--replace-symlink] [--no-proof] [--json]
-switchboard t3 status [--json]
+switchboard t3 status [--saved] [--json]
 switchboard t3 sign-in <wsl:<distro>|ssh:<host>>
 switchboard t3 forget <wsl:<distro>|ssh:<host>>
 ```
@@ -156,8 +156,15 @@ switchboard t3 forget <wsl:<distro>|ssh:<host>>
   its age shown beside it.
 - `t3 status` lists each environment as ready, out of date (its lease wrapper is older than
   this Switchboard, an account was added, or the broker's port or address moved) or not
-  working (the last setup or proof failed, or its key was revoked), each with its age.
-  Health shows the same. At start the tray refreshes the wrapper files of an environment
+  working (the last setup or proof failed, or its key was revoked), each with its age. It asks
+  every machine at once which Codex and Antigravity sign-ins are done (read-only) and saves the
+  answer with its time, so `--saved` and the Gateway tab show it afterwards with its age; a
+  machine that does not answer keeps its last reading and is marked as not reached, with the
+  reason. A Codex state it cannot read keeps what was known before. When there is nothing to
+  ask (no Codex account, Antigravity not in use) no machine is contacted. `--saved` skips the
+  asking. Health warns only about environments that are not working or out of date, not about
+  sign-ins still to do.
+  At start the tray refreshes the wrapper files of an environment
   whose wrapper is out of date, and only those: it never issues a key (a revoked key stays
   revoked), never writes T3's settings and never proves. `t3 forget` stops listing one;
   nothing on the machine is changed. The Gateway tab's T3 Code Environments card does all of

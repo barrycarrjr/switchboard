@@ -718,7 +718,7 @@ export async function setupT3Environment(target, deps, { replaceSymlink = false,
     ? { brokerUrls: [deps.brokerUrl] }
     : { brokerUrls: deps.wslBrokerUrls ?? [`http://127.0.0.1:${port}`], defaultRoutePort: port };
   // Each Codex account's status check may take up to 15 s on its own.
-  const runOpts = { timeoutMs: 60000 + 20000 * codexAccounts.length };
+  const runOpts = { timeoutMs: 60000 + 20000 * codexAccounts.length }; // as askTimeoutMs in t3env-run.js
 
   let inspected = null;
   let applied = null;
@@ -994,14 +994,47 @@ export function rememberT3Environment(settings, target, report, { leaseSha = nul
     accounts: (report.accounts ?? []).map((a) => a.id),
     proofFailed: (report.proof ?? []).filter((r) => !r.ok && !r.cooling).map((r) => r.label),
     // Only a run that actually asked the machine replaces what is known about its sign-ins.
+    signInsCheckedAt: report.signInsChecked ? now : (prev?.signInsCheckedAt ?? null),
     signInsMissing: report.signInsChecked
-      ? (report.signIns ?? []).filter((x) => x.state !== 'signed-in').map((x) => x.what)
+      ? missingSignIns(report.signIns ?? [], prev?.signInsMissing)
       : (prev?.signInsMissing ?? []),
     codexAccounts: report.signInsChecked ? report.codexAccountIds : (prev?.codexAccounts ?? null),
     antigravity: report.signInsChecked ? report.antigravity : (prev?.antigravity ?? null),
     leaseSha: report.error ? (prev?.leaseSha ?? null) : leaseSha,
   };
   return { ...settings, t3Environments: envs };
+}
+
+/**
+ * Record a fresh reading of an environment's sign-ins (from `t3 status` asking the machine),
+ * with when it was taken. Everything else about the environment is left as it was.
+ */
+export function rememberSignIns(settings, targetId, signIns, { now = Date.now() } = {}) {
+  const prev = settings?.t3Environments?.[targetId];
+  if (!prev) return settings;
+  // A reading older than the one already saved (two commands at once) does not replace it.
+  if (prev.signInsCheckedAt && prev.signInsCheckedAt > now) return settings;
+  const envs = { ...settings.t3Environments };
+  envs[targetId] = { ...prev, signInsMissing: missingSignIns(signIns, prev.signInsMissing), signInsCheckedAt: now, lastAttemptError: null };
+  return { ...settings, t3Environments: envs };
+}
+
+/**
+ * The sign-ins still to do, from a reading: those signed out or not installed. One Codex could
+ * not report on (a timeout, a broken config) keeps what was known about it before, rather than
+ * being guessed either way.
+ */
+export function missingSignIns(signIns, previous = []) {
+  return signIns
+    .filter((x) => x.state === 'needs-sign-in' || x.state === 'not-installed' || (x.state === 'unknown' && (previous ?? []).includes(x.what)))
+    .map((x) => x.what);
+}
+
+/** Record a failed attempt to ask an environment, with its reason; its last reading is kept. */
+export function rememberAttempt(settings, targetId, error, { now = Date.now() } = {}) {
+  const prev = settings?.t3Environments?.[targetId];
+  if (!prev) return settings;
+  return { ...settings, t3Environments: { ...settings.t3Environments, [targetId]: { ...prev, lastAttemptAt: now, lastAttemptError: error ?? 'no answer' } } };
 }
 
 /** Forget an environment: Switchboard stops listing and checking it. Nothing on it is touched. */
@@ -1015,6 +1048,7 @@ export function forgetT3Environment(settings, targetId) {
 function ageText(ms, now) {
   if (!ms) return 'never';
   const mins = Math.max(0, Math.round((now - ms) / 60000));
+  if (mins < 1) return 'just now';
   if (mins < 60) return `${mins} min ago`;
   const hours = Math.round(mins / 60);
   if (hours < 48) return `${hours} h ago`;
@@ -1057,9 +1091,11 @@ export function t3EnvironmentStatus(settings, { leaseSha = null, lendableIds = [
       detail = [wrapperOld ? 'the lease wrapper there is out of date' : null, missing.length ? `not yet set up for ${missing.join(', ')}` : null,
         missingCodex.length ? `no Codex entry yet for ${missingCodex.join(', ')}` : null, missingAntigravity ? 'no Antigravity entry yet' : null, ...moved].filter(Boolean).join('; ');
     }
-    if (e.signInsMissing?.length) detail += `; still to sign in: ${e.signInsMissing.join(', ')}`;
+    const checked = ageText(e.signInsCheckedAt ?? e.lastSetupAt, now);
+    if (e.signInsMissing?.length) detail += `; still to sign in: ${e.signInsMissing.join(', ')} (checked ${checked})`;
+    else if (e.signInsCheckedAt) detail += `; sign-ins checked ${checked}`;
     detail += `; set up ${ageText(e.lastSetupAt, now)}`;
-    if (e.lastAttemptError) detail += `; could not reach it ${ageText(e.lastAttemptAt, now)}`;
-    return { id: e.id, kind: e.kind, name: e.name, state, detail, wrapperOld, signInsMissing: e.signInsMissing ?? [], lastSetupAt: e.lastSetupAt ?? null };
+    if (e.lastAttemptError) detail += `; could not reach it ${ageText(e.lastAttemptAt, now)} (${e.lastAttemptError})`;
+    return { id: e.id, kind: e.kind, name: e.name, state, detail, wrapperOld, signInsMissing: e.signInsMissing ?? [], signInsCheckedAt: e.signInsCheckedAt ?? null, lastSetupAt: e.lastSetupAt ?? null };
   });
 }

@@ -10,7 +10,7 @@ import { listWslDistros, inspectLaneLeaseCredential } from './gateway.js';
 import {
   parseT3Target, setupT3Environment, rememberT3Environment, forgetT3Environment, keyForEnvironment, runScript,
   t3EnvironmentStatus, lendableClaudeAccounts, sha256, codexAccountsFor, inspectScript, parseInspect, signInsFor,
-  codexSignInCommand, enabledAntigravityIds,
+  codexSignInCommand, enabledAntigravityIds, rememberSignIns, rememberAttempt,
 } from './t3env.js';
 
 /**
@@ -164,40 +164,76 @@ export function forgetT3(targetId) {
 }
 
 /** The status list with the facts it is judged against filled in from this machine. */
-export function currentT3Status({ hostIp = null } = {}) {
-  const settings = loadSettings();
+export function currentT3Status({ hostIp = null, settings = loadSettings(), registry = loadRegistry(), antigravity = null } = {}) {
   const addresses = brokerAddresses(settings, { hostIp });
-  const lendableIds = lendableClaudeAccounts(loadRegistry(), settings, { canLend: brokerCanLend(settings) }).lendable.map((a) => a.id);
-  const codexIds = codexAccountsFor(loadRegistry()).map((a) => a.id);
-  return t3EnvironmentStatus(settings, { leaseSha: currentLeaseSha(), lendableIds, codexIds, antigravity: usesAntigravity({ settings }), port: addresses.port, brokerUrl: addresses.lanUrl });
+  const lendableIds = lendableClaudeAccounts(registry, settings, { canLend: brokerCanLend(settings) }).lendable.map((a) => a.id);
+  const codexIds = codexAccountsFor(registry).map((a) => a.id);
+  return t3EnvironmentStatus(settings, {
+    leaseSha: currentLeaseSha(), lendableIds, codexIds, antigravity: antigravity ?? usesAntigravity({ settings }),
+    port: addresses.port, brokerUrl: addresses.lanUrl,
+  });
+}
+
+// One allowance for asking a machine, shared by status, sign-in and setup's inspection: up to
+// 60 s to connect and answer, plus up to 15 s for each Codex account's own status check.
+const askTimeoutMs = (codexAccounts) => 60000 + 20000 * codexAccounts.length;
+
+/**
+ * Ask one machine which of its Codex and Antigravity sign-ins are done. Read-only: nothing is
+ * written there and nothing is borrowed. Returns { inspected, signIns, askedAt }, or
+ * { error } when the machine did not answer or its T3 settings could not be read (a reading
+ * then would drop the Antigravity line, so none is taken).
+ */
+export async function checkT3SignIns(target, { run = runScript, codexAccounts, antigravity }) {
+  const askedAt = Date.now();
+  const res = await run(target, inspectScript({ codexHomes: codexAccounts.map((a) => a.relHome) }), { timeoutMs: askTimeoutMs(codexAccounts) });
+  const inspected = parseInspect(res.stdout);
+  if (!inspected) return { error: (res.stderr || '').trim().split(/\r?\n/).filter(Boolean).pop() || 'no answer' };
+  if (antigravity && (!inspected.t3 || inspected.settingsError)) return { error: `its T3 settings could not be read${inspected.settingsError ? ` (${inspected.settingsError})` : ''}` };
+  const signIns = signInsFor(target, inspected, codexAccounts, { antigravityIds: antigravity ? enabledAntigravityIds(inspected.settings) : null });
+  return { inspected, signIns, askedAt };
+}
+
+/**
+ * Save a reading or a failed attempt for one remembered environment, re-reading the settings
+ * file first and writing only when that environment is in it, so a file that could not be read
+ * at that moment is never replaced by defaults.
+ */
+function saveReading(targetId, outcome) {
+  const settings = loadSettings();
+  if (!settings.t3Environments?.[targetId]) return;
+  const next = outcome.signIns
+    ? rememberSignIns(settings, targetId, outcome.signIns, { now: outcome.askedAt })
+    : rememberAttempt(settings, targetId, outcome.error);
+  if (next !== settings) saveSettings(next);
 }
 
 /**
  * `switchboard t3 sign-in <target>`: Codex's one-time device-code sign-in for every Codex
  * account that is not signed in on that machine yet, each attached to this terminal so the code
- * and link show. Antigravity's sign-in lives inside T3 and is only reported. When a sign-in ran,
- * the machine is asked again so the remembered list is current; if it cannot be asked, the list
- * is left as it was and that is said. Returns the Codex rows (what this command acts on) and
- * the Antigravity row separately. `spawnImpl`, `run` and `resolve` exist for tests.
+ * and link show. Antigravity's sign-in lives inside T3 and is only reported. Every reading it
+ * takes is saved, so the remembered list is current; if the machine cannot be asked afterwards,
+ * the list is left as it was and that is said. Returns the Codex rows (what this command acts
+ * on) and the Antigravity row separately. `spawnImpl`, `run` and `resolve` exist for tests.
  */
 export async function runT3SignIn(targetSpec, { onProgress = () => {}, spawnImpl = spawn, run = runScript, resolve = resolveTargets, antigravity = null } = {}) {
   const [target] = await resolve([targetSpec]);
   const codexAccounts = codexAccountsFor(loadRegistry());
-  if (!codexAccounts.length) onProgress('Switchboard knows no Codex account, so there is nothing to sign in.');
-  const ask = async () => parseInspect((await run(target, inspectScript({ codexHomes: codexAccounts.map((a) => a.relHome) }), { timeoutMs: 60000 + 20000 * codexAccounts.length })).stdout);
-  let inspected = await ask();
-  if (!inspected) throw new Error(`could not reach ${target.id}`);
   const wantAntigravity = antigravity ?? usesAntigravity();
-  const listFor = (insp) => signInsFor(target, insp, codexAccounts, { antigravityIds: wantAntigravity ? enabledAntigravityIds(insp.settings) : null });
-  const todo = listFor(inspected).filter((x) => x.provider === 'codex' && x.state === 'needs-sign-in');
-  if (codexAccounts.length && !inspected.codexBin) onProgress(`Codex is not installed on ${target.id}; install it there first (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder).`);
+  if (!codexAccounts.length) onProgress('Switchboard knows no Codex account, so there is nothing to sign in.');
+  const ask = () => checkT3SignIns(target, { run, codexAccounts, antigravity: wantAntigravity });
+  let reading = await ask();
+  if (reading.error) throw new Error(`could not read ${target.id}: ${reading.error}`);
+  saveReading(target.id, reading);
+  const todo = reading.signIns.filter((x) => x.provider === 'codex' && x.state === 'needs-sign-in');
+  if (codexAccounts.length && !reading.inspected.codexBin) onProgress(`Codex is not installed on ${target.id}; install it there first (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder).`);
   else if (codexAccounts.length && !todo.length) onProgress(`Every Codex account is already signed in on ${target.id}.`);
   for (const item of todo) {
     const acc = codexAccounts.find((a) => a.id === item.account);
     // Codex refuses a CODEX_HOME that does not exist yet.
     await run(target, `set -u\nmkdir -p "$HOME/${acc.relHome}"\n`, { timeoutMs: 30000 });
     onProgress(`Signing in ${item.what} on ${target.id}. Codex shows a link and a code: open the link in your browser and enter the code. (Device code sign-in must be on in ChatGPT: Settings, Security.)`);
-    const { file, args } = codexSignInCommand(target, { codexBin: inspected.codexBin, home: inspected.home, relHome: acc.relHome });
+    const { file, args } = codexSignInCommand(target, { codexBin: reading.inspected.codexBin, home: reading.inspected.home, relHome: acc.relHome });
     const code = await new Promise((done) => {
       const child = spawnImpl(file, args, { stdio: 'inherit' });
       child.on('error', () => done(null));
@@ -207,18 +243,50 @@ export async function runT3SignIn(targetSpec, { onProgress = () => {}, spawnImpl
   }
   if (todo.length) {
     const again = await ask();
-    if (again) inspected = again;
-    else onProgress(`Could not ask ${target.id} again, so its saved list of missing sign-ins was left as it was.`);
-    if (again) {
-      const settings = loadSettings();
-      if (settings.t3Environments?.[target.id]) {
-        const envs = { ...settings.t3Environments };
-        envs[target.id] = { ...envs[target.id], signInsMissing: listFor(again).filter((x) => x.state !== 'signed-in').map((x) => x.what) };
-        saveSettings({ ...settings, t3Environments: envs });
-      }
+    if (again.error) onProgress(`Could not ask ${target.id} again (${again.error}), so its saved list of missing sign-ins was left as it was.`);
+    else {
+      reading = again;
+      saveReading(target.id, again);
     }
   }
-  const all = listFor(inspected);
-  for (const x of all.filter((y) => y.state !== 'signed-in')) onProgress(`Still to sign in: ${x.what} (${x.how})`);
-  return { codex: all.filter((x) => x.provider === 'codex'), antigravity: all.find((x) => x.provider === 'antigravity') ?? null };
+  for (const x of reading.signIns.filter((y) => y.state !== 'signed-in')) onProgress(`${x.state === 'unknown' ? 'Could not tell' : 'Still to sign in'}: ${x.what} (${x.how})`);
+  return { codex: reading.signIns.filter((x) => x.provider === 'codex'), antigravity: reading.signIns.find((x) => x.provider === 'antigravity') ?? null };
+}
+
+/**
+ * `switchboard t3 status`: every remembered environment, with its sign-ins asked of the
+ * machine itself, all machines at once. Each answer is saved (so `--saved` and the Gateway tab
+ * show it afterwards, with its age); a machine that does not answer keeps its saved reading,
+ * gets the failed attempt and its reason recorded, and is marked as not reached. When there is
+ * nothing to ask (no Codex account and Antigravity not in use) no machine is contacted.
+ * `run` exists for tests.
+ */
+export async function liveT3Status({ run = runScript, antigravity = null } = {}) {
+  const settings = loadSettings();
+  const envs = Object.entries(settings.t3Environments ?? {});
+  if (!envs.length) return [];
+  const registry = loadRegistry();
+  const codexAccounts = codexAccountsFor(registry);
+  const useAg = antigravity ?? usesAntigravity({ settings });
+  const reached = new Map();
+  if (codexAccounts.length || useAg) {
+    // Targets come from what was remembered, keyed by the remembered id, so a reading always
+    // lands on the record it belongs to.
+    const outcomes = await Promise.all(envs.map(([, e]) => checkT3SignIns({ id: e.id, kind: e.kind, name: e.name }, { run, codexAccounts, antigravity: useAg })
+      .catch((err) => ({ error: String(err?.message || err) }))));
+    envs.forEach(([id], i) => {
+      saveReading(id, outcomes[i]);
+      reached.set(id, outcomes[i].error ? outcomes[i].error : true);
+    });
+  } else {
+    envs.forEach(([id]) => {
+      saveReading(id, { signIns: [], askedAt: Date.now() });
+      reached.set(id, true);
+    });
+  }
+  return currentT3Status({ registry, antigravity: useAg }).map((e) => {
+    const r = reached.get(e.id);
+    // The failed attempt and its reason are already in the detail, from the saved record.
+    return { ...e, reached: r === true };
+  });
 }
