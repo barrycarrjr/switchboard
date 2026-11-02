@@ -37,7 +37,7 @@ import {
   toggleAutomation,
 } from '../core/automations.js';
 import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway.js';
-import { createGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS, chooseProvisionKey, gatewayEnabledSettings } from '../core/gateway-keys.js';
+import { createGatewayKey, updateGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS, chooseProvisionKey, gatewayEnabledSettings } from '../core/gateway-keys.js';
 import readline from 'node:readline/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2024,6 +2024,45 @@ async function main() {
         out(`  Secret (copy now, shown once): ${secret}`);
         return;
       }
+      if (sub === 'update' || sub === 'edit' || sub === 'rename' || sub === 'scope') {
+        const keyId = args[1];
+        if (!keyId) throw new Error('usage: switchboard keys update <id> [--label <new label>] [--scope localhost|localhost-wsl|lan]');
+        const rest = args.slice(2);
+        let scope = undefined;
+        let label = undefined;
+        if (sub === 'scope' && rest[0] && !rest[0].startsWith('--')) {
+          scope = rest[0];
+        } else if (sub === 'rename' && rest.length > 0 && !rest[0].startsWith('--')) {
+          label = rest.filter((a) => a !== '--json').join(' ').trim();
+        } else {
+          const labelParts = [];
+          for (let i = 0; i < rest.length; i += 1) {
+            if (rest[i] === '--scope') {
+              scope = rest[i + 1];
+              i += 1;
+            } else if (rest[i] === '--label') {
+              label = rest[i + 1];
+              i += 1;
+            } else if (rest[i] !== '--json') {
+              labelParts.push(rest[i]);
+            }
+          }
+          if (label === undefined && labelParts.length > 0) {
+            label = labelParts.join(' ').trim();
+          }
+        }
+        if (label === undefined && scope === undefined) {
+          throw new Error('usage: switchboard keys update <id> [--label <new label>] [--scope localhost|localhost-wsl|lan]');
+        }
+        const { settings, key } = updateGatewayKey(loadSettings(), keyId, { label, scope });
+        saveSettings(settings);
+        if (asJson) {
+          out(JSON.stringify({ key }, null, 2));
+          return;
+        }
+        out(`Updated client key ${key.id} (${key.label}, scope: ${key.scope})`);
+        return;
+      }
       if (sub === 'revoke' || sub === 'remove') {
         const keyId = args[1];
         if (!keyId) throw new Error('usage: switchboard keys revoke <id>');
@@ -2031,7 +2070,7 @@ async function main() {
         out(`Revoked client key ${keyId}`);
         return;
       }
-      throw new Error(`unknown keys subcommand: ${sub}. Use list|create|revoke`);
+      throw new Error(`unknown keys subcommand: ${sub}. Use list|create|update|rename|scope|revoke`);
     }
     default:
       out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|gateway|keys|watch|notify|mcp|customizations|automations|dry-run|run>`);
@@ -2049,7 +2088,7 @@ async function main() {
       out('  lane-token <laneId> [--remove|--check] | --missing   mint, delete or validate the token a lane hands to automation; --missing mints for every Claude lane without one');
       out('  gateway [status|serve|enable|disable|scope|port]   manage the local pass-through API gateway and lease broker');
       out('  gateway provision-client [--label <text>] [--replace-symlink] [--yes] [--json]   broker on, a key with the gateway scope, key file and wrapper here and in every WSL distro');
-      out('  keys [list|create|revoke]   manage client keys (sb-key-...) for the gateway');
+      out('  keys [list|create|update|revoke]   manage client keys (sb-key-...) for the gateway');
       out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
       out('  notify [--webhook <url>] [--command <cmd>] [--threshold <w=pct>] [--test] [--json]   manage notification hooks');
       out('  mcp [list|add|remove|register|unregister|disable|enable|sync]   manage MCP servers across clients and accounts');

@@ -63,7 +63,7 @@ import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
 import { createGatewayServer, provisionLocalAndWslClient, createSettingsWatcher, syncWslLeaseWrapper } from '../core/gateway.js';
-import { createGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
+import { createGatewayKey, updateGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let win = null;
@@ -2142,6 +2142,16 @@ ipcMain.handle('sb:gatewayInstallClient', async (_e, keyId = null) => {
   }
 });
 
+ipcMain.handle('sb:gatewayUpdateKey', async (_e, { keyId, label, scope } = {}) => {
+  try {
+    const { settings, key } = updateGatewayKey(loadSettings(), keyId, { label, scope });
+    saveSettings(settings);
+    const status = await gatewayServer.status();
+    return { ok: true, key, status };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
 ipcMain.handle('sb:gatewayRevokeKey', async (_e, keyId) => {
   try {
     const next = revokeGatewayKey(loadSettings(), keyId);
