@@ -3736,9 +3736,10 @@ async function renderAbout() {
 async function renderSettings() {
   const seq = beginRender('settings');
   const realPanel = $('#tab-settings');
-  const [flyoutSettings, notifyState] = await Promise.all([
+  const [flyoutSettings, notifyState, sharedState] = await Promise.all([
     sb.trayFlyoutSettings ? sb.trayFlyoutSettings() : Promise.resolve({ trayHoverFlyout: false }),
     sb.notifySettings(),
+    sb.sharedFolderState ? sb.sharedFolderState().catch(() => null) : Promise.resolve(null),
   ]);
   if (!isCurrentRender('settings', seq)) return;
   const panel = el('div');
@@ -3823,6 +3824,8 @@ async function renderSettings() {
 
   topGrid.append(leftCol, rightCol);
   panel.appendChild(topGrid);
+
+  if (sharedState) panel.appendChild(sharedFolderSection(sharedState));
 
   const notif = toolSection('about-notifications', 'Notification hooks', 'Slack webhooks, scripts, and threshold alerts');
 
@@ -3964,6 +3967,107 @@ async function renderSettings() {
   panel.appendChild(notif);
 
   realPanel.replaceChildren(...panel.childNodes);
+}
+
+// The rule file list with one entry moved up (delta -1) or down (+1). A move past
+// either end leaves the list as it was, so a double click cannot wrap it around.
+function moveRuleSource(list, index, delta) {
+  const next = (list || []).slice();
+  const to = index + delta;
+  if (index < 0 || index >= next.length || to < 0 || to >= next.length) return next;
+  const [item] = next.splice(index, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+// What the Settings card says about the shared AI folder, in one line.
+function sharedFolderLine(st) {
+  if (!st || !st.path) return 'Off. Rule files can live anywhere, and a backup carries no shared files.';
+  if (!st.exists) return st.path + ' does not exist yet, so nothing uses it. Switchboard does not create it.';
+  return st.path;
+}
+
+// The stored ticks after one folder is ticked or unticked. Names ticked earlier for a
+// folder that is not there right now are kept, so they come back when it does.
+function toggledBackupFolders(stored, name, on) {
+  const rest = (stored || []).filter((n) => n.toLowerCase() !== name.toLowerCase());
+  return on ? rest.concat([name]) : rest;
+}
+
+function sharedFolderSection(st) {
+  const section = toolSection('settings-shared', 'Shared AI folder', 'Rules and skills every AI tool shares, and what a backup carries');
+  const run = async (button, work, done) => {
+    if (button) button.disabled = true;
+    try {
+      const r = await work();
+      const message = done ? done(r) : null;
+      if (message) toast(message);
+    } catch (e) {
+      toast(String(e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+    } finally {
+      renderSettings();
+    }
+  };
+  const choose = cardButton('Choose...', () => run(choose, () => sb.sharedFolderChoose()));
+  const off = st.path
+    ? cardButton('Turn off', () => run(off, () => sb.sharedFolderSet(''), () => 'Shared AI folder turned off.'), { ghost: true })
+    : cardButton('Use ~/.ai', () => run(off, () => sb.sharedFolderSet('~/.ai')), { ghost: true });
+  const { card } = cardShell({
+    titleId: 'settings-shared-card',
+    title: 'Shared AI folder',
+    person: sharedFolderLine(st),
+    actions: [choose, off],
+  });
+
+  const { area: ticks } = cardArea(card, 'Back up these folders', 'note-area');
+  if (!st.exists) {
+    ticks.appendChild(el('div', 'qnote', 'Once the folder exists, its folders are listed here to tick.'));
+  } else if (!st.subfolders.length) {
+    ticks.appendChild(el('div', 'qnote', 'The folder has no folders inside it yet.'));
+  }
+  for (const f of st.subfolders || []) {
+    const label = el('label');
+    label.style.display = 'flex';
+    label.style.alignItems = 'center';
+    label.style.gap = '8px';
+    label.style.fontSize = '12.5px';
+    const box = el('input');
+    box.type = 'checkbox';
+    box.checked = Boolean(f.ticked);
+    box.addEventListener('change', () => run(box, () => sb.sharedFolderSetBackups(toggledBackupFolders(st.backupFolders, f.name, box.checked))));
+    label.appendChild(box);
+    label.appendChild(el('span', null, esc(f.name)));
+    ticks.appendChild(label);
+  }
+
+  const sources = st.rulesSources || [];
+  const outside = st.outsideSharedFolder || [];
+  const { area: rules, head: rulesHead } = cardArea(card, 'Rule files, in the order every tool reads them', 'note-area');
+  const add = cardButton('Add...', () => run(add, () => sb.rulesAddSource(), (r) => (r && r.ok ? 'Rule file added and synced to every tool.' : null)));
+  rulesHead.appendChild(add);
+  if (!sources.length) rules.appendChild(el('div', 'qnote', 'None yet. Rules from one source is off until a file is added.'));
+  const save = (button, list) => run(button, () => sb.rulesSetSources(list), () => 'Rule files saved and synced.');
+  sources.forEach((src, i) => {
+    const row = el('div');
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.gap = '6px';
+    row.style.fontSize = '12.5px';
+    row.style.margin = '3px 0';
+    const isOut = outside.some((o) => o.toLowerCase() === src.toLowerCase());
+    const name = el('span', null, (i + 1) + '. ' + esc(src) + (isOut ? ' <b>(outside the shared folder, so not in its backups)</b>' : ''));
+    name.style.flex = '1';
+    name.style.wordBreak = 'break-all';
+    row.appendChild(name);
+    const up = cardButton('Up', () => save(up, moveRuleSource(sources, i, -1)), { ghost: true, disabled: i === 0 });
+    const down = cardButton('Down', () => save(down, moveRuleSource(sources, i, 1)), { ghost: true, disabled: i === sources.length - 1 });
+    const remove = cardButton('Remove', () => save(remove, sources.filter((_s, j) => j !== i)), { ghost: true });
+    row.append(up, down, remove);
+    rules.appendChild(row);
+  });
+  cardNote(card, 'Why one folder', 'A rule file added here must live inside the shared folder, which is what a configuration export backs up. Files listed before the folder was set keep working and are marked.');
+  section.appendChild(oneColumn(card));
+  return section;
 }
 const MARK = { ok: '&#10003;', warn: '!', bad: '&#10007;', info: 'i' };
 
@@ -4967,7 +5071,10 @@ function rulesSourceSummary(st) {
   const parts = [sources.length + ' source file' + (sources.length === 1 ? '' : 's')];
   parts.push(behind ? behind + ' of ' + written.length + ' rules files out of step' : 'all ' + written.length + ' rules files in step');
   if (direct) parts.push(direct + ' Claude account' + (direct === 1 ? ' reads' : 's read') + ' the sources directly');
-  return { tone: behind ? 'warn' : 'ok', text: parts.join(' · ') };
+  // Still synced, but outside the folder a backup carries, so worth a warning.
+  const outside = (st.outsideSharedFolder || []).length;
+  if (outside) parts.push(outside + ' outside the shared AI folder');
+  return { tone: behind || outside ? 'warn' : 'ok', text: parts.join(' · ') };
 }
 
 async function renderMcp() {

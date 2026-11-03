@@ -129,11 +129,11 @@ test('the saved list keeps its order, drops repeats, and refuses a path that is 
   const m = machine();
   const a = m.source('a.md', 'a');
   const b = m.source('b.md', 'b');
-  assert.deepEqual(saveRulesSources([b, a, b], m.cFile), [b, a]);
+  assert.deepEqual(saveRulesSources([b, a, b], m.cFile, { home: m.home }), [b, a]);
   assert.deepEqual(loadRulesSources(m.cFile), [b, a]);
-  assert.throws(() => saveRulesSources([a, path.join(m.sourceDir, 'typo.md')], m.cFile), /not a file: .*typo\.md/);
+  assert.throws(() => saveRulesSources([a, path.join(m.sourceDir, 'typo.md')], m.cFile, { home: m.home }), /not a file: .*typo\.md/);
   assert.deepEqual(loadRulesSources(m.cFile), [b, a], 'a refused save leaves the old list in place');
-  assert.throws(() => saveRulesSources([m.sourceDir], m.cFile), /not a file/);
+  assert.throws(() => saveRulesSources([m.sourceDir], m.cFile, { home: m.home }), /not a file/);
 });
 
 test('one save to a source becomes one sync, and changes to other files in the folder are ignored', async () => {
@@ -238,6 +238,6 @@ test('setting sources refuses to save over a settings file that will not parse',
   const m = machine();
   const a = m.source('a.md', 'a');
   fs.writeFileSync(m.cFile, '{ "installedPlugins": [ broken', 'utf8');
-  assert.throws(() => saveRulesSources([a], m.cFile), /will not parse/);
+  assert.throws(() => saveRulesSources([a], m.cFile, { home: m.home }), /will not parse/);
   assert.equal(read(m.cFile), '{ "installedPlugins": [ broken', 'the unreadable file is left exactly as it was');
 });

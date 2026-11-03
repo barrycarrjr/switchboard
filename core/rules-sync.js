@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { accountsFile, customizationsFile, samePath } from './paths.js';
 import { readUserEnv } from './env.js';
+import { loadSettings } from './settings.js';
+import { activeSharedFolder, isInsideFolder } from './shared-folder.js';
 import {
   customizationClients,
   loadCustomizationsState,
@@ -72,12 +74,28 @@ export function loadRulesSources(file = customizationsFile()) {
   return loadCustomizationsState(file).rulesSources;
 }
 
+/** The shared AI folder rule files are meant to live in, when it is set and exists. */
+function currentSharedFolder(home) {
+  return activeSharedFolder(loadSettings(), { home });
+}
+
+/** The sources that sit outside the shared AI folder; none when there is no such folder. */
+export function sourcesOutsideSharedFolder(sources, sharedFolder) {
+  if (!sharedFolder) return [];
+  return sources.filter((s) => !isInsideFolder(s, sharedFolder));
+}
+
 /**
  * Save the ordered list of source files. Each must exist now, so a typo is
  * caught when it is typed rather than on the next sync. An empty list switches
  * the feature off.
+ *
+ * With a shared AI folder set (and present), a newly added source must be inside
+ * it: that folder is what gets backed up and restored, so a rule file elsewhere
+ * would quietly fall out of every backup. A source saved before the folder was
+ * set keeps working, so reordering or removing in an older list never fails.
  */
-export function saveRulesSources(sources, file = customizationsFile(), { home = os.homedir() } = {}) {
+export function saveRulesSources(sources, file = customizationsFile(), { home = os.homedir(), sharedFolder = currentSharedFolder(home) } = {}) {
   // Windows PowerShell hands `~/x.md` over as typed, so expand it here rather than
   // resolve it against whatever folder the command happened to run in.
   const list = (Array.isArray(sources) ? sources : [])
@@ -97,6 +115,11 @@ export function saveRulesSources(sources, file = customizationsFile(), { home = 
     }
   }
   const state = loadCustomizationsState(file);
+  const outside = sourcesOutsideSharedFolder(unique, sharedFolder)
+    .filter((s) => !state.rulesSources.some((old) => samePath(old, s)));
+  if (outside.length) {
+    throw new Error(`rule file is outside the shared AI folder (${sharedFolder}): ${outside.join(', ')}. Move it into that folder, or change the folder with: switchboard settings shared-folder <folder>`);
+  }
   saveCustomizationsState({ ...state, rulesSources: unique }, file);
   return unique;
 }
@@ -285,8 +308,11 @@ function keepHandWrittenCopy(file) {
  * A file that cannot be written is reported and does not stop the others.
  */
 export function syncRules(opts = {}) {
-  const { dryRun = false } = opts;
-  const plan = planRulesSync(opts);
+  const { dryRun = false, home = os.homedir() } = opts;
+  const sources = opts.sources ?? loadRulesSources();
+  const sharedFolder = opts.sharedFolder !== undefined ? opts.sharedFolder : currentSharedFolder(home);
+  const outsideSharedFolder = sourcesOutsideSharedFolder(sources, sharedFolder);
+  const plan = planRulesSync({ ...opts, sources });
   const results = plan.targets.map((t) => {
     if (dryRun || t.action === 'same' || t.action === 'skip') return t;
     try {
@@ -297,7 +323,7 @@ export function syncRules(opts = {}) {
       return { ...t, action: 'failed', reason: e.message };
     }
   });
-  return { dryRun, sources: opts.sources ?? loadRulesSources(), targets: results };
+  return { dryRun, sources, targets: results, sharedFolder, outsideSharedFolder };
 }
 
 /**

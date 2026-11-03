@@ -3,6 +3,7 @@ import path from 'node:path';
 import { dataDir, writeJsonAtomic } from './paths.js';
 import { protectSecret, unprotectSecret, isEncrypted } from './vault.js';
 import { normalizeGatewaySettings } from './gateway-keys.js';
+import { DEFAULT_BACKUP_FOLDERS, DEFAULT_SHARED_AI_FOLDER, backupFolderSetting } from './shared-folder.js';
 
 export const WATCH_MODES = ['off', 'notify', 'auto'];
 export const THEME_MODES = ['system', 'light', 'dark'];
@@ -40,6 +41,11 @@ const DEFAULTS = {
   trayHoverFlyout: false,     // Open Tray Quota Flyout on 600ms dwell hover in addition to left-click
   flyoutBounds: null,         // { x, y, width, height } remembered when the user moves or resizes the Usage Monitor
   flyoutPinned: false,        // Keep the Usage Monitor pinned open across focus changes and restarts
+  // The folder of rules and skills shared by every AI tool (core/shared-folder.js). Stored
+  // with a leading ~ so it never names one user's profile; '' switches it off.
+  sharedAiFolder: DEFAULT_SHARED_AI_FOLDER,
+  // Top-level folders inside it that a configuration export carries, by name only.
+  sharedAiBackupFolders: DEFAULT_BACKUP_FOLDERS,
 };
 
 export function settingsFile() {
@@ -156,6 +162,8 @@ export function loadSettings(file = settingsFile()) {
       merged.thresholds = Object.keys(clean).length ? clean : { session: 80, week: 85 };
     }
     merged.trayHoverFlyout = Boolean(merged.trayHoverFlyout);
+    if (typeof merged.sharedAiFolder !== 'string' || /\0/.test(merged.sharedAiFolder)) merged.sharedAiFolder = DEFAULT_SHARED_AI_FOLDER;
+    merged.sharedAiBackupFolders = backupFolderSetting(merged);
     const b = merged.windowBounds;
     if (!b || typeof b.width !== 'number' || typeof b.height !== 'number' || b.width < 380 || b.height < 400) {
       merged.windowBounds = null;
@@ -168,6 +176,7 @@ export function loadSettings(file = settingsFile()) {
       gatewayKeys: {},
       laneTokens: {},
       thresholds: { ...DEFAULTS.thresholds },
+      sharedAiBackupFolders: [...DEFAULT_BACKUP_FOLDERS],
     };
   }
 }

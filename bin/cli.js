@@ -38,6 +38,7 @@ import {
 } from '../core/automations.js';
 import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway.js';
 import { loadRulesSources, saveRulesSources, syncRules } from '../core/rules-sync.js';
+import { sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
 import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, forgetT3, runT3SignIn, liveT3Status } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS, chooseProvisionKey, gatewayEnabledSettings } from '../core/gateway-keys.js';
 import readline from 'node:readline/promises';
@@ -1877,7 +1878,47 @@ async function main() {
       if (dryRun && res.targets.some((t) => t.action === 'write' || t.action === 'create')) {
         out('Run `switchboard rules sync` to bring them in step.');
       }
+      if (res.outsideSharedFolder?.length) {
+        // Still synced, but a backup of the shared folder would not carry them.
+        out(`Outside the shared AI folder (${res.sharedFolder}), so not in its backups:`);
+        for (const s of res.outsideSharedFolder) out(`  ${s}`);
+      }
       if (res.targets.some((t) => t.action === 'failed')) process.exitCode = 1;
+      return;
+    }
+    case 'settings': {
+      // The shared AI folder and which of its folders a backup carries. The rules live in
+      // core/shared-folder.js, so the Settings page and this command store the same thing.
+      const sub = args[0] && !args[0].startsWith('--') ? args[0] : 'show';
+      const json = args.includes('--json');
+      const values = args.slice(1).filter((a) => !a.startsWith('--'));
+      let settings = loadSettings();
+      if (sub === 'shared-folder') {
+        if (args.includes('--clear')) settings = withSharedFolder(settings, '');
+        else if (values.length > 1) throw new Error('usage: switchboard settings shared-folder [<folder>|--clear]');
+        else if (values.length) settings = withSharedFolder(settings, values[0]);
+        if (args.includes('--clear') || values.length) saveSettings(settings);
+      } else if (sub === 'backup-folders') {
+        if (args.includes('--clear')) settings = withBackupFolders(settings, []);
+        else if (values.length) settings = withBackupFolders(settings, values);
+        if (args.includes('--clear') || values.length) saveSettings(settings);
+      } else if (sub !== 'show') {
+        throw new Error(`unknown settings subcommand: ${sub}. Use shared-folder|backup-folders`);
+      }
+      const state = sharedFolderState(settings);
+      if (json) { out(JSON.stringify(state, null, 2)); return; }
+      if (!state.path) {
+        out('Shared AI folder: off. Set it with: switchboard settings shared-folder <folder>');
+      } else {
+        out(`Shared AI folder: ${state.path}${state.setting !== state.path ? `  (stored as ${state.setting})` : ''}`);
+        if (!state.exists) out('  It does not exist yet, so nothing uses it. Switchboard does not create it.');
+      }
+      out(`Back up these folders: ${state.backupFolders.length ? state.backupFolders.join(', ') : '(none)'}`);
+      if (state.exists) {
+        for (const f of state.subfolders) out(`  [${f.ticked ? 'x' : ' '}] ${f.name}`);
+        const absent = state.backupFolders.filter((n) => !state.subfolders.some((f) => f.name.toLowerCase() === n.toLowerCase()));
+        if (absent.length) out(`  Not in the folder now, so not backed up: ${absent.join(', ')}`);
+      }
       return;
     }
     case 'automations': {
@@ -2206,7 +2247,7 @@ async function main() {
       throw new Error(`unknown keys subcommand: ${sub}. Use list|create|update|rename|scope|revoke`);
     }
     default:
-      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|gateway|t3|keys|watch|notify|mcp|customizations|rules|automations|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|gateway|t3|keys|watch|notify|mcp|customizations|rules|settings|automations|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> [folder]   leave out the folder for a brand-new account`);
@@ -2233,6 +2274,7 @@ async function main() {
       out('    mcp register <name> [client|all]   mcp unregister <name> [client|all]   mcp disable|enable <name>');
       out('  customizations [list|marketplace|install|enable-skill|disable-skill]   manage plugins, skills, rules, agents & MCPs');
       out('  rules [status|sources <file> [file ...]|sources --clear|sync] [--dry-run] [--json]   build every tool\'s global rules file from one list of files');
+      out('  settings [shared-folder [<folder>|--clear]|backup-folders [name ...|--clear]] [--json]   the shared AI folder (default ~/.ai) and which of its folders a backup carries');
       out('  automations [list|add|remove|toggle]   manage low-level provider-agnostic scheduled routines');
       out('  dry-run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--spec <file>] [--json] [--with-token]   explain which lane would be selected');
       out('  run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');

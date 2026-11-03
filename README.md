@@ -329,6 +329,31 @@ switchboard rules sync [--dry-run] [--json]   build every tool's rules file from
   not generate is replaced, a copy is kept beside it as `<file>.before-switchboard-rules`
   and never pruned; the ordinary backups keep only the newest three.
 
+### Shared AI folder
+
+Rule files, skills and scripts meant for every AI tool on the machine belong in one folder,
+`~/.ai` unless you choose another (Health & Settings, Settings, "Shared AI folder"). The
+setting is stored as typed, with `~` meaning your home folder, so it never spells out a
+user name and still means your own folder on another machine.
+
+```
+switchboard settings [--json]                          the folder, whether it exists, and the ticks
+switchboard settings shared-folder <folder>|--clear    choose it (a folder under home is stored as ~/...) or turn it off
+switchboard settings backup-folders <name> [name ...]  which of its top-level folders a backup carries; --clear for none
+```
+
+- Switchboard never creates the folder because the setting names it. Until it exists,
+  nothing uses it and rule files can live anywhere.
+- "Back up these folders" lists the folders that exist inside it, each with a tick box. A
+  fresh install ticks `rules` and `skills`. Ticks are plain folder names; a name with a
+  slash, a backslash or `..` is refused.
+- Once the folder exists, a rule file added to the list must be inside it, and anything
+  else is refused with its name. A rule file listed before then keeps working;
+  `switchboard rules` and the Customizations tab mark it as outside the shared folder.
+- The Settings card also holds the rule file list: add (the file chooser starts in the
+  folder's `rules`), remove, and move up or down. It saves through the same code as
+  `switchboard rules sources`, and syncs straight away.
+
 ## Install
 
 1. Go to the [latest release](../../releases/latest) and download

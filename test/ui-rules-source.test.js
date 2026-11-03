@@ -43,3 +43,9 @@ test('every written file matching is shown as good, and a refused sync shows its
   assert.equal(bad.tone, 'bad');
   assert.equal(bad.text, 'cannot read rule source: x.md');
 });
+
+test('sources outside the shared AI folder still sync but turn the line into a warning that counts them', () => {
+  const t = rulesSourceSummary({ sources: ['a', 'b'], targets: [{ action: 'same' }], outsideSharedFolder: ['b'] });
+  assert.equal(t.tone, 'warn');
+  assert.match(t.text, /1 outside the shared AI folder/);
+});

@@ -63,7 +63,8 @@ import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
 import { createGatewayServer, provisionLocalAndWslClient, createSettingsWatcher, syncWslLeaseWrapper } from '../core/gateway.js';
-import { createRulesWatcher, loadRulesSources, saveRulesSources, syncRules } from '../core/rules-sync.js';
+import { createRulesWatcher, loadRulesSources, saveRulesSources, sourcesOutsideSharedFolder, syncRules } from '../core/rules-sync.js';
+import { activeSharedFolder, sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
 import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, refreshStaleT3Environments, withT3Lock, forgetT3, wslDistrosCached } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
@@ -1981,6 +1982,57 @@ ipcMain.handle('sb:rulesSetSources', async (_e, sources = []) => {
 });
 
 ipcMain.handle('sb:rulesSync', async () => runRulesSync(await installedCustomizationToolIds()));
+
+// The shared AI folder (core/shared-folder.js) and the rule file list kept inside it.
+// Every change goes through the same core functions `switchboard settings` and
+// `switchboard rules sources` use, so the page and the terminal cannot disagree.
+function sharedFolderSnapshot() {
+  const settings = loadSettings();
+  const state = sharedFolderState(settings);
+  const sources = loadRulesSources();
+  const active = state.exists ? state.path : null;
+  return { ...state, rulesSources: sources, outsideSharedFolder: sourcesOutsideSharedFolder(sources, active) };
+}
+
+ipcMain.handle('sb:sharedFolderState', () => sharedFolderSnapshot());
+
+ipcMain.handle('sb:sharedFolderChoose', async () => {
+  const current = sharedFolderState(loadSettings());
+  const picked = await dialog.showOpenDialog(win, {
+    title: 'Choose the shared AI folder',
+    defaultPath: current.exists ? current.path : app.getPath('home'),
+    properties: ['openDirectory'],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return { ok: false, ...sharedFolderSnapshot() };
+  saveSettings(withSharedFolder(loadSettings(), picked.filePaths[0]));
+  return { ok: true, ...sharedFolderSnapshot() };
+});
+
+ipcMain.handle('sb:sharedFolderSet', (_e, value) => {
+  saveSettings(withSharedFolder(loadSettings(), typeof value === 'string' ? value : ''));
+  return sharedFolderSnapshot();
+});
+
+ipcMain.handle('sb:sharedFolderSetBackups', (_e, names = []) => {
+  saveSettings(withBackupFolders(loadSettings(), Array.isArray(names) ? names : []));
+  return sharedFolderSnapshot();
+});
+
+ipcMain.handle('sb:rulesAddSource', async () => {
+  const shared = activeSharedFolder(loadSettings());
+  const rulesDir = shared ? path.join(shared, 'rules') : null;
+  const startIn = rulesDir && fs.existsSync(rulesDir) ? rulesDir : shared ?? app.getPath('home');
+  const picked = await dialog.showOpenDialog(win, {
+    title: 'Add a rule file',
+    defaultPath: startIn,
+    properties: ['openFile'],
+    filters: [{ name: 'Rule files', extensions: ['md', 'txt'] }, { name: 'All files', extensions: ['*'] }],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return { ok: false, ...sharedFolderSnapshot() };
+  saveRulesSources([...loadRulesSources(), picked.filePaths[0]]);
+  startRulesSync(await installedCustomizationToolIds());
+  return { ok: true, ...sharedFolderSnapshot() };
+});
 
 ipcMain.handle('sb:automationsState', () => {
   const state = loadAutomations();
