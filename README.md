@@ -224,10 +224,15 @@ and a short suggested list at the top of it.
   named in the output of `switchboard mcp sync`. A server switched off here is not shared,
   so it cannot creep back on from a list that still had it. For the same reason, taking a
   server out of Claude Code or Antigravity takes it out of every one of that tool's lists.
-- A chip shows four states: not registered, registered and signed in, registered but not
-  signed in, and plain registered for a client that cannot report its sign-in state. A
-  tick that meant "signed out and broken" would be worse than no tick, so that last case
-  says what it knows rather than guessing.
+- A chip shows five states: not registered, registered and signed in, registered but not
+  signed in, plain registered for a client that cannot report its sign-in state, and
+  registered even though the server is switched off here. A tick that meant "signed out
+  and broken" would be worse than no tick, so the fourth case says what it knows rather
+  than guessing. The fifth means the server came back into that client by some other
+  route (added by hand, or by another tool) after it was switched off here; the row is
+  shown as a warning naming those clients instead of greyed out, and
+  `switchboard mcp list` reports the state as `on-despite-disabled` with a line saying
+  what to run.
 - The mark at the left of an active row is a switch for the whole server: one click takes
   it out of every client that has it, and the next click puts it back. Switching off
   copies each client's own entry out first, so it works for servers Switchboard could
@@ -235,7 +240,13 @@ and a short suggested list at the top of it.
   and environment included, because a partial copy could not be put back; they live in
   `%APPDATA%\Switchboard\mcp.json`, are never shown in the panel, and are not part of an
   exported configuration. A client that refuses keeps its copy and is named in the
-  message, so the button can be pressed again.
+  message, so the button can be pressed again. Switching off takes the server out of
+  every list of every client, every Claude account and Antigravity home included, and
+  switching back on puts it into every list of each client it was taken from. A list
+  that already has the server again is left as it is, and when one of a tool's lists
+  already has it, that entry, being the one in use, is what its other lists are given
+  rather than the older copy. A switched-off server that turns up in a client anyway
+  stays switched off here until it is switched back on, so it is still not shared.
 - Servers needing an API key are deliberately absent from the catalogue. They cannot work
   without stored secrets, and listing them would offer a server that looks configured and
   fails on first use.

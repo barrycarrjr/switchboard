@@ -1673,6 +1673,13 @@ async function main() {
           const states = usable.map((id) => `${id}:${r.state[id]}`).join(' ');
           const target = r.url || (r.command ? `stdio:${r.command}` : '');
           out(`  ${r.name.padEnd(20)} ${states}  ${target}`);
+          // A server switched off here that a client has anyway came back by some other
+          // route. Said in words, because a state name alone does not say what to do next.
+          const still = usable.filter((id) => r.state[id] === 'on-despite-disabled');
+          if (still.length) {
+            out(`  ${''.padEnd(20)} switched off in Switchboard, but still on in ${still.join(', ')}. ` +
+              `To keep it on: switchboard mcp enable ${r.name}. To take it out: switchboard mcp disable ${r.name}.`);
+          }
         }
         return;
       }
@@ -1743,9 +1750,14 @@ async function main() {
         return;
       }
       if (sub === 'enable') {
-        const res = enableServer(args[1]);
+        // Handed the same registry the sharing below reads, so it sees the server as on.
+        const res = enableServer(args[1], { registry: reg });
         out(`Enabled ${res.name} in ${res.clients.join(', ')}`);
         for (const f of res.failed) out(`  not changed: ${f}`);
+        // The same as opening the MCP tab after the switch: a client that had no copy kept,
+        // because it never had the server when it was switched off, still gets it shared
+        // into its other lists now that nothing is holding it back.
+        share();
         return;
       }
       throw new Error(`unknown mcp subcommand: ${sub}. Use list|add|remove|register|unregister|disable|enable|sync`);

@@ -25,6 +25,7 @@ import {
   dedupeServers,
   activeServers,
   registeredServers,
+  registeredNames,
   resolveServerByName,
   canRegister,
   SUGGESTED,
@@ -1398,4 +1399,167 @@ test('every Antigravity list is found: its own, the IDE\'s and each T3 Code prof
   const moved = path.join(home, 'elsewhere');
   assert.equal(antigravityAllConfigFiles({ envReader: (k) => (k === 'GEMINI_HOME' ? moved : null), home })[0],
     path.join(moved, 'config', 'mcp_config.json'), 'GEMINI_HOME moves its own list');
+});
+
+// ---- A server switched off here that is still, or again, in a client ----
+
+// A server switched off here can come back into a client by another route: someone adds
+// it by hand, or another tool writes it. The record that it is off then no longer matches
+// what the client runs, and a plain "on" next to a row marked off hides exactly that.
+test('a server switched off here but still in a client is never reported as plainly on', () => {
+  const registry = {
+    servers: [],
+    disabled: [{ name: 'home-assistant', at: '2026-01-01T00:00:00.000Z', clients: { claude: { format: 'json', entry: { type: 'stdio', command: 'uvx', args: ['ha-mcp'] } } } }],
+  };
+  const read = (id) => (id === 'claude' ? [{ name: 'home-assistant', command: 'uvx' }] : []);
+  const servers = activeServers(registry, ['claude', 'codex'], read);
+  const [row] = registrationMatrix(servers, ['claude', 'codex'], {
+    names: (id) => read(id).map((s) => s.name),
+    auth: () => null,
+    tools: () => 0,
+  });
+  assert.equal(row.disabled, true);
+  assert.equal(row.state.claude, 'on-despite-disabled', 'the client that still has it says so distinctly');
+  assert.equal(row.state.codex, 'off', 'and a client without it is simply off');
+});
+
+test('a server that is not switched off reads as on exactly as before', () => {
+  const [row] = registrationMatrix([{ name: 'workspace', command: 'node' }], ['claude'], {
+    names: () => ['workspace'],
+    auth: () => null,
+    tools: () => 0,
+  });
+  assert.equal(row.state.claude, 'on');
+});
+
+// The case found on a real machine: switched off, then put back by hand into some of
+// Claude's lists but not all of them. Switching it on must leave every list with it, and
+// with the entry the client is already running, not the older copy taken when it went off.
+test('switching back on fills every list of a multi-account tool, preferring the entry already running', () => {
+  const [active, home, second] = claudeHomes();
+  const stale = { type: 'stdio', command: 'uvx', args: ['ha-mcp'] };
+  const newer = { type: 'stdio', command: 'uvx', args: ['ha-mcp@latest'], env: { HA_URL: 'http://ha.example' } };
+  writeJson(active, { mcpServers: { 'home-assistant': newer } });
+  writeJson(home, { mcpServers: { 'home-assistant': newer } });
+  writeJson(second, { mcpServers: { other: { type: 'http', url: 'https://o.example/mcp' } } });
+  const file = path.join(tmp(), 'mcp.json');
+  const registry = {
+    servers: [],
+    disabled: [{ name: 'home-assistant', at: '2026-01-01T00:00:00.000Z', clients: { claude: { format: 'json', entry: stale } } }],
+  };
+  const lists = [active, home, second];
+  const result = enableServer('home-assistant', {
+    registry,
+    file,
+    restore: (id, name, stash) => restoreClientEntry(id, name, stash, lists[0], lists),
+  });
+  assert.deepEqual(result.clients, ['claude']);
+  for (const f of lists) assert.deepEqual(readJson(f).mcpServers['home-assistant'], newer, f);
+  assert.ok(readJson(second).mcpServers.other, 'what the list already had is kept');
+  assert.deepEqual(loadServers(file).disabled, [], 'and it is no longer held as switched off');
+});
+
+/**
+ * Scratch copies of every list each client keeps, holding one local server, and a stand-in
+ * for the clients' CLIs. The Claude CLI edits only the active account's list, Antigravity's
+ * refuses outright, and Codex's takes the server's tables out of its file, which is how
+ * the real ones behave. No real CLI or config is reached.
+ */
+function everyClientHolding(name) {
+  const dir = tmp();
+  const entry = { type: 'stdio', command: 'uvx', args: ['ha-mcp'], env: { HA_URL: 'http://ha.example' } };
+  const agy = { command: 'uvx', args: ['ha-mcp'], env: { HA_URL: 'http://ha.example' }, disabled: false };
+  const files = {
+    claude: ['active', 'home', 'second'].map((n) => path.join(dir, 'claude', n, '.claude.json')),
+    antigravity: ['own', 'ide', 't3'].map((n) => path.join(dir, 'agy', n, 'mcp_config.json')),
+    codex: [path.join(dir, 'codex', 'config.toml')],
+    junie: [path.join(dir, 'junie', 'mcp.json')],
+    vscode: [path.join(dir, 'vscode', 'mcp.json')],
+  };
+  for (const f of files.claude) writeJson(f, { mcpServers: { [name]: entry, keep: { type: 'http', url: 'https://k.example/mcp' } } });
+  for (const f of files.antigravity) writeJson(f, { mcpServers: { [name]: agy } });
+  writeJson(files.junie[0], { mcpServers: { [name]: { command: 'uvx', args: ['ha-mcp'] } } });
+  writeJson(files.vscode[0], { servers: { [name]: entry }, inputs: [] });
+  fs.mkdirSync(path.dirname(files.codex[0]), { recursive: true });
+  fs.writeFileSync(files.codex[0], `model = "x"\n\n[mcp_servers.${name}]\ncommand = "uvx"\nargs = ["ha-mcp"]\n\n[mcp_servers.${name}.env]\nHA_URL = "http://ha.example"\n`);
+  const run = async (bin, args) => {
+    const server = args[args.length - 1];
+    if (bin === 'claude') {
+      const { changed, out } = deleteJsonServer(fs.readFileSync(files.claude[0], 'utf8'), 'mcpServers', server);
+      if (!changed) throw new Error(`No user-scoped MCP server found with name: ${server}`);
+      fs.writeFileSync(files.claude[0], out);
+    } else if (bin === 'codex') {
+      const text = fs.readFileSync(files.codex[0], 'utf8');
+      fs.writeFileSync(files.codex[0], text.replace(extractCodexServerBlock(text, server), ''));
+    } else {
+      throw new Error(`${bin}: server not found`);
+    }
+    return { stdout: '', stderr: '' };
+  };
+  const has = (id) => registeredNames(id, files[id]).includes(name);
+  const options = {
+    clientIds: Object.keys(files),
+    read: (id) => registeredNames(id, files[id]),
+    capture: (id, n) => {
+      for (const f of files[id]) {
+        const stash = captureClientEntry(id, n, f);
+        if (stash) return stash;
+      }
+      return null;
+    },
+    remove: (id, server) => unregisterServer(id, server, { run, files: files[id] }),
+  };
+  return { files, has, options };
+}
+
+test('switching a server off takes it out of every list of every client, all accounts included', async () => {
+  const { files, has, options } = everyClientHolding('home-assistant');
+  const file = path.join(tmp(), 'mcp.json');
+  const registry = { servers: [], disabled: [] };
+  const result = await disableServer('home-assistant', { ...options, registry, file });
+  assert.deepEqual(result.failed, []);
+  assert.deepEqual(result.clients.sort(), ['antigravity', 'claude', 'codex', 'junie', 'vscode']);
+  for (const id of Object.keys(files)) assert.equal(has(id), false, `${id} no longer has it in any list`);
+  for (const f of files.claude) assert.ok(readJson(f).mcpServers.keep, `${f} keeps the servers that were not switched off`);
+  assert.ok(fs.readFileSync(files.codex[0], 'utf8').includes('model = "x"'), 'and the rest of the codex config');
+  assert.deepEqual(Object.keys(loadServers(file).disabled[0].clients).sort(), ['antigravity', 'claude', 'codex', 'junie', 'vscode']);
+});
+
+test('sharing never puts a switched-off server back, in Claude or in Antigravity', async () => {
+  const { files, options } = everyClientHolding('home-assistant');
+  const file = path.join(tmp(), 'mcp.json');
+  const registry = { servers: [], disabled: [] };
+  await disableServer('home-assistant', { ...options, registry, file });
+  // A copy put back by hand into one list of each tool is the server coming back by
+  // another route. The sharing pass must not spread it from there.
+  writeJson(files.claude[1], { mcpServers: { 'home-assistant': { type: 'stdio', command: 'uvx' } } });
+  writeJson(files.antigravity[2], { mcpServers: { 'home-assistant': { command: 'uvx' } } });
+  syncClientAccountMirrors(loadServers(file), { claudeFiles: files.claude, antigravityFiles: files.antigravity });
+  for (const f of [files.claude[0], files.claude[2], files.antigravity[0], files.antigravity[1]]) {
+    assert.equal(Object.hasOwn(readJson(f).mcpServers, 'home-assistant'), false, f);
+  }
+});
+
+test('switching back on puts the server into every list it was taken out of, then sharing has nothing to do', async () => {
+  const { files, has, options } = everyClientHolding('home-assistant');
+  const before = Object.fromEntries(Object.entries(files).map(([id, list]) => [id, list.map((f) => fs.readFileSync(f, 'utf8'))]));
+  const file = path.join(tmp(), 'mcp.json');
+  const registry = { servers: [], disabled: [] };
+  await disableServer('home-assistant', { ...options, registry, file });
+  const result = enableServer('home-assistant', {
+    registry: loadServers(file),
+    file,
+    restore: (id, name, stash) => restoreClientEntry(id, name, stash, files[id][0], files[id]),
+  });
+  assert.deepEqual(result.failed, []);
+  for (const id of Object.keys(files)) assert.equal(has(id), true, `${id} has it again`);
+  for (const f of files.claude) assert.deepEqual(readJson(f).mcpServers['home-assistant'], { type: 'stdio', command: 'uvx', args: ['ha-mcp'], env: { HA_URL: 'http://ha.example' } }, f);
+  for (const f of files.antigravity) assert.deepEqual(readJson(f).mcpServers['home-assistant'], { command: 'uvx', args: ['ha-mcp'], env: { HA_URL: 'http://ha.example' }, disabled: false }, f);
+  assert.equal(extractCodexServerBlock(fs.readFileSync(files.codex[0], 'utf8'), 'home-assistant'), extractCodexServerBlock(before.codex[0], 'home-assistant'), 'the codex tables come back as they were');
+  assert.deepEqual(loadServers(file).disabled, []);
+  const summary = syncClientAccountMirrors(loadServers(file), { claudeFiles: files.claude, antigravityFiles: files.antigravity });
+  assert.deepEqual([...summary.claude, ...summary.antigravity], [], 'every list already agrees');
+  for (const f of [...files.claude, ...files.antigravity, ...files.junie, ...files.vscode]) {
+    assert.ok(backupsOf(f).length >= 1, `${f} was backed up before it was changed`);
+  }
 });

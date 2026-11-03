@@ -57,7 +57,7 @@ const CLIENTS = [
   { id: 'codex', name: 'Codex', canRemove: true },
 ];
 
-const rowParts = ['MARK', 'MCP_CHIP', 'mcpWhyNotAddable', 'mcpRemoveQuestion', 'mcpDisableQuestion', 'mcpClientNames', 'mcpError', 'mcpToggle', 'mcpChip', 'mcpProviderControl', 'mcpRow'];
+const rowParts = ['MARK', 'MCP_CHIP', 'mcpStillOn', 'mcpWhyNotAddable', 'mcpRemoveQuestion', 'mcpDisableQuestion', 'mcpClientNames', 'mcpError', 'mcpToggle', 'mcpChip', 'mcpProviderControl', 'mcpRow'];
 const loadRow = () => load(rowParts, ['mcpRow', 'mcpChip', 'mcpProviderControl', 'mcpWhyNotAddable', 'mcpToggle', 'mcpClientNames', 'mcpDisableQuestion', 'mcpRemoveQuestion']);
 
 /** The words a row shows, buttons included. */
@@ -204,6 +204,27 @@ test('a switched-off row can be switched back on, and says where it will go', ()
   const text = row.children.map((c) => c.innerHTML || '').join(' ');
   assert.ok(text.includes('Switched off'), 'an off row must not read as one that was never switched on');
   assert.ok(text.includes('Claude Code and Codex'), 'named by the buttons they are on');
+});
+
+// Switched off here, then put back into a client by some other route. Greyed out, the row
+// would say the server is quiet while a client is still loading it.
+test('a row switched off here but still on in a client says so instead of looking off', () => {
+  const { mcpRow } = loadRow();
+  const row = mcpRow({
+    name: 'home-assistant',
+    command: 'uvx',
+    disabled: true,
+    disabledClients: ['claude'],
+    addable: true,
+    state: { claude: 'on-despite-disabled', codex: 'off' },
+  }, CLIENTS, () => {}, { togglable: true });
+  assert.ok(!row.className.includes('off'), 'it is not shown as a quiet server');
+  assert.ok(row.className.includes('warn'));
+  const text = row.children.map((c) => c.innerHTML || '').join(' ');
+  assert.ok(text.includes('Switched off here, but still on in Claude Code'), 'naming the client that still has it');
+  const mark = row.children[0];
+  assert.equal(mark.tag, 'button');
+  assert.ok(mark.title.includes('back on in every client'), 'and the mark says what pressing it will do');
 });
 
 test('the mark stays a plain mark where there is nothing to switch', () => {

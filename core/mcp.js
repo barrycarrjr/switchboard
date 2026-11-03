@@ -1073,12 +1073,13 @@ export function syncClientAccountMirrors(registry = loadServers(), {
  * After a client's own CLI has added a server, put the same entry in that client's other
  * lists, so it is there whichever account or home starts next. Additive like the sync:
  * a list that already has the name keeps its own entry, a list that does not exist yet is
- * not created, and one that cannot be parsed is left alone.
+ * not created, and one that cannot be parsed is left alone. The lists can be handed in,
+ * which is how the tests keep away from the real ones.
  */
-function addToClientMirrorFiles(clientId, name, entry) {
+function addToClientMirrorFiles(clientId, name, entry, files = clientConfigFiles(clientId)) {
   const c = client(clientId);
   if (c.format !== 'json' || (clientId !== 'claude' && clientId !== 'antigravity')) return;
-  for (const file of clientConfigFiles(clientId)) {
+  for (const file of files) {
     const r = readServerMap(file, c.rootKey);
     if (!r.map || Object.hasOwn(r.map, name)) continue;
     try {
@@ -1092,10 +1093,10 @@ function addToClientMirrorFiles(clientId, name, entry) {
  * from the active account would last only until the next sync copied it back in from
  * another account's list.
  */
-function removeFromClientMirrorFiles(clientId, name) {
+function removeFromClientMirrorFiles(clientId, name, files = clientConfigFiles(clientId)) {
   const c = client(clientId);
   if (c.format !== 'json' || (clientId !== 'claude' && clientId !== 'antigravity')) return;
-  for (const file of clientConfigFiles(clientId)) {
+  for (const file of files) {
     try {
       if (!fs.existsSync(file)) continue;
       const { changed, out } = deleteJsonServer(readIfPresent(file), c.rootKey, name);
@@ -1141,15 +1142,23 @@ export async function registerServer(clientId, server) {
   }
 }
 
-export async function unregisterServer(clientId, server) {
+/**
+ * Take one server out of one client, and out of every list that client keeps.
+ *
+ * `run` and `files` exist for the tests: the client's CLI and the lists it reads can be
+ * replaced, so a test can switch a server off across scratch copies of every account
+ * without reaching a real CLI or a real config.
+ */
+export async function unregisterServer(clientId, server, { run = runMcpCli, files } = {}) {
   const c = client(clientId);
   // Deliberately not assertValidServer: that demands an address, and removing needs no
   // address at all. Requiring one refused to remove servers Switchboard could not describe.
   if (!isRemovableServerName(server?.name)) {
     throw new Error(`invalid server name: ${server?.name}`);
   }
+  const lists = files ?? clientConfigFiles(c.id);
   if (c.via === 'file') {
-    const file = c.configFile();
+    const file = files ? files[0] : c.configFile();
     const { changed, out } = deleteJsonServer(readIfPresent(file), c.rootKey, server.name);
     if (!changed) return { ok: true, client: c.id, server: server.name, output: 'Nothing to remove.' };
     writeConfig(file, out);
@@ -1158,7 +1167,7 @@ export async function unregisterServer(clientId, server) {
   if (!c.removeArgs) throw new Error(`${c.name} has no remove command.`);
   let cliOut = '';
   try {
-    const { stdout, stderr } = await runMcpCli(c.bin, c.removeArgs(server));
+    const { stdout, stderr } = await run(c.bin, c.removeArgs(server));
     cliOut = `${stdout ?? ''}${stderr ?? ''}`.trim();
   } catch (e) {
     // The CLI only sees the active account's list, and fails when the server lives in
@@ -1166,8 +1175,8 @@ export async function unregisterServer(clientId, server) {
     // that keeps several, that failure is not the answer.
     if (c.id !== 'claude' && c.id !== 'antigravity') throw e;
   }
-  removeFromClientMirrorFiles(c.id, server.name);
-  if (registeredNames(c.id).includes(server.name)) {
+  removeFromClientMirrorFiles(c.id, server.name, lists);
+  if (registeredNames(c.id, lists).includes(server.name)) {
     throw new Error(`${c.name} could not remove ${server.name}: it is still listed in one of its config files`);
   }
   return { ok: true, client: c.id, server: server.name, output: cliOut || `Removed ${server.name}` };
@@ -1239,17 +1248,17 @@ export function pruneBackups(file, keep = BACKUPS_KEPT, fsImpl = fs) {
  * For a client that keeps several lists, a server in any of them counts: the sync makes
  * them agree, and until it has, the server is still one a session of that client can use.
  */
-export function registeredServers(clientId) {
+export function registeredServers(clientId, files = clientConfigFiles(clientId)) {
   const c = client(clientId);
   if (c.format === 'toml') {
     try {
-      return parseCodexServerEntries(fs.readFileSync(c.configFile(), 'utf8'));
+      return parseCodexServerEntries(fs.readFileSync(files[0], 'utf8'));
     } catch {
       return []; // no config yet, or unreadable: nothing is registered as far as we can tell
     }
   }
   const byName = new Map();
-  for (const file of clientConfigFiles(clientId)) {
+  for (const file of files) {
     try {
       for (const entry of parseJsonServerEntries(fs.readFileSync(file, 'utf8'), c.rootKey)) {
         if (!byName.has(entry.name)) byName.set(entry.name, entry);
@@ -1260,8 +1269,8 @@ export function registeredServers(clientId) {
 }
 
 /** Just the names, for the callers that only need to know whether a server is there. */
-export function registeredNames(clientId) {
-  return registeredServers(clientId).map((s) => s.name);
+export function registeredNames(clientId, files) {
+  return registeredServers(clientId, files).map((s) => s.name);
 }
 
 /**
@@ -1405,6 +1414,13 @@ export function listServerTools(serverName, { home = os.homedir() } = {}) {
  *   'on'         registered, and this client cannot report whether it is signed in
  *   'ready'      registered and signed in
  *   'needs-auth' registered, and this client says it has no session for it
+ *   'on-despite-disabled'
+ *                registered, though the server is switched off here
+ *
+ * The last one exists because a server switched off here can come back into a client by
+ * a route Switchboard never sees: someone adds it by hand, or another tool writes it.
+ * Reporting that as a plain 'on' beside a row marked off says two contradictory things at
+ * once, and the panel and the terminal need to be able to point at the mismatch instead.
  */
 export function registrationMatrix(servers, clientIds = Object.keys(CLIENTS), read = {}) {
   const readNames = read.names ?? registeredNames;
@@ -1427,6 +1443,7 @@ export function registrationMatrix(servers, clientIds = Object.keys(CLIENTS), re
     addable: canRegister(s),
     state: Object.fromEntries(clientIds.map((id) => {
       if (!names[id].has(s.name)) return [id, 'off'];
+      if (s.disabled) return [id, 'on-despite-disabled'];
       // Sign-in only applies to remote https servers. One the client starts itself, or a
       // loopback address, has nothing to sign in to, so reporting it as awaiting sign-in
       // would be a warning about nothing.
@@ -1492,16 +1509,38 @@ export function captureClientEntry(clientId, name, file) {
 }
 
 /**
- * Put one captured entry back where it came from.
- *
- * A client that has the server again already is left alone rather than written twice:
- * someone may have put it back by hand between the two clicks, and theirs is the newer
- * entry. The same goes for each of a multi-home client's other lists.
+ * The entry a multi-home client is running for a server right now, from the first of its
+ * lists that has one, or null when none does.
  */
-export function restoreClientEntry(clientId, name, stash, file) {
+function liveJsonEntry(clientId, name, files) {
+  const c = client(clientId);
+  for (const file of files) {
+    const r = readServerMap(file, c.rootKey);
+    const entry = r.map?.[name];
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) return entry;
+  }
+  return null;
+}
+
+/**
+ * Put one captured entry back where it came from, and into every other list the same
+ * client keeps.
+ *
+ * A list that has the server again already is left alone rather than written twice:
+ * someone may have put it back by hand between the two clicks, and theirs is the newer
+ * entry. For the same reason, when any of a multi-home client's lists already has it, that
+ * entry is the one the other lists are given, not the older copy. Stopping at the first
+ * list that had it, as this once did, left the rest of that client's accounts without the
+ * server and never told anyone.
+ *
+ * `mirrors` is the client's other lists, handed in beside an explicit `file` so a test can
+ * keep to scratch copies. Without a file, every list on the machine is used.
+ */
+export function restoreClientEntry(clientId, name, stash, file, mirrors) {
   const c = client(clientId);
   const explicitFile = file !== undefined;
   const target = explicitFile ? file : c.configFile();
+  const lists = explicitFile ? (mirrors ?? []) : clientConfigFiles(clientId);
   const usable = stash && (stash.format === 'toml' ? typeof stash.block === 'string' : Boolean(stash.entry));
   if (!usable) throw new Error(`nothing was kept for ${name} in ${c.name}`);
   const text = readIfPresent(target);
@@ -1510,13 +1549,15 @@ export function restoreClientEntry(clientId, name, stash, file) {
   const present = c.format === 'toml'
     ? parseCodexServerNames(text).includes(name)
     : parseJsonServerNames(text, c.rootKey).includes(name);
-  if (present) return { ok: true, client: c.id, server: name, output: `${name} is already in ${target}` };
-  const out = stash.format === 'toml'
-    ? appendCodexServerBlock(text, stash.block)
-    : upsertJsonServer(text, c.rootKey, name, stash.entry);
-  writeConfig(target, out);
-  if (!explicitFile && stash.format === 'json') addToClientMirrorFiles(clientId, name, stash.entry);
-  return { ok: true, client: c.id, server: name, output: `Put ${name} back into ${target}` };
+  const entry = stash.format === 'json' ? (liveJsonEntry(clientId, name, [target, ...lists]) ?? stash.entry) : null;
+  if (!present) {
+    const out = stash.format === 'toml'
+      ? appendCodexServerBlock(text, stash.block)
+      : upsertJsonServer(text, c.rootKey, name, entry);
+    writeConfig(target, out);
+  }
+  if (stash.format === 'json') addToClientMirrorFiles(clientId, name, entry, lists);
+  return { ok: true, client: c.id, server: name, output: present ? `${name} is already in ${target}` : `Put ${name} back into ${target}` };
 }
 
 /**

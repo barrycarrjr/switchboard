@@ -4364,7 +4364,14 @@ const MCP_CHIP = {
   on: { cls: 'btn primary', mark: '&#10003;', verb: 'Registered' },
   ready: { cls: 'btn primary', mark: '&#10003;', verb: 'Registered and signed in' },
   'needs-auth': { cls: 'btn pending', mark: '!', verb: 'Registered, not signed in yet' },
+  // Switched off here, yet the client has it, so it is running whatever the row says.
+  'on-despite-disabled': { cls: 'btn pending', mark: '!', verb: 'Still registered, though switched off in Switchboard' },
 };
+
+/** Clients that have a server Switchboard holds as switched off, as ids. */
+function mcpStillOn(server, clients) {
+  return clients.filter((c) => server.state && server.state[c.id] === 'on-despite-disabled').map((c) => c.id);
+}
 
 function mcpSubtabs(onPick) {
   const bar = el('div', 'subtabs');
@@ -4469,9 +4476,12 @@ function mcpToggle(server, clients, onDone) {
   const name = server.label || server.title || server.name;
   const btn = el('button', 'hi', off ? '&ndash;' : MARK.ok);
   btn.setAttribute('aria-pressed', off ? 'false' : 'true');
-  btn.title = off
-    ? 'Switched off. Click to switch ' + name + ' back on.'
-    : 'Switched on. Click to switch ' + name + ' off in every client.';
+  const still = off ? mcpStillOn(server, clients) : [];
+  btn.title = still.length
+    ? 'Switched off here, but still on in ' + mcpClientNames(still, clients) + '. Click to switch ' + name + ' back on in every client.'
+    : off
+      ? 'Switched off. Click to switch ' + name + ' back on.'
+      : 'Switched on. Click to switch ' + name + ' off in every client.';
   btn.addEventListener('click', async () => {
     if (!off && !confirm(mcpDisableQuestion(server))) return;
     btn.disabled = true;
@@ -4688,7 +4698,10 @@ function mcpRow(server, clients, onDone, opts) {
   const off = Boolean(server.disabled);
   const anyOn = clients.some((c) => ((server.state && server.state[c.id]) || 'off') !== 'off');
   const pending = clients.some((c) => server.state && server.state[c.id] === 'needs-auth');
-  const level = off ? 'off' : (server.caveat || pending) ? 'warn' : anyOn ? 'ok' : 'info';
+  const still = off ? mcpStillOn(server, clients) : [];
+  // Switched off but running somewhere is a warning, not "off": greying it out would tell
+  // someone it is quiet when a client is still loading it.
+  const level = still.length ? 'warn' : off ? 'off' : (server.caveat || pending) ? 'warn' : anyOn ? 'ok' : 'info';
   const row = el('div', 'hc ' + level);
   // The mark is a switch on the active list, where there is something to switch. On the
   // browse list, and on a row no client has yet, it is what it has always been: a mark.
@@ -4697,7 +4710,10 @@ function mcpRow(server, clients, onDone, opts) {
   const bits = [];
   // Said first, because a row that is off looks otherwise exactly like a row that was
   // never switched on, and the difference is a copy Switchboard is holding for it.
-  if (off) {
+  if (still.length) {
+    bits.push('Switched off here, but still on in ' + esc(mcpClientNames(still, clients))
+      + '. Click the mark to switch it back on everywhere');
+  } else if (off) {
     bits.push('Switched off' + (server.disabledClients && server.disabledClients.length
       ? ', kept so it can go back to ' + mcpClientNames(server.disabledClients, clients)
       : ', kept so it can be switched back on'));
