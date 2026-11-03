@@ -3987,6 +3987,15 @@ function sharedFolderLine(st) {
   return st.path;
 }
 
+// One saved version of a rule file, as the History list shows it: when, then how big.
+function formatRuleVersion(v) {
+  const when = v && v.at ? new Date(v.at).toLocaleString() : (v && v.version) || 'unknown time';
+  const size = v && typeof v.size === 'number'
+    ? (v.size < 1024 ? v.size + ' bytes' : (v.size / 1024).toFixed(1) + ' KB')
+    : 'size unknown';
+  return when + ' · ' + size;
+}
+
 // The stored ticks after one folder is ticked or unticked. Names ticked earlier for a
 // folder that is not there right now are kept, so they come back when it does.
 function toggledBackupFolders(stored, name, on) {
@@ -4062,8 +4071,40 @@ function sharedFolderSection(st) {
     const up = cardButton('Up', () => save(up, moveRuleSource(sources, i, -1)), { ghost: true, disabled: i === 0 });
     const down = cardButton('Down', () => save(down, moveRuleSource(sources, i, 1)), { ghost: true, disabled: i === sources.length - 1 });
     const remove = cardButton('Remove', () => save(remove, sources.filter((_s, j) => j !== i)), { ghost: true });
-    row.append(up, down, remove);
+    // The saved copies of this file, fetched only when asked for.
+    const versions = el('div');
+    versions.style.margin = '0 0 6px 18px';
+    versions.hidden = true;
+    const history = cardButton('History', async () => {
+      if (!versions.hidden) { versions.hidden = true; return; }
+      versions.hidden = false;
+      versions.innerHTML = '<div class="qnote">Loading&hellip;</div>';
+      try {
+        const list = await sb.rulesHistory(src);
+        versions.replaceChildren();
+        if (!list.length) versions.appendChild(el('div', 'qnote', 'No saved versions yet. One is kept each time a sync sees this file change.'));
+        list.forEach((v, n) => {
+          const line = el('div');
+          line.style.display = 'flex';
+          line.style.alignItems = 'center';
+          line.style.gap = '6px';
+          line.style.fontSize = '12px';
+          const label = el('span', null, esc((n + 1) + '. ' + formatRuleVersion(v)));
+          label.style.flex = '1';
+          const restore = cardButton('Restore', () => {
+            if (!confirm('Put this version of ' + src + ' back and sync it to every tool? Its current text is kept in the history, so this can be undone.')) return;
+            run(restore, () => sb.rulesRestore(src, v.version), (r) => (r && r.error ? r.error : 'Restored and synced to every tool.'));
+          }, { ghost: true });
+          line.append(label, restore);
+          versions.appendChild(line);
+        });
+      } catch (e) {
+        versions.replaceChildren(el('div', 'qnote', esc(String(e.message || e))));
+      }
+    }, { ghost: true });
+    row.append(up, down, history, remove);
     rules.appendChild(row);
+    rules.appendChild(versions);
   });
   cardNote(card, 'Why one folder', 'A rule file added here must live inside the shared folder, which is what a configuration export backs up. Files listed before the folder was set keep working and are marked.');
   section.appendChild(oneColumn(card));

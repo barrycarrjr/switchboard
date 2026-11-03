@@ -22,6 +22,7 @@ const load = (name) => new Function(`${lift(name)}; return ${name};`)();
 const moveRuleSource = load('moveRuleSource');
 const sharedFolderLine = load('sharedFolderLine');
 const toggledBackupFolders = load('toggledBackupFolders');
+const formatRuleVersion = load('formatRuleVersion');
 
 test('moving a rule file up or down swaps it with its neighbour, and a move past either end changes nothing', () => {
   assert.deepEqual(moveRuleSource(['a', 'b', 'c'], 1, -1), ['b', 'a', 'c']);
@@ -45,9 +46,23 @@ test('unticking a folder keeps the ticks for folders that are not there right no
 test('the page reaches the shared folder only through the bridge, and every handler is wired', () => {
   const preload = fs.readFileSync(path.join(root, 'src', 'preload.cjs'), 'utf8');
   const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
-  for (const name of ['sharedFolderState', 'sharedFolderChoose', 'sharedFolderSet', 'sharedFolderSetBackups', 'rulesAddSource']) {
+  for (const name of ['sharedFolderState', 'sharedFolderChoose', 'sharedFolderSet', 'sharedFolderSetBackups', 'rulesAddSource', 'rulesHistory', 'rulesRestore']) {
     assert.match(preload, new RegExp(`${name}:.*'sb:${name}'`), `${name} is in the bridge`);
     assert.match(main, new RegExp(`ipcMain\\.handle\\('sb:${name}'`), `${name} has a handler`);
   }
   assert.match(main, /properties: \['openDirectory'\]/, 'the folder is picked with a folder chooser');
+});
+
+test('a saved version reads as its time and its size, and a missing size is said rather than guessed', () => {
+  assert.match(formatRuleVersion({ version: 'v', at: '2026-11-03T12:00:00.000Z', size: 412 }), / · 412 bytes$/);
+  assert.match(formatRuleVersion({ version: 'v', at: '2026-11-03T12:00:00.000Z', size: 4096 }), / · 4\.0 KB$/);
+  assert.match(formatRuleVersion({ version: 'v', at: null, size: null }), /^v · size unknown$/);
+});
+
+test('a restore from the page asks first, and its handler syncs after writing', () => {
+  const ui = fs.readFileSync(path.join(root, 'src', 'ui', 'index.html'), 'utf8');
+  const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
+  assert.match(ui, /if \(!confirm\('Put this version of '/);
+  const handler = main.slice(main.indexOf("ipcMain.handle('sb:rulesRestore'"));
+  assert.ok(handler.indexOf('restoreRuleVersion(') < handler.indexOf('startRulesSync('), 'the file is put back before the sync runs');
 });

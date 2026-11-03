@@ -65,6 +65,7 @@ import { checkThresholds, dispatchNotification, buildNotificationPayload, format
 import { createGatewayServer, provisionLocalAndWslClient, createSettingsWatcher, syncWslLeaseWrapper } from '../core/gateway.js';
 import { createRulesWatcher, loadRulesSources, saveRulesSources, sourcesOutsideSharedFolder, syncRules } from '../core/rules-sync.js';
 import { activeSharedFolder, sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
+import { listRuleVersions, restoreRuleVersion } from '../core/rules-history.js';
 import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, refreshStaleT3Environments, withT3Lock, forgetT3, wslDistrosCached } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
@@ -1982,6 +1983,16 @@ ipcMain.handle('sb:rulesSetSources', async (_e, sources = []) => {
 });
 
 ipcMain.handle('sb:rulesSync', async () => runRulesSync(await installedCustomizationToolIds()));
+
+// Rule file history (core/rules-history.js): the copies a sync kept, and putting one
+// back. A restore keeps the current text first and then syncs, as `switchboard rules
+// restore` does, so the page and the terminal leave the same trail.
+ipcMain.handle('sb:rulesHistory', (_e, file) => listRuleVersions(String(file ?? '')));
+
+ipcMain.handle('sb:rulesRestore', async (_e, file, version) => {
+  const restored = restoreRuleVersion(String(file ?? ''), String(version ?? ''));
+  return { restored, ...startRulesSync(await installedCustomizationToolIds()) };
+});
 
 // The shared AI folder (core/shared-folder.js) and the rule file list kept inside it.
 // Every change goes through the same core functions `switchboard settings` and

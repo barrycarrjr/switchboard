@@ -5,6 +5,7 @@ import { accountsFile, customizationsFile, samePath } from './paths.js';
 import { readUserEnv } from './env.js';
 import { loadSettings } from './settings.js';
 import { activeSharedFolder, isInsideFolder } from './shared-folder.js';
+import { recordRulesHistory, rulesHistoryDir } from './rules-history.js';
 import {
   customizationClients,
   loadCustomizationsState,
@@ -312,6 +313,11 @@ export function syncRules(opts = {}) {
   const sources = opts.sources ?? loadRulesSources();
   const sharedFolder = opts.sharedFolder !== undefined ? opts.sharedFolder : currentSharedFolder(home);
   const outsideSharedFolder = sourcesOutsideSharedFolder(sources, sharedFolder);
+  // Before anything else, and even if the sync then refuses: a copy of each source's
+  // text whenever it has changed (core/rules-history.js). This is the one path the
+  // watcher, the timer and `switchboard rules sync` all take, so every edit is caught.
+  // A dry run only reports, so it keeps nothing.
+  const history = dryRun ? [] : recordRulesHistory(sources, { dir: opts.historyDir ?? rulesHistoryDir() });
   const plan = planRulesSync({ ...opts, sources });
   const results = plan.targets.map((t) => {
     if (dryRun || t.action === 'same' || t.action === 'skip') return t;
@@ -323,7 +329,7 @@ export function syncRules(opts = {}) {
       return { ...t, action: 'failed', reason: e.message };
     }
   });
-  return { dryRun, sources, targets: results, sharedFolder, outsideSharedFolder };
+  return { dryRun, sources, targets: results, sharedFolder, outsideSharedFolder, history };
 }
 
 /**

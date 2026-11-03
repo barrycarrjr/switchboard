@@ -29,8 +29,11 @@ function machine({ tools = [] } = {}) {
     fs.writeFileSync(p, text, 'utf8');
     return p;
   };
-  const opts = (extra = {}) => ({ home, envReader: () => null, accountsPath, installedToolIds: [], ...extra });
-  return { root, home, sourceDir, accountsPath, cFile, source, opts };
+  // The history folder is named here, so even a bare `node --test` of this one file never
+  // writes rule history into the real app data folder.
+  const historyDir = path.join(root, 'appdata', 'rules-history');
+  const opts = (extra = {}) => ({ home, envReader: () => null, accountsPath, installedToolIds: [], historyDir, sharedFolder: null, ...extra });
+  return { root, home, sourceDir, accountsPath, cFile, source, opts, historyDir };
 }
 
 const read = (p) => fs.readFileSync(p, 'utf8');

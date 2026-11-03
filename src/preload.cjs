@@ -69,6 +69,8 @@ contextBridge.exposeInMainWorld('sb', {
   rulesSetSources: (sources) => ipcRenderer.invoke('sb:rulesSetSources', sources ?? []),
   rulesSync: () => ipcRenderer.invoke('sb:rulesSync'),
   rulesAddSource: () => ipcRenderer.invoke('sb:rulesAddSource'),
+  rulesHistory: (file) => ipcRenderer.invoke('sb:rulesHistory', file),
+  rulesRestore: (file, version) => ipcRenderer.invoke('sb:rulesRestore', file, version),
   sharedFolderState: () => ipcRenderer.invoke('sb:sharedFolderState'),
   sharedFolderChoose: () => ipcRenderer.invoke('sb:sharedFolderChoose'),
   sharedFolderSet: (value) => ipcRenderer.invoke('sb:sharedFolderSet', value ?? ''),

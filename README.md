@@ -329,6 +329,24 @@ switchboard rules sync [--dry-run] [--json]   build every tool's rules file from
   not generate is replaced, a copy is kept beside it as `<file>.before-switchboard-rules`
   and never pruned; the ordinary backups keep only the newest three.
 
+#### Rule file history
+
+One edit to a rule file now reaches every tool on every account within seconds, and many
+agent sessions edit those files, so one bad edit is everywhere at once. So every time a
+sync sees a rule file's text change (the tray's watcher, its ten-minute timer, or
+`switchboard rules sync`), a dated copy is kept in `%APPDATA%\Switchboard\rules-history`,
+one folder per rule file. The first version is kept too, a copy equal to the newest one is
+not, and only the newest 20 per file are kept. A dry run (`switchboard rules`, or opening
+the Customizations tab) keeps nothing.
+
+```
+switchboard rules history <file> [--json]        the saved copies, newest first, with date and size
+switchboard rules restore <file> <version>       put one back (the version id, or its number in the list), then sync
+```
+
+A restore first keeps the file's current text in the history, so it can be undone the same
+way. The rule file list in Settings has a History button per file that does the same.
+
 ### Shared AI folder
 
 Rule files, skills and scripts meant for every AI tool on the machine belong in one folder,

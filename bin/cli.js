@@ -39,6 +39,7 @@ import {
 import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway.js';
 import { loadRulesSources, saveRulesSources, syncRules } from '../core/rules-sync.js';
 import { sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
+import { listRuleVersions, restoreRuleVersion } from '../core/rules-history.js';
 import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, forgetT3, runT3SignIn, liveT3Status } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS, chooseProvisionKey, gatewayEnabledSettings } from '../core/gateway-keys.js';
 import readline from 'node:readline/promises';
@@ -1857,12 +1858,33 @@ async function main() {
         saved.forEach((s, i) => out(`  ${i + 1}. ${s}`));
         return;
       }
-      if (sub !== 'status' && sub !== 'sync') {
-        throw new Error(`unknown rules subcommand: ${sub}. Use status|sources|sync`);
+      if (sub === 'history') {
+        // Every saved copy of one rule file (core/rules-history.js), newest first.
+        const file = args.slice(1).find((a) => !a.startsWith('--'));
+        if (!file) throw new Error('usage: switchboard rules history <file>');
+        const versions = listRuleVersions(file);
+        if (json) { out(JSON.stringify(versions, null, 2)); return; }
+        if (!versions.length) { out(`No saved versions of ${file} yet. One is kept each time a sync sees its text change.`); return; }
+        out(`Saved versions of ${file}, newest first (${versions.length}):`);
+        versions.forEach((v, i) => out(`  ${String(i + 1).padStart(2)}. ${v.version}  ${new Date(v.at).toLocaleString()}  ${v.size ?? '?'} bytes`));
+        out('Put one back with: switchboard rules restore <file> <version or number>');
+        return;
+      }
+      if (sub !== 'status' && sub !== 'sync' && sub !== 'restore') {
+        throw new Error(`unknown rules subcommand: ${sub}. Use status|sources|sync|history|restore`);
+      }
+      let restored = null;
+      if (sub === 'restore') {
+        const [file, version] = args.slice(1).filter((a) => !a.startsWith('--'));
+        if (!file || !version) throw new Error('usage: switchboard rules restore <file> <version>');
+        // The current text is kept in the history first, so this can be undone the same way.
+        restored = restoreRuleVersion(file, version);
+        if (!json) out(`Restored ${restored.source} to the version saved ${restored.version}. Its text before this is kept in the history.`);
       }
       const installedIds = (await detectInstalled()).filter((t) => t.installed).map((t) => t.id);
-      const dryRun = sub === 'status' || args.includes('--dry-run');
+      const dryRun = sub === 'status' || (sub === 'sync' && args.includes('--dry-run'));
       const res = syncRules({ dryRun, installedToolIds: installedIds });
+      if (restored && json) { out(JSON.stringify({ restored, ...res }, null, 2)); return; }
       if (json) { out(JSON.stringify(res, null, 2)); return; }
       if (!res.sources.length) {
         out('No rule sources set. Set them with: switchboard rules sources <file> [file ...]');
@@ -2274,6 +2296,7 @@ async function main() {
       out('    mcp register <name> [client|all]   mcp unregister <name> [client|all]   mcp disable|enable <name>');
       out('  customizations [list|marketplace|install|enable-skill|disable-skill]   manage plugins, skills, rules, agents & MCPs');
       out('  rules [status|sources <file> [file ...]|sources --clear|sync] [--dry-run] [--json]   build every tool\'s global rules file from one list of files');
+      out('  rules history <file> | rules restore <file> <version>   the saved copies of a rule file, and putting one back (then syncing)');
       out('  settings [shared-folder [<folder>|--clear]|backup-folders [name ...|--clear]] [--json]   the shared AI folder (default ~/.ai) and which of its folders a backup carries');
       out('  automations [list|add|remove|toggle]   manage low-level provider-agnostic scheduled routines');
       out('  dry-run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--spec <file>] [--json] [--with-token]   explain which lane would be selected');
