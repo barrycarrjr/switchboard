@@ -10,6 +10,8 @@ import {
   writeJsonAtomic,
 } from './paths.js';
 import { readUserEnv } from './env.js';
+import { loadSettings } from './settings.js';
+import { activeSharedSkillsFolder, listSharedSkillFolders } from './shared-folder.js';
 import { TOOLS } from './providers.js';
 import { PROVIDERS } from './accounts.js';
 import {
@@ -432,8 +434,43 @@ export function saveCustomizationsState(state, file = customizationsFile()) {
   });
 }
 
+/**
+ * Is a skill switched off for one tool? `disabledSkills` in customizations.json holds
+ * `{ name, client }` entries, one per skill and tool switched off; a bare name string
+ * means off for every tool. Skills sync (core/skills-sync.js) reads this so a shared
+ * skill someone turned off for one tool is not copied straight back on the next run.
+ */
+export function isSkillDisabledFor(disabledSkills, name, clientId) {
+  return (Array.isArray(disabledSkills) ? disabledSkills : []).some((d) => (
+    typeof d === 'string' ? d === name : d?.name === name && d?.client === clientId
+  ));
+}
+
+/** Remember a person's on or off choice for one skill and tool. */
+export function recordSkillClientChoice(name, clientId, enabled, file = customizationsFile()) {
+  // A state file that will not parse would load as empty, and saving that would wipe
+  // the installed-plugin list; refuse, as every other config write here does.
+  if (fs.existsSync(file)) {
+    try { JSON.parse(fs.readFileSync(file, 'utf8')); } catch {
+      throw new Error(`${file} will not parse; fix or move it before switching a skill on or off`);
+    }
+  }
+  const state = loadCustomizationsState(file);
+  const rest = state.disabledSkills.filter((d) => !(typeof d === 'object' && d?.name === name && d?.client === clientId));
+  const next = enabled ? rest : [...rest, { name, client: clientId }];
+  if (JSON.stringify(next) !== JSON.stringify(state.disabledSkills)) {
+    saveCustomizationsState({ ...state, disabledSkills: next }, file);
+  }
+  return next;
+}
+
+/** The shared skills folder named in Switchboard's settings, resolved against `home`. */
+function defaultSharedSkillsDir(home) {
+  try { return activeSharedSkillsFolder(loadSettings(), { home }); } catch { return null; }
+}
+
 /** Candidate skill folders inside a provider's home directory. */
-function skillDirsForHome(providerId, homeDir) {
+export function skillDirsForHome(providerId, homeDir) {
   if (providerId === 'antigravity') {
     if (path.basename(homeDir).toLowerCase() === 'config') {
       return [path.join(homeDir, 'skills')];
@@ -448,7 +485,7 @@ function skillDirsForHome(providerId, homeDir) {
 }
 
 /** Primary skill folder where Switchboard writes when syncing a skill to a provider home. */
-function targetSkillDirForHome(providerId, homeDir) {
+export function targetSkillDirForHome(providerId, homeDir) {
   if (providerId === 'antigravity') {
     if (path.basename(homeDir).toLowerCase() === 'config') {
       return path.join(homeDir, 'skills');
@@ -492,6 +529,7 @@ export function listInstalledSkills({
   accountsPath = accountsFile(),
   cDir = customizationsDir(),
   installedToolIds = null,
+  sharedSkillsDir = defaultSharedSkillsDir(home),
 } = {}) {
   const clients = customizationClients({ home, envReader, accountsPath, installedToolIds });
   const byName = new Map();
@@ -510,6 +548,7 @@ export function listInstalledSkills({
         sourcePath: meta.path,
         bodyPreview: meta.bodyPreview || '',
         builtin: Boolean(meta.builtin),
+        shared: Boolean(meta.shared),
         disabled: false,
         state: Object.fromEntries(clients.map((c) => [c.id, 'off'])),
       });
@@ -523,6 +562,14 @@ export function listInstalledSkills({
       existing.state[clientId] = status;
     }
   };
+
+  // 0. The shared AI folder's skills come first, so their folder is the one named as
+  // the source: skills sync copies from there, and a skill switched off for every tool
+  // still shows (and can be switched back on) because its source is still listed.
+  for (const s of listSharedSkillFolders(sharedSkillsDir)) {
+    const meta = readSkillDirectory(s.dir, { shared: true });
+    if (meta) recordSkill(meta, null, 'off');
+  }
 
   // 1. Switchboard central store (<customizationsDir>/skills/<name>/SKILL.md)
   const centralSkillsDir = path.join(cDir, 'skills');
@@ -611,12 +658,14 @@ export function setSkillClientState(skillName, clientId, enabled, {
   envReader = readUserEnv,
   accountsPath = accountsFile(),
   cDir = customizationsDir(),
+  cFile = customizationsFile(),
   installedToolIds = null,
+  sharedSkillsDir = defaultSharedSkillsDir(home),
 } = {}) {
   const safeName = sanitizeSlug(skillName);
   if (!safeName) throw new Error(`invalid skill name: ${skillName}`);
 
-  const skills = listInstalledSkills({ home, envReader, accountsPath, cDir, installedToolIds });
+  const skills = listInstalledSkills({ home, envReader, accountsPath, cDir, installedToolIds, sharedSkillsDir });
   const found = skills.find((s) => s.name === safeName);
   if (!found && enabled) {
     throw new Error(`no such skill: ${safeName}`);
@@ -625,6 +674,10 @@ export function setSkillClientState(skillName, clientId, enabled, {
   const clients = customizationClients({ home, envReader, accountsPath, installedToolIds });
   const targetClient = clients.find((c) => c.id === clientId);
   if (!targetClient) throw new Error(`unknown client: ${clientId}`);
+
+  // Remembered for every skill, not only shared ones, so a skill later moved into the
+  // shared folder keeps the choice instead of reappearing in a tool it was taken out of.
+  recordSkillClientChoice(safeName, clientId, enabled, cFile);
 
   // Always preserve a canonical copy in Switchboard's central store first.
   const centralCopy = path.join(cDir, 'skills', safeName);

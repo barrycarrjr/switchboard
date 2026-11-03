@@ -358,6 +358,48 @@ switchboard rules restore <file> <version>       put one back (the version id, o
 A restore first keeps the file's current text in the history, so it can be undone the same
 way. The rule file list in Settings has a History button per file that does the same.
 
+### Skills from the shared AI folder
+
+A skill meant for every tool is kept once, as a folder in the shared AI folder's `skills`
+folder (`~/.ai/skills/<name>/`, holding a `SKILL.md` and any files it uses). Switchboard
+copies each one into every tool's skills folder in every account folder it knows about,
+so a global skill no longer has to be copied by hand per tool and per account.
+
+```
+switchboard skills sync [--dry-run] [--json]   copy the shared skills out now (--dry-run only reports)
+```
+
+- The tray app syncs at start, a moment after anything in the shared `skills` folder
+  changes, and every ten minutes, as it does for rules. The Customizations tab shows one
+  line about it above the skills list, with a Sync now button.
+- If the shared folder or its `skills` folder does not exist, nothing happens at all:
+  nothing is written and nothing already copied is removed.
+- Only tools on this machine, and account folders that already exist, are written to.
+- Every folder Switchboard writes holds a small `.switchboard-skill.json` marker naming
+  the skill and a hash of its files. A copy already matching is not touched, so frequent
+  syncs cost a few small reads. A changed file is backed up beside itself first.
+- A same-name folder without the marker is a copy kept by hand. If it differs, it is
+  moved into `skills.before-switchboard-skills/<name>` beside the tool's skills folder
+  (never pruned; a later one gets `-2`, `-3` and so on) before the shared copy is written.
+  It goes beside the skills folder rather than inside it, because a tool that loads every
+  folder in `skills` would load the set-aside copy as a second skill of the same name. A
+  hand copy identical to the shared one is simply taken over. A copy Switchboard wrote and
+  someone later edited is set aside the same way before it is replaced.
+- A copy Switchboard wrote whose skill has left the shared folder is removed. A folder
+  without the marker, or a link, is never removed.
+- Switching a skill off for one tool in the Customizations tab (or with
+  `switchboard customizations disable-skill <name> <client>`) is remembered, so the sync
+  does not copy it back there, and removes the copy it wrote. Switching it on copies it
+  back.
+- A tool skills folder that is the shared one (or a link into it), and a skill that is
+  already a link to its shared folder, are skipped, so nothing is ever written onto the
+  source.
+- Files Switchboard itself writes (`*.bak-*`, `*.before-*`, the marker) are never copied
+  out of a source.
+- Switchboard's own skills store (`%APPDATA%\Switchboard\customizations\skills`) keeps
+  working. When a skill of the same name is in both, the shared folder's copy is the one
+  written, and the sync says so.
+
 ### Shared AI folder
 
 Rule files, skills and scripts meant for every AI tool on the machine belong in one folder,
@@ -376,6 +418,8 @@ switchboard settings backup-folders <name> [name ...]  which of its top-level fo
 - "Back up these folders" lists the folders that exist inside it, each with a tick box. A
   fresh install ticks `rules` and `skills`. Ticks are plain folder names; a name with a
   slash, a backslash or `..` is refused.
+- Its `skills` folder, when there is one, is copied to every tool (see "Skills from the
+  shared AI folder" above).
 - Once the folder exists, a rule file added to the list must be inside it, and anything
   else is refused with its name. A rule file listed before then keeps working;
   `switchboard rules` and the Customizations tab mark it as outside the shared folder.

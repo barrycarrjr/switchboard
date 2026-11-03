@@ -31,7 +31,6 @@ import {
   searchMarketplace,
   installMarketplaceItem,
   installFromGitHub,
-  setSkillClientState,
   saveCustomSkill,
   setAgentClientState,
   saveCustomAgent,
@@ -64,7 +63,8 @@ import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardC
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
 import { createGatewayServer, provisionLocalAndWslClient, createSettingsWatcher, syncWslLeaseWrapper } from '../core/gateway.js';
 import { createRulesWatcher, loadRulesSources, saveRulesSources, sourcesOutsideSharedFolder, syncRules } from '../core/rules-sync.js';
-import { activeSharedFolder, sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
+import { createSkillsWatcher, setSkillState, syncSkills } from '../core/skills-sync.js';
+import { activeSharedFolder, activeSharedSkillsFolder, sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
 import { listRuleVersions, restoreRuleVersion } from '../core/rules-history.js';
 import { collectFilesSection, describeSkipped, formatBytes, planFilesImport, restoreFilesSection, sharedSettingFor } from '../core/shared-backup.js';
 import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, refreshStaleT3Environments, withT3Lock, forgetT3, wslDistrosCached } from '../core/t3env-run.js';
@@ -1220,10 +1220,14 @@ app.whenReady().then(async () => {
   // Rules from one source: build every tool's instruction file now, again the moment a
   // source file is saved, and on a slow timer in case a folder cannot be watched. Files
   // already in step are not rewritten, so the timer costs a few small reads.
+  // Skills kept in the shared AI folder follow the same pattern (core/skills-sync.js).
   startRulesSync([...installedIds]);
+  runSkillsSync([...installedIds]);
   setInterval(async () => {
     // Asked fresh each time, so a tool installed since startup is included.
-    runRulesSync(await installedCustomizationToolIds().catch(() => [...installedIds]));
+    const ids = await installedCustomizationToolIds().catch(() => [...installedIds]);
+    runRulesSync(ids);
+    runSkillsSync(ids);
   }, 10 * 60 * 1000);
 
   refreshTrayFacts();
@@ -1247,7 +1251,29 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => { /* stay in the tray */ });
-app.on('before-quit', () => { quitting = true; settingsWatcher?.close(); rulesWatcher?.close(); gatewayServer.stop().catch(() => {}); });
+app.on('before-quit', () => { quitting = true; settingsWatcher?.close(); rulesWatcher?.close(); skillsWatcher?.close(); gatewayServer.stop().catch(() => {}); });
+
+let skillsWatcher = null;
+let skillsWatched = null;
+let lastSkillsSync = null;
+
+function runSkillsSync(installedToolIds) {
+  // The shared folder can be changed in Settings or from a terminal, and its skills
+  // folder can appear after startup; watch whichever folder is current now.
+  const dir = activeSharedSkillsFolder(loadSettings());
+  if (dir !== skillsWatched) {
+    skillsWatcher?.close();
+    skillsWatched = dir;
+    skillsWatcher = dir ? createSkillsWatcher({ dir, onChange: () => runSkillsSync(installedToolIds) }) : null;
+  }
+  try {
+    lastSkillsSync = { at: new Date().toISOString(), ...syncSkills({ installedToolIds }) };
+  } catch (e) {
+    // Kept for the Customizations tab rather than thrown out of a timer or a watcher.
+    lastSkillsSync = { at: new Date().toISOString(), error: e.message, skills: [], targets: [] };
+  }
+  return lastSkillsSync;
+}
 
 let rulesWatcher = null;
 let rulesWatched = '';
@@ -1592,7 +1618,10 @@ ipcMain.handle('sb:configImport', async () => {
       }
     }
     // One sync, on the restored list and files, and the watcher moved onto them.
-    startRulesSync(await installedCustomizationToolIds().catch(() => []));
+    // The restored shared folder can carry skills too, so they go out the same way.
+    const restoredIds = await installedCustomizationToolIds().catch(() => []);
+    startRulesSync(restoredIds);
+    runSkillsSync(restoredIds);
     if (filesResult.skipped.length) {
       warnings.push(`${filesResult.skipped.length} file(s) not restored: ${describeSkipped(filesResult.skipped, 5).join('; ')}.`);
     }
@@ -2013,7 +2042,9 @@ ipcMain.handle('sb:customizationsInstall', async (_e, { target = '', clients = [
 
 ipcMain.handle('sb:customizationsSetSkill', async (_e, { skillName, clientId, enabled } = {}) => {
   const installedToolIds = await installedCustomizationToolIds();
-  return setSkillClientState(skillName, clientId, enabled, { installedToolIds });
+  // setSkillState handles a skill kept in the shared AI folder itself (remember the
+  // choice, then sync that skill for that tool) and passes any other skill on.
+  return setSkillState(skillName, clientId, enabled, { installedToolIds });
 });
 
 ipcMain.handle('sb:customizationsSaveSkill', async (_e, payload = {}) => {
@@ -2052,6 +2083,18 @@ ipcMain.handle('sb:rulesSetSources', async (_e, sources = []) => {
 });
 
 ipcMain.handle('sb:rulesSync', async () => runRulesSync(await installedCustomizationToolIds()));
+
+// Skills from the shared AI folder (core/skills-sync.js). State is a dry run, as for rules.
+ipcMain.handle('sb:skillsSyncState', async () => {
+  const installedToolIds = await installedCustomizationToolIds();
+  try {
+    return { ...syncSkills({ dryRun: true, installedToolIds }), last: lastSkillsSync };
+  } catch (e) {
+    return { error: e.message, skills: [], targets: [], last: lastSkillsSync };
+  }
+});
+
+ipcMain.handle('sb:skillsSync', async () => runSkillsSync(await installedCustomizationToolIds()));
 
 // Rule file history (core/rules-history.js): the copies a sync kept, and putting one
 // back. A restore keeps the current text first and then syncs, as `switchboard rules

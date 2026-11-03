@@ -27,6 +27,7 @@ import { pathToFileURL } from 'node:url';
  */
 export const PREFIXES = [
   'sb-rules-',
+  'sb-skills-',
   'sb-agy-',
   'sb-anyorder-',
   'sb-appdata-',

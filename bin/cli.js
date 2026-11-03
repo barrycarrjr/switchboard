@@ -26,9 +26,9 @@ import {
   searchMarketplace,
   installMarketplaceItem,
   installFromGitHub,
-  setSkillClientState,
   setAgentClientState,
 } from '../core/customizations.js';
+import { setSkillState, syncSkills } from '../core/skills-sync.js';
 import {
   loadAutomations,
   saveAutomations,
@@ -1830,6 +1830,33 @@ async function main() {
         return;
       }
 
+      if (sub === 'sync') {
+        // Skills kept in the shared AI folder, copied into every tool's skills folder in
+        // every account folder. The work is all in core/skills-sync.js so the tray does
+        // the same; --dry-run only reports.
+        const dryRun = args.includes('--dry-run');
+        const res = syncSkills({ dryRun, installedToolIds: installedIds });
+        if (args.includes('--json')) { out(JSON.stringify(res, null, 2)); return; }
+        if (res.off) { out(`Skills sync is off: ${res.off}.`); return; }
+        const words = dryRun
+          ? { create: 'missing', write: 'out of date', adopt: 'to take over', remove: 'to remove', same: 'in step', skip: 'skipped', failed: 'failed' }
+          : { create: 'created', write: 'updated', adopt: 'taken over', remove: 'removed', same: 'in step', skip: 'skipped', failed: 'FAILED' };
+        out(`Skills from ${res.skillsDir} (${res.skills.length}):`);
+        for (const t of res.targets) {
+          const what = t.skill ? `${t.skill} in ${t.path}` : t.path;
+          out(`  ${(words[t.action] ?? t.action).padEnd(12)} ${t.clientId.padEnd(12)} ${what}${t.reason ? `  (${t.reason})` : ''}`);
+          if (t.keepAs) out(`  ${''.padEnd(12)} ${''.padEnd(12)} ${dryRun ? 'would keep' : 'kept'} the old copy as ${t.keepAs}`);
+        }
+        for (const name of res.overridesCentral) {
+          out(`  ${name} is also in Switchboard's own skills store; the shared folder's copy is the one written.`);
+        }
+        if (dryRun && res.targets.some((t) => !['same', 'skip'].includes(t.action))) {
+          out('Run `switchboard skills sync` to bring them in step.');
+        }
+        if (res.targets.some((t) => t.action === 'failed')) process.exitCode = 1;
+        return;
+      }
+
       if (sub === 'enable-skill' || sub === 'disable-skill') {
         const skillName = args[1];
         const clientId = args[2];
@@ -1837,7 +1864,8 @@ async function main() {
           throw new Error(`usage: switchboard customizations ${sub} <skillName> <clientId>`);
         }
         const enabled = sub === 'enable-skill';
-        const res = setSkillClientState(skillName, clientId, enabled, { installedToolIds: installedIds });
+        // The same core call the tray makes, so a shared skill is handled the same way.
+        const res = setSkillState(skillName, clientId, enabled, { installedToolIds: installedIds });
         out(`${enabled ? 'Enabled' : 'Disabled'} skill /${res.skill} for ${res.client}`);
         return;
       }
@@ -1854,7 +1882,7 @@ async function main() {
         return;
       }
 
-      throw new Error(`unknown customizations subcommand: ${sub}. Use list|marketplace|install|enable-skill|disable-skill|enable-agent|disable-agent`);
+      throw new Error(`unknown customizations subcommand: ${sub}. Use list|marketplace|install|sync|enable-skill|disable-skill|enable-agent|disable-agent`);
     }
     case 'rules': {
       // Build every tool's global instruction file from one ordered list of rule
@@ -2307,6 +2335,7 @@ async function main() {
       out('    mcp add <name> <https url>  |  mcp add <name> [-e KEY=VALUE ...] --stdio <command> [args...]');
       out('    mcp register <name> [client|all]   mcp unregister <name> [client|all]   mcp disable|enable <name>');
       out('  customizations [list|marketplace|install|enable-skill|disable-skill]   manage plugins, skills, rules, agents & MCPs');
+      out('  skills sync [--dry-run] [--json]   copy the skills in the shared AI folder\'s skills folder into every tool and account');
       out('  rules [status|sources <file> [file ...]|sources --clear|sync] [--dry-run] [--json]   build every tool\'s global rules file from one list of files');
       out('  rules history <file> | rules restore <file> <version>   the saved copies of a rule file, and putting one back (then syncing)');
       out('  settings [shared-folder [<folder>|--clear]|backup-folders [name ...|--clear]] [--json]   the shared AI folder (default ~/.ai) and which of its folders a backup carries');

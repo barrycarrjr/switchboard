@@ -89,6 +89,34 @@ export function activeSharedFolder(settings, { home = os.homedir() } = {}) {
   return p && isDirectory(p) ? p : null;
 }
 
+/**
+ * `<shared folder>/skills` when the shared folder is set and that folder exists in it;
+ * null otherwise. Skills sync and the skills list both treat null as "no shared skills",
+ * so nothing is created and nothing already copied out is removed on its account.
+ */
+export function activeSharedSkillsFolder(settings, { home = os.homedir() } = {}) {
+  const shared = activeSharedFolder(settings, { home });
+  if (!shared) return null;
+  const dir = path.join(shared, 'skills');
+  return isDirectory(dir) ? dir : null;
+}
+
+/**
+ * The skills kept in a shared skills folder: each immediate subfolder (or link to one)
+ * holding a SKILL.md. A name carrying `.bak-` or `.before-` is a copy some tool or
+ * Switchboard set aside, not a skill of its own, so it is never handed out as one.
+ */
+export function listSharedSkillFolders(skillsDir) {
+  if (!skillsDir || !isDirectory(skillsDir)) return [];
+  let entries = [];
+  try { entries = fs.readdirSync(skillsDir, { withFileTypes: true }); } catch { return []; }
+  return entries
+    .filter((e) => isPlainFolderName(e.name) && !/\.bak-|\.before-/.test(e.name))
+    .map((e) => ({ name: e.name, dir: path.join(skillsDir, e.name) }))
+    .filter((s) => isDirectory(s.dir) && fs.existsSync(path.join(s.dir, 'SKILL.md')))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** The folder names a person can tick: the top-level folders that exist in it now. */
 export function listSharedSubfolders(folder) {
   if (!folder || !isDirectory(folder)) return [];

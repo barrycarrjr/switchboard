@@ -5142,6 +5142,27 @@ function rulesSourceSummary(st) {
   return { tone: behind || outside ? 'warn' : 'ok', text: parts.join(' · ') };
 }
 
+// One line saying whether every tool's skills folder holds the shared AI folder's
+// skills. Skipped folders (the shared folder itself, a link to a skill) are not
+// counted as out of step, because nothing needs writing there.
+function skillsSyncSummary(st) {
+  if (!st) return { tone: 'info', text: 'Could not read the skills state.' };
+  if (st.error) return { tone: 'bad', text: st.error };
+  if (st.off) return { tone: 'info', text: 'Off: ' + st.off + '. Put a folder per skill in the shared AI folder\'s skills folder to copy it to every tool.' };
+  const skills = st.skills || [];
+  const targets = st.targets || [];
+  const pending = targets.filter((t) => t.action !== 'same' && t.action !== 'skip');
+  const failed = targets.filter((t) => t.action === 'failed').length;
+  const kept = targets.filter((t) => t.keepAs).length;
+  const parts = [skills.length + ' shared skill' + (skills.length === 1 ? '' : 's')];
+  parts.push(pending.length ? pending.length + ' cop' + (pending.length === 1 ? 'y' : 'ies') + ' to update' : 'every copy in step');
+  if (kept) parts.push(kept + ' hand-kept cop' + (kept === 1 ? 'y' : 'ies') + ' to set aside first');
+  const central = (st.overridesCentral || []).length;
+  if (central) parts.push(central + ' also in Switchboard\'s own store, where the shared copy wins');
+  if (failed) parts.push(failed + ' could not be written');
+  return { tone: failed ? 'bad' : pending.length || central ? 'warn' : 'ok', text: parts.join(' · ') };
+}
+
 async function renderMcp() {
   const seq = beginRender('mcp');
   const realPanel = $('#tab-mcp');
@@ -5294,6 +5315,37 @@ async function renderMcp() {
     }
     skHead.appendChild(skSubPills);
     panel.appendChild(skHead);
+
+    // Skills from the shared AI folder: filled in once the dry run answers.
+    const skSyncRow = el('div', 'hc info');
+    skSyncRow.appendChild(el('div', 'hi', 'i'));
+    const skSyncText = el('div', 'hm', 'Skills from the shared AI folder<span>Checking...</span>');
+    skSyncRow.appendChild(skSyncText);
+    panel.appendChild(skSyncRow);
+    sb.skillsSyncState().then((st) => {
+      const t = skillsSyncSummary(st);
+      skSyncRow.className = 'hc ' + t.tone;
+      skSyncRow.firstChild.innerHTML = t.tone === 'ok' ? MARK.ok : 'i';
+      skSyncText.innerHTML = 'Skills from the shared AI folder<span>' + esc(t.text) + '</span>';
+      if (st && !st.off && !st.error) {
+        const syncBtn = el('button', 'btn', 'Sync now');
+        syncBtn.addEventListener('click', async () => {
+          syncBtn.disabled = true;
+          try {
+            const r = await sb.skillsSync();
+            const failed = r && Array.isArray(r.targets) ? r.targets.filter((x) => x.action === 'failed') : [];
+            toast(r && r.error ? r.error
+              : failed.length ? 'Could not write ' + failed.length + ' skill cop' + (failed.length === 1 ? 'y' : 'ies') + ': ' + failed.map((x) => x.path).join(', ')
+              : 'Skills synced to every tool.');
+          } catch (e) {
+            toast(mcpError(e));
+          } finally {
+            renderMcp();
+          }
+        });
+        skSyncRow.appendChild(syncBtn);
+      }
+    }).catch(() => { skSyncText.innerHTML = 'Skills from the shared AI folder<span>Could not read the skills state.</span>'; });
 
     for (const s of filteredSkills) {
       panel.appendChild(customizationSkillRow(s, custClients, renderMcp));
