@@ -415,9 +415,11 @@ export function loadCustomizationsState(file = customizationsFile()) {
       installedPlugins: Array.isArray(parsed?.installedPlugins) ? parsed.installedPlugins : [],
       disabledSkills: Array.isArray(parsed?.disabledSkills) ? parsed.disabledSkills : [],
       sources: Array.isArray(parsed?.sources) ? parsed.sources : [],
+      // The ordered rule files every instruction file is built from (core/rules-sync.js).
+      rulesSources: Array.isArray(parsed?.rulesSources) ? parsed.rulesSources.filter((s) => typeof s === 'string') : [],
     };
   } catch {
-    return { installedPlugins: [], disabledSkills: [], sources: [] };
+    return { installedPlugins: [], disabledSkills: [], sources: [], rulesSources: [] };
   }
 }
 
@@ -426,6 +428,7 @@ export function saveCustomizationsState(state, file = customizationsFile()) {
     installedPlugins: state?.installedPlugins ?? [],
     disabledSkills: state?.disabledSkills ?? [],
     sources: state?.sources ?? [],
+    rulesSources: state?.rulesSources ?? [],
   });
 }
 

@@ -279,16 +279,55 @@ agents, a multi-source marketplace, and provider-agnostic scheduled automations.
   recurring maintenance or audits can fail over across providers automatically.
 
 ```
-switchboard customizations [status] [--json]        installed plugins, skills, rules, agents and MCP
+switchboard customizations [list] [--json]          installed plugins, skills, rules, agents and MCP
 switchboard customizations marketplace [query]      search the trusted multi-source marketplace
-switchboard customizations install <name|owner/repo> [--client <id|all>]
-switchboard customizations skill <enable|disable> <name> [client|all]
-switchboard customizations sync-rule "<text>" [--client <id|all>]
+switchboard customizations install <name|owner/repo> [client|all]
+switchboard customizations enable-skill|disable-skill <name> <client>
+switchboard customizations enable-agent|disable-agent <name> <client>
 switchboard automations [list] [--json]             list scheduled provider-agnostic automations
 switchboard automations add "<name>" "<prompt>" [--every <minutes>] [--cwd <dir>]
 switchboard automations run <id>                    execute an automation immediately
 switchboard automations enable|disable|remove <id>
 ```
+
+### Rules from one source
+
+Every tool keeps its own global rules file, and every account of a tool keeps its own copy.
+Kept by hand, those copies drift apart until no two tools follow the same rules. Instead,
+name the rule files once, in the order they should be read:
+
+```
+switchboard rules sources <file> [file ...]   set the list (each must exist); --clear turns it off
+switchboard rules [status] [--json]           what a sync would change, without writing
+switchboard rules sync [--dry-run] [--json]   build every tool's rules file from the list now
+```
+
+- Switchboard joins the files in that order and writes the result into every account folder
+  it knows about, under the same file name the Customizations tab uses for each tool
+  (`CLAUDE.md` for Claude Code, `GEMINI.md` for Gemini and Antigravity, `AGENTS.md` for
+  Codex, Junie and the rest). Some tools in that list may read their global rules from
+  somewhere else; for those the file is harmless but not used. The top of each generated
+  file names the sources and says to edit those, not the copy.
+- Some tools cut a long rules file short without saying so (Antigravity was seen keeping
+  only the first 24,000 bytes or so). For those, whole files are copied in, in order, until
+  the next one would not fit, and the rest are listed at the end as files to read.
+- The tray app syncs at start, again a moment after any source file is saved, and every ten
+  minutes in case a folder cannot be watched (a list changed from the terminal is picked up
+  on that timer). A file already in step is not rewritten; one that changes is backed up
+  beside itself first.
+- A source that is missing or unreadable stops the whole sync, so a typo can never quietly
+  drop a rule from every tool at once. So does a source that is itself one of the files the
+  sync writes, which would otherwise feed its own output back in.
+- Only tools on this machine, and account folders that already exist, are written to.
+- Claude Code also reads every file in its `rules` folder by itself. If that folder already
+  holds every source (a link to the folder the sources live in, links to each source, or
+  copies with the same text), that account is left alone, because writing a `CLAUDE.md` as
+  well would load each rule twice. `switchboard rules` lists it as skipped, and says so if
+  an earlier generated `CLAUDE.md` is still there.
+- Switching it on replaces the rules files Switchboard writes to, so move anything that is
+  only in one tool's copy into a source file first. The first time a file Switchboard did
+  not generate is replaced, a copy is kept beside it as `<file>.before-switchboard-rules`
+  and never pruned; the ordinary backups keep only the newest three.
 
 ## Install
 

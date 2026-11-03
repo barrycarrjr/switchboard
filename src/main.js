@@ -63,6 +63,7 @@ import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
 import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
 import { createGatewayServer, provisionLocalAndWslClient, createSettingsWatcher, syncWslLeaseWrapper } from '../core/gateway.js';
+import { createRulesWatcher, loadRulesSources, saveRulesSources, syncRules } from '../core/rules-sync.js';
 import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, refreshStaleT3Environments, withT3Lock, forgetT3, wslDistrosCached } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
@@ -1208,6 +1209,15 @@ app.whenReady().then(async () => {
   }
   settingsWatcher = createSettingsWatcher({ file: settingsFile(), onChange: applyGatewaySettings });
 
+  // Rules from one source: build every tool's instruction file now, again the moment a
+  // source file is saved, and on a slow timer in case a folder cannot be watched. Files
+  // already in step are not rewritten, so the timer costs a few small reads.
+  startRulesSync([...installedIds]);
+  setInterval(async () => {
+    // Asked fresh each time, so a tool installed since startup is included.
+    runRulesSync(await installedCustomizationToolIds().catch(() => [...installedIds]));
+  }, 10 * 60 * 1000);
+
   refreshTrayFacts();
 
   // Quota watch: first pass shortly after startup, then every five minutes. Each pass
@@ -1229,7 +1239,38 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => { /* stay in the tray */ });
-app.on('before-quit', () => { quitting = true; settingsWatcher?.close(); gatewayServer.stop().catch(() => {}); });
+app.on('before-quit', () => { quitting = true; settingsWatcher?.close(); rulesWatcher?.close(); gatewayServer.stop().catch(() => {}); });
+
+let rulesWatcher = null;
+let rulesWatched = '';
+let lastRulesSync = null;
+
+function runRulesSync(installedToolIds) {
+  // The list can also be changed from a terminal (`switchboard rules sources`), which
+  // this process never hears about; notice it here and watch the new files instead.
+  if (JSON.stringify(loadRulesSources()) !== rulesWatched) watchRuleSources(installedToolIds);
+  try {
+    lastRulesSync = { at: new Date().toISOString(), ...syncRules({ installedToolIds }) };
+  } catch (e) {
+    // A missing source refuses the whole sync (see core/rules-sync.js); keep the reason
+    // for the Customizations tab rather than throwing out of a timer.
+    lastRulesSync = { at: new Date().toISOString(), error: e.message, sources: loadRulesSources(), targets: [] };
+  }
+  return lastRulesSync;
+}
+
+function watchRuleSources(installedToolIds) {
+  const sources = loadRulesSources();
+  rulesWatched = JSON.stringify(sources);
+  rulesWatcher?.close();
+  rulesWatcher = createRulesWatcher({ sources, onChange: () => runRulesSync(installedToolIds) });
+}
+
+/** (Re)start watching the current source list, then sync once. */
+function startRulesSync(installedToolIds) {
+  watchRuleSources(installedToolIds);
+  return runRulesSync(installedToolIds);
+}
 
 // ---- IPC: the renderer only ever talks to the core through these. ----
 
@@ -1923,6 +1964,23 @@ ipcMain.handle('sb:customizationsSyncRule', async (_e, { text = '', clients = []
   const installedToolIds = await installedCustomizationToolIds();
   return syncGlobalInstructionToClients(text, clients, { installedToolIds });
 });
+// Rules from one source. State is a dry run, so opening the tab never writes anything;
+// saving a new list restarts the watcher on the new files and syncs straight away.
+ipcMain.handle('sb:rulesState', async () => {
+  const installedToolIds = await installedCustomizationToolIds();
+  try {
+    return { ...syncRules({ dryRun: true, installedToolIds }), last: lastRulesSync };
+  } catch (e) {
+    return { error: e.message, sources: loadRulesSources(), targets: [], last: lastRulesSync };
+  }
+});
+
+ipcMain.handle('sb:rulesSetSources', async (_e, sources = []) => {
+  saveRulesSources(sources);
+  return startRulesSync(await installedCustomizationToolIds());
+});
+
+ipcMain.handle('sb:rulesSync', async () => runRulesSync(await installedCustomizationToolIds()));
 
 ipcMain.handle('sb:automationsState', () => {
   const state = loadAutomations();

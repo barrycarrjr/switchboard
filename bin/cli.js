@@ -37,6 +37,7 @@ import {
   toggleAutomation,
 } from '../core/automations.js';
 import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway.js';
+import { loadRulesSources, saveRulesSources, syncRules } from '../core/rules-sync.js';
 import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, forgetT3, runT3SignIn, liveT3Status } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS, chooseProvisionKey, gatewayEnabledSettings } from '../core/gateway-keys.js';
 import readline from 'node:readline/promises';
@@ -1841,6 +1842,44 @@ async function main() {
 
       throw new Error(`unknown customizations subcommand: ${sub}. Use list|marketplace|install|enable-skill|disable-skill|enable-agent|disable-agent`);
     }
+    case 'rules': {
+      // Build every tool's global instruction file from one ordered list of rule
+      // files. The work is all in core/rules-sync.js so the tray does the same.
+      const sub = args[0] && !args[0].startsWith('--') ? args[0] : 'status';
+      const json = args.includes('--json');
+      if (sub === 'sources') {
+        const files = args.slice(1).filter((a) => !a.startsWith('--'));
+        const saved = args.includes('--clear') ? saveRulesSources([]) : files.length ? saveRulesSources(files) : loadRulesSources();
+        if (json) { out(JSON.stringify(saved, null, 2)); return; }
+        if (!saved.length) { out('No rule sources set. Rules sync is off.'); return; }
+        out(`Rule sources, in order (${saved.length}):`);
+        saved.forEach((s, i) => out(`  ${i + 1}. ${s}`));
+        return;
+      }
+      if (sub !== 'status' && sub !== 'sync') {
+        throw new Error(`unknown rules subcommand: ${sub}. Use status|sources|sync`);
+      }
+      const installedIds = (await detectInstalled()).filter((t) => t.installed).map((t) => t.id);
+      const dryRun = sub === 'status' || args.includes('--dry-run');
+      const res = syncRules({ dryRun, installedToolIds: installedIds });
+      if (json) { out(JSON.stringify(res, null, 2)); return; }
+      if (!res.sources.length) {
+        out('No rule sources set. Set them with: switchboard rules sources <file> [file ...]');
+        return;
+      }
+      const words = dryRun
+        ? { write: 'out of date', create: 'missing', same: 'in step', skip: 'skipped', failed: 'failed' }
+        : { write: 'updated', create: 'created', same: 'in step', skip: 'skipped', failed: 'FAILED' };
+      out(`Rules built from ${res.sources.length} source file(s):`);
+      for (const t of res.targets) {
+        out(`  ${(words[t.action] ?? t.action).padEnd(12)} ${t.clientId.padEnd(12)} ${t.file}${t.reason ? `  (${t.reason})` : ''}`);
+      }
+      if (dryRun && res.targets.some((t) => t.action === 'write' || t.action === 'create')) {
+        out('Run `switchboard rules sync` to bring them in step.');
+      }
+      if (res.targets.some((t) => t.action === 'failed')) process.exitCode = 1;
+      return;
+    }
     case 'automations': {
       const sub = args[0] ?? 'list';
       const state = loadAutomations();
@@ -2167,7 +2206,7 @@ async function main() {
       throw new Error(`unknown keys subcommand: ${sub}. Use list|create|update|rename|scope|revoke`);
     }
     default:
-      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|gateway|t3|keys|watch|notify|mcp|customizations|automations|dry-run|run>`);
+      out(`switchboard <status|accounts|add|remove|use|color|detect|providers|doctor|quota|lanes|lane-token|gateway|t3|keys|watch|notify|mcp|customizations|rules|automations|dry-run|run>`);
       out('  status [--json]             full breakdown: active account, sign-in and usage');
       out('  accounts                    registered accounts (* = active)');
       out(`  add <${providerList}> <label> [folder]   leave out the folder for a brand-new account`);
@@ -2193,6 +2232,7 @@ async function main() {
       out('    mcp add <name> <https url>  |  mcp add <name> [-e KEY=VALUE ...] --stdio <command> [args...]');
       out('    mcp register <name> [client|all]   mcp unregister <name> [client|all]   mcp disable|enable <name>');
       out('  customizations [list|marketplace|install|enable-skill|disable-skill]   manage plugins, skills, rules, agents & MCPs');
+      out('  rules [status|sources <file> [file ...]|sources --clear|sync] [--dry-run] [--json]   build every tool\'s global rules file from one list of files');
       out('  automations [list|add|remove|toggle]   manage low-level provider-agnostic scheduled routines');
       out('  dry-run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--spec <file>] [--json] [--with-token]   explain which lane would be selected');
       out('  run [--provider <p>] [--account <id>] [--harnesses <a,b>] [--no-fallback] [--yes] [--quiet] [--spec <file>] <args...>   launch in the selected lane');

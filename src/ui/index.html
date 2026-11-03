@@ -4952,6 +4952,24 @@ document.addEventListener('click', () => {
   document.querySelectorAll('.cust-pop.open').forEach((n) => n.classList.remove('open'));
 });
 
+// One line saying whether every tool's rules file matches the rule sources.
+// "in step" counts only files Switchboard writes; a Claude account that reads the
+// sources straight from its rules folder is counted separately.
+function rulesSourceSummary(st) {
+  if (!st) return { tone: 'info', text: 'Could not read the rules state.' };
+  if (st.error) return { tone: 'bad', text: st.error };
+  const sources = st.sources || [];
+  if (!sources.length) return { tone: 'info', text: 'Off. Name the files every tool\'s rules are built from with: switchboard rules sources <file> [file ...]' };
+  const targets = st.targets || [];
+  const written = targets.filter((t) => t.action !== 'skip');
+  const behind = written.filter((t) => t.action !== 'same').length;
+  const direct = targets.length - written.length;
+  const parts = [sources.length + ' source file' + (sources.length === 1 ? '' : 's')];
+  parts.push(behind ? behind + ' of ' + written.length + ' rules files out of step' : 'all ' + written.length + ' rules files in step');
+  if (direct) parts.push(direct + ' Claude account' + (direct === 1 ? ' reads' : 's read') + ' the sources directly');
+  return { tone: behind ? 'warn' : 'ok', text: parts.join(' · ') };
+}
+
 async function renderMcp() {
   const seq = beginRender('mcp');
   const realPanel = $('#tab-mcp');
@@ -5143,6 +5161,36 @@ async function renderMcp() {
   if (custInstalledFilter === 'all' || custInstalledFilter === 'rules') {
     const filteredRules = rulesList.filter((rf) => matchesQuery([rf.clientName, rf.fileName, rf.preview, rf.path].join(' ')));
     panel.appendChild(el('div', 'grouphead', 'Global Rules (' + filteredRules.length + ' provider instruction files)'));
+    // Rules from one source: filled in once the dry run answers, so the tab never waits on it.
+    const srcRow = el('div', 'hc info');
+    srcRow.appendChild(el('div', 'hi', 'i'));
+    const srcText = el('div', 'hm', 'Rules from one source<span>Checking...</span>');
+    srcRow.appendChild(srcText);
+    panel.appendChild(srcRow);
+    sb.rulesState().then((st) => {
+      const t = rulesSourceSummary(st);
+      srcRow.className = 'hc ' + t.tone;
+      srcRow.firstChild.innerHTML = t.tone === 'ok' ? MARK.ok : 'i';
+      srcText.innerHTML = 'Rules from one source<span>' + esc(t.text) + '</span>';
+      if (st && st.sources && st.sources.length) {
+        const syncBtn = el('button', 'btn', 'Sync now');
+        syncBtn.addEventListener('click', async () => {
+          syncBtn.disabled = true;
+          try {
+            const r = await sb.rulesSync();
+            const failed = r && Array.isArray(r.targets) ? r.targets.filter((t) => t.action === 'failed') : [];
+            toast(r && r.error ? r.error
+              : failed.length ? 'Could not write ' + failed.length + ' rules file' + (failed.length === 1 ? '' : 's') + ': ' + failed.map((t) => t.file).join(', ')
+              : 'Rules synced to every tool.');
+          } catch (e) {
+            toast(mcpError(e));
+          } finally {
+            renderMcp();
+          }
+        });
+        srcRow.appendChild(syncBtn);
+      }
+    }).catch(() => { srcText.innerHTML = 'Rules from one source<span>Could not read the rules state.</span>'; });
     for (const rf of filteredRules) {
       const row = el('div', 'hc ' + (rf.exists ? 'ok' : 'info'));
       row.appendChild(el('div', 'hi', rf.exists ? MARK.ok : 'i'));
