@@ -59,12 +59,12 @@ import { addLane, removeLane, reorderLanes, setLaneBudget, resolveAllAccounts } 
 import { accountNote, colorDotBitmap, loginStatesFrom, trayFlyoutModel, trayModel, trayTooltip } from '../core/tray.js';
 import { readUserEnv, readMachineEnv } from '../core/env.js';
 import { dataDir, samePath, writeJsonAtomic } from '../core/paths.js';
-import { configSummary, createSwitchboardConfig, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
+import { CONFIG_SIZE_LIMIT, buildBackupConfig, configSummary, keepLocalEnv, parseSwitchboardConfig, settingsFromConfig } from '../core/config.js';
 import { checkThresholds, dispatchNotification, buildNotificationPayload, formatNotificationText, loadAlertMemory, saveAlertMemory } from '../core/hooks.js';
 import { createGatewayServer, provisionLocalAndWslClient, createSettingsWatcher, syncWslLeaseWrapper } from '../core/gateway.js';
 import { createRulesWatcher, loadRulesSources, saveRulesSources, sourcesOutsideSharedFolder, syncRules } from '../core/rules-sync.js';
 import { createSkillsWatcher, setSkillState, syncSkills } from '../core/skills-sync.js';
-import { activeSharedFolder, activeSharedSkillsFolder, sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
+import { activeSharedFolder, activeSharedSkillsFolder, sharedFolderProblem, sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
 import { listRuleVersions, restoreRuleVersion } from '../core/rules-history.js';
 import { collectFilesSection, describeSkipped, formatBytes, planFilesImport, restoreFilesSection, sharedSettingFor } from '../core/shared-backup.js';
 import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, refreshStaleT3Environments, withT3Lock, forgetT3, wslDistrosCached } from '../core/t3env-run.js';
@@ -137,15 +137,16 @@ function currentConfig() {
     if (active) activeAccounts[provider] = active.id;
   }
   const settings = loadSettings();
-  return createSwitchboardConfig({
+  return buildBackupConfig({
     registry: reg,
     settings,
     mcp: loadServers(),
     activeAccounts,
     // The shared AI folder's ticked folders and Switchboard's own skills, as text. Built
     // here for the export and for both recovery copies alike, so undoing an import or an
-    // upgrade puts the files back too.
-    files: collectFilesSection({ settings, rulesSources: loadRulesSources() }),
+    // upgrade puts the files back too. Core leaves them out, and says so, rather than
+    // let them make a copy that fails or that an import would refuse.
+    collectFiles: () => collectFilesSection({ settings, rulesSources: loadRulesSources() }),
   });
 }
 
@@ -247,8 +248,9 @@ function saveRecoveryConfig(kind) {
   if (!['before-import', 'before-upgrade'].includes(kind)) throw new Error('unknown recovery backup kind');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = path.join(dataDir(), 'backups', `${kind}-${stamp}.json`);
-  writeJsonAtomic(backupPath, currentConfig());
-  return backupPath;
+  const built = currentConfig();
+  writeJsonAtomic(backupPath, built.config);
+  return { backupPath, filesLeftOut: built.filesLeftOut };
 }
 
 async function stateSnapshot(forceAuthAccountId = null) {
@@ -1509,16 +1511,26 @@ ipcMain.handle('sb:configExport', async () => {
     filters: [{ name: 'Switchboard configuration', extensions: ['json'] }],
   });
   if (picked.canceled || !picked.filePath) return { ok: false };
-  const config = currentConfig();
-  fs.writeFileSync(picked.filePath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  const { config, text, filesLeftOut } = currentConfig();
+  fs.writeFileSync(picked.filePath, text, 'utf8');
   const skipped = config.files?.skipped ?? [];
-  if (skipped.length) {
+  const more = config.files?.skippedMore ?? 0;
+  if (filesLeftOut) {
+    await dialog.showMessageBox(win, {
+      type: 'warning',
+      title: 'Files were left out',
+      message: 'The export holds your records, but no files.',
+      detail: `${filesLeftOut}.`,
+      buttons: ['OK'],
+      noLink: true,
+    });
+  } else if (skipped.length) {
     // Every file left out is also listed inside the export; this says so at the time.
     await dialog.showMessageBox(win, {
       type: 'info',
       title: 'Some files were left out',
-      message: `${skipped.length} file(s) were left out of the export.`,
-      detail: describeSkipped(skipped).join('\n'),
+      message: `${skipped.length + more} file(s) were left out of the export.`,
+      detail: describeSkipped(skipped, 15, more).join('\n'),
       buttons: ['OK'],
       noLink: true,
     });
@@ -1535,8 +1547,8 @@ ipcMain.handle('sb:configImport', async () => {
   });
   if (picked.canceled || !picked.filePaths[0]) return { ok: false };
   const filePath = picked.filePaths[0];
-  // Room for the files section, which is capped at 15 MB of text (core/shared-backup.js).
-  if (fs.statSync(filePath).size > 20 * 1024 * 1024) throw new Error('the selected config is too large');
+  // The same limit every export and recovery copy is held to (core/config.js).
+  if (fs.statSync(filePath).size > CONFIG_SIZE_LIMIT) throw new Error('the selected config is too large');
   const imported = parseSwitchboardConfig(fs.readFileSync(filePath, 'utf8'));
   const summary = configSummary(imported);
   const filesPlan = imported.files ? planFilesImport(imported.files) : null;
@@ -1544,11 +1556,14 @@ ipcMain.handle('sb:configImport', async () => {
   if (filesPlan) {
     const f = filesPlan.summary;
     detail += `\n\nFiles: ${f.folders} folder(s), ${f.files} file(s), ${formatBytes(f.bytes)}. A file already here with different text is kept beside it as <file>.before-import-<time>.`;
-    if (filesPlan.needsFolder) detail += `\nShared AI folder on this machine: ${filesPlan.suggested}`;
-    if (f.skipped) detail += `\n\nLeft out when the backup was made:\n${describeSkipped(imported.files.skipped).join('\n')}`;
+    // Always named, files or not: the import stores this folder as the setting, and it
+    // is where every later sync and export reads from.
+    detail += `\nShared AI folder on this machine: ${filesPlan.suggested ?? 'off, as in the backup'}`;
+    if (filesPlan.refused) detail += `\nThe backup names ${filesPlan.refused.folder} as its shared AI folder. That is not used, because ${filesPlan.refused.reason}.`;
+    if (f.skipped) detail += `\n\nLeft out when the backup was made:\n${describeSkipped(imported.files.skipped, 15, imported.files.skippedMore).join('\n')}`;
   }
   detail += '\n\nThis does not copy, delete, or change vendor credential folders. MCP client registrations and sign-ins also remain untouched.';
-  const buttons = filesPlan?.needsFolder ? ['Import', 'Import into another folder...', 'Cancel'] : ['Import', 'Cancel'];
+  const buttons = filesPlan ? ['Import', 'Import into another folder...', 'Cancel'] : ['Import', 'Cancel'];
   const answer = await dialog.showMessageBox(win, {
     type: 'warning',
     title: 'Import Switchboard configuration?',
@@ -1561,7 +1576,7 @@ ipcMain.handle('sb:configImport', async () => {
   });
   if (answer.response === buttons.length - 1) return { ok: false };
   let sharedRoot = filesPlan?.suggested ?? null;
-  if (filesPlan?.needsFolder && answer.response === 1) {
+  if (filesPlan && answer.response === 1) {
     const chosen = await dialog.showOpenDialog(win, {
       title: 'Where should the shared AI folder go on this machine?',
       defaultPath: sharedRoot ?? app.getPath('home'),
@@ -1570,9 +1585,15 @@ ipcMain.handle('sb:configImport', async () => {
     if (chosen.canceled || !chosen.filePaths[0]) return { ok: false };
     sharedRoot = chosen.filePaths[0];
   }
+  // Checked by the same rule as Settings and `switchboard settings`, before anything is
+  // written: a folder chosen here must be one those would accept.
+  if (sharedRoot) {
+    const problem = sharedFolderProblem(sharedRoot);
+    if (problem) throw new Error(`${sharedRoot} cannot be the shared AI folder: ${problem}`);
+  }
 
   // Keep a known-good, importable snapshot before changing any of the three data files.
-  const backupPath = saveRecoveryConfig('before-import');
+  const { backupPath, filesLeftOut } = saveRecoveryConfig('before-import');
 
   const oldRegistry = registry();
   const oldSettings = loadSettings();
@@ -1581,7 +1602,9 @@ ipcMain.handle('sb:configImport', async () => {
   const nextSettings = settingsFromConfig(imported, oldSettings);
   if (imported.files) {
     // Saved with the other records, before the rule list below is checked against it.
-    nextSettings.sharedAiFolder = filesPlan.needsFolder ? sharedSettingFor(sharedRoot) : imported.files.sharedFolder;
+    // Only the folder the confirmation named (or the one chosen), never the backup's own
+    // value unchecked.
+    nextSettings.sharedAiFolder = sharedSettingFor(sharedRoot);
   }
   // The copies held for switched-off servers are not part of an exported config and are
   // not something an import should throw away: they are the only way those servers come
@@ -1603,9 +1626,10 @@ ipcMain.handle('sb:configImport', async () => {
   }
 
   const warnings = [];
+  if (filesLeftOut) warnings.push(`The pre-import backup holds your records only: ${filesLeftOut}.`);
   let filesResult = null;
   if (imported.files) {
-    filesResult = restoreFilesSection(imported.files, { sharedRoot: filesPlan.needsFolder ? sharedRoot : null });
+    filesResult = restoreFilesSection(imported.files, { sharedRoot });
     const s = loadSettings();
     s.sharedAiBackupFolders = filesResult.backupFolders;
     saveSettings(s);
@@ -2630,7 +2654,9 @@ ipcMain.handle('sb:updateRun', async (_e, tag, assetUrl) => {
   });
   // The installer is not allowed to start unless the current configuration has
   // landed safely on disk in the same importable format as a manual export.
-  const backupPath = saveRecoveryConfig('before-upgrade');
+  // A copy without its files still holds every record, so the upgrade goes ahead and the
+  // reason is passed back rather than stopping it.
+  const { backupPath, filesLeftOut } = saveRecoveryConfig('before-upgrade');
   // A short hold so the "restarting" state is legible even on a connection fast
   // enough to finish the download in a blink; then the installer closes the app,
   // upgrades in place, and relaunches.
@@ -2645,7 +2671,7 @@ ipcMain.handle('sb:updateRun', async (_e, tag, assetUrl) => {
     }
     app.quit();
   }, 400);
-  return { ok: true, backupPath };
+  return { ok: true, backupPath, filesLeftOut };
 });
 
 ipcMain.handle('sb:getUpdateRepo', () => effectiveUpdateRepo());

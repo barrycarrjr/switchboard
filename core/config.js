@@ -234,6 +234,44 @@ export function createSwitchboardConfig({ registry, settings, mcp, activeAccount
 }
 
 /**
+ * The largest config file an import reads. It leaves room above the 15 MB the files
+ * section may hold (core/shared-backup.js) for the records and for the left-out list.
+ */
+export const CONFIG_SIZE_LIMIT = 20 * 1024 * 1024;
+
+/** A config as it is written to disk, by an export and by writeJsonAtomic alike. */
+export function serializeConfig(config) {
+  return `${JSON.stringify(config, null, 2)}\n`;
+}
+
+/**
+ * The config an export or a recovery copy writes, with its files section when that can
+ * be carried. The files section is the only part that can grow large or fail, and a
+ * recovery copy that fails stops an import or an upgrade, so when the files cannot be
+ * gathered, or would make the file larger than an import accepts, the config is written
+ * without them and `filesLeftOut` says why. The accounts and other records always
+ * travel.
+ *
+ * @returns {{ config: object, text: string, filesLeftOut: string|null }}
+ */
+export function buildBackupConfig({ registry, settings, mcp, activeAccounts = {}, collectFiles = null, now = new Date(), sizeLimit = CONFIG_SIZE_LIMIT }) {
+  const base = { registry, settings, mcp, activeAccounts, now };
+  let filesLeftOut = null;
+  if (collectFiles) {
+    try {
+      const config = createSwitchboardConfig({ ...base, files: collectFiles() });
+      const text = serializeConfig(config);
+      if (Buffer.byteLength(text, 'utf8') <= sizeLimit) return { config, text, filesLeftOut };
+      filesLeftOut = `the shared AI folder and skill files were left out, because with them the backup would be too large to import (over ${Math.round(sizeLimit / (1024 * 1024))} MB)`;
+    } catch (error) {
+      filesLeftOut = `the shared AI folder and skill files were left out, because they could not be gathered: ${error.message || error}`;
+    }
+  }
+  const config = createSwitchboardConfig(base);
+  return { config, text: serializeConfig(config), filesLeftOut };
+}
+
+/**
  * A local MCP server's environment values are left out of an export. They are where such
  * a server keeps its API keys, and an export is a file people copy, attach and keep, which
  * is why it promises to carry no tokens. The server itself still travels, so a new machine

@@ -40,7 +40,9 @@ import {
  *   skipped, as is a same-name entry that is a link to the source: writing there would
  *   write onto the source itself.
  * - A link in a tool's skills folder is never treated as a copy Switchboard made, so it
- *   is never removed and nothing is deleted through it.
+ *   is never removed, never taken over, and nothing is written or deleted through it.
+ * - A hand copy taken over in place says so in its marker, and is set aside rather than
+ *   deleted when its shared skill goes, like any other copy that was the person's own.
  */
 
 export const SKILL_MARKER = '.switchboard-skill.json';
@@ -124,13 +126,31 @@ function readMarker(dir) {
   }
 }
 
-function writeMarker(dir, name, hash) {
+/**
+ * `takenOver` records that the folder was a person's own copy before Switchboard took it
+ * over in place. Such a folder is not Switchboard's to delete: when its shared skill goes,
+ * it is set aside like any other hand copy, because the person had it before the sync did.
+ */
+function writeMarker(dir, name, hash, { takenOver = false } = {}) {
   writeJsonAtomic(path.join(dir, SKILL_MARKER), {
     managedBy: 'switchboard',
     skill: name,
     hash,
+    ...(takenOver ? { takenOver: true } : {}),
     note: 'Copied by Switchboard from the shared AI folder. Edit the skill there, not here: the next sync replaces this folder.',
   });
+}
+
+/**
+ * Is this entry a link (a symbolic link or junction), or reached through one? Checked
+ * both ways because a link is not always reported by lstat: the entry's real location
+ * differing from where it sits says the same.
+ */
+function isLinkedEntry(entry) {
+  if (isLink(entry)) return true;
+  const real = realOrSelf(entry).toLowerCase();
+  const expected = path.join(realOrSelf(path.dirname(entry)), path.basename(entry)).toLowerCase();
+  return real !== expected;
 }
 
 /** A free place beside the skills folder for a copy that has to make way. */
@@ -224,7 +244,16 @@ export function planSkillsSync(opts = {}) {
         targets.push({ ...t, action: 'skip', reason: 'already a link to the shared copy' });
         continue;
       }
+      // Any other link is left exactly as it is. Taking it over would write a marker into
+      // whatever folder it leads to (another person's folder, or another shared skill,
+      // which the watcher would see and sync again, over and over), and replacing it would
+      // copy over the folder it leads to.
+      if (present && isLinkedEntry(dest)) {
+        targets.push({ ...t, action: 'skip', reason: 'a link to another folder; Switchboard never writes through a link, so it is left alone' });
+        continue;
+      }
       const marker = present ? readMarker(dest) : null;
+      const takenOver = marker?.takenOver === true;
       let isDir = false;
       try { isDir = fs.statSync(dest).isDirectory(); } catch { /* absent or a broken link */ }
       const current = present && isDir ? skillContent(dest) : null;
@@ -246,7 +275,7 @@ export function planSkillsSync(opts = {}) {
       if (!present) { targets.push({ ...t, action: 'create', hash: s.hash }); continue; }
       if (marker) {
         if (current?.hash === s.hash) {
-          targets.push({ ...t, action: marker.hash === s.hash ? 'same' : 'write', hash: s.hash });
+          targets.push({ ...t, action: marker.hash === s.hash ? 'same' : 'write', hash: s.hash, takenOver });
           continue;
         }
         // Edited in place since Switchboard wrote it: keep those edits before replacing.
@@ -255,14 +284,16 @@ export function planSkillsSync(opts = {}) {
           ...t,
           action: 'write',
           hash: s.hash,
+          takenOver,
           ...(edited ? { keepAs: keepPathFor(f.dir, s.name), reason: 'this copy was edited by hand; the edited copy is kept' } : {}),
         });
         continue;
       }
       if (current?.hash === s.hash) {
         // A hand copy identical to the source loses nothing by being taken over, and
-        // moving it aside would only leave a duplicate behind.
-        targets.push({ ...t, action: 'adopt', hash: s.hash, reason: 'an identical copy made by hand is taken over' });
+        // moving it aside would only leave a duplicate behind. The marker says it was
+        // taken over, so it is set aside rather than deleted if the shared skill goes.
+        targets.push({ ...t, action: 'adopt', hash: s.hash, takenOver: true, reason: 'an identical copy made by hand is taken over' });
         continue;
       }
       targets.push({
@@ -283,17 +314,22 @@ export function planSkillsSync(opts = {}) {
       // the loop above has just written it.
       if (skills.some((s) => s.name.toLowerCase() === name.toLowerCase()) || isSwitchboardFile(name)) continue;
       const dest = path.join(f.dir, name);
+      if (isLinkedEntry(dest)) continue;
       const marker = readMarker(dest);
       if (!marker) continue;
       let current = null;
       try { current = fs.statSync(dest).isDirectory() ? skillContent(dest) : null; } catch { current = null; }
+      const edited = current?.hash !== marker.hash;
+      const takenOver = marker.takenOver === true;
       targets.push({
         ...base,
         skill: name,
         path: dest,
         action: 'remove',
-        reason: 'no longer in the shared skills folder',
-        ...(current?.hash !== marker.hash ? { keepAs: keepPathFor(f.dir, name) } : {}),
+        reason: takenOver && !edited
+          ? 'no longer in the shared skills folder; it was a hand-kept copy before Switchboard took it over, so it is set aside, not deleted'
+          : 'no longer in the shared skills folder',
+        ...(edited || takenOver ? { keepAs: keepPathFor(f.dir, name) } : {}),
       });
     }
   }
@@ -334,9 +370,14 @@ function updateSkillFiles(skill, dest) {
   }
 }
 
+/**
+ * Move a copy out of the skills folder. The marker is dropped from the copy set aside:
+ * it is no longer a folder the sync manages, and a marker left in it would claim it was.
+ */
 function moveAside(from, to) {
   ensureDir(path.dirname(to));
   fs.renameSync(from, to);
+  if (!isLink(to)) fs.rmSync(path.join(to, SKILL_MARKER), { force: true });
 }
 
 /**
@@ -356,7 +397,7 @@ export function syncSkills(opts = {}) {
         if (t.keepAs) moveAside(t.path, t.keepAs);
         else fs.rmSync(t.path, { recursive: true, force: true });
       } else if (t.action === 'adopt') {
-        writeMarker(t.path, skill.name, skill.hash);
+        writeMarker(t.path, skill.name, skill.hash, { takenOver: true });
       } else if (t.action === 'create') {
         copySkillFiles(skill, t.path);
         writeMarker(t.path, skill.name, skill.hash);
@@ -367,7 +408,7 @@ export function syncSkills(opts = {}) {
         } else {
           updateSkillFiles(skill, t.path);
         }
-        writeMarker(t.path, skill.name, skill.hash);
+        writeMarker(t.path, skill.name, skill.hash, { takenOver: t.takenOver === true });
       }
       return t;
     } catch (e) {

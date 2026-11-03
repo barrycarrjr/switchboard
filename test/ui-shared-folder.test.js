@@ -38,6 +38,12 @@ test('the card says plainly when the folder is off or not there yet, and shows t
   assert.equal(sharedFolderLine({ path: 'X:\\home\\.ai', exists: true }), 'X:\\home\\.ai');
 });
 
+test('the card says why a stored folder cannot be used, rather than showing it as the folder in use', () => {
+  const line = sharedFolderLine({ path: 'X:\\home', exists: false, problem: 'it is your home folder itself' });
+  assert.match(line, /^X:\\home cannot be used: it is your home folder itself\./);
+  assert.match(line, /Choose another folder/);
+});
+
 test('unticking a folder keeps the ticks for folders that are not there right now', () => {
   assert.deepEqual(toggledBackupFolders(['rules', 'skills'], 'rules', false), ['skills']);
   assert.deepEqual(toggledBackupFolders(['skills'], 'scripts', true), ['skills', 'scripts']);

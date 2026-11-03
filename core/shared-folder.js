@@ -34,13 +34,28 @@ export function isPlainFolderName(name) {
   return !/[\\/:\0*?"<>|]/.test(n);
 }
 
+/**
+ * Why a folder name cannot be ticked for backups, or null when it can. A hidden name
+ * (one starting with a dot) is refused as well as an unsafe one: `.ssh`, `.aws` and
+ * `.claude` are where keys and tool settings live, and a tick is what puts a folder's
+ * files into every export and lets an import write into it. A shared folder has no
+ * business holding one of those, so no route (the page, the command line, an import)
+ * may tick one.
+ */
+export function backupFolderNameProblem(name) {
+  if (!isPlainFolderName(name)) return 'not a plain folder name';
+  if (name.startsWith('.')) return 'a hidden folder, which a backup never carries';
+  return null;
+}
+
 /** Clean list of folder names: refuses a bad name rather than quietly dropping it. */
 export function normalizeBackupFolders(names) {
   if (!Array.isArray(names)) throw new Error('backup folders must be a list of folder names');
   const out = [];
   for (const raw of names) {
     const name = String(raw ?? '').trim();
-    if (!isPlainFolderName(name)) throw new Error(`not a plain folder name: ${raw}`);
+    const problem = backupFolderNameProblem(name);
+    if (problem) throw new Error(`${problem}: ${raw}`);
     if (!out.some((n) => n.toLowerCase() === name.toLowerCase())) out.push(name);
   }
   return out;
@@ -68,6 +83,76 @@ export function toSettingPath(folder, home = os.homedir()) {
   return abs;
 }
 
+/** `\\server\share`, `//server/share`, and the `\\?\` and `\\.\` device forms alike. */
+function isNetworkPath(p) {
+  return /^[\\/]{2}/.test(String(p ?? ''));
+}
+
+function realOrNull(p) {
+  try { return fs.realpathSync.native(p); } catch { return null; }
+}
+
+/**
+ * Where `p` really is: the real location of the nearest part of it that exists, with
+ * the rest added back. A folder that does not exist yet still lands wherever its
+ * nearest existing parent leads, so a link in the way is seen before anything is made.
+ */
+function realLocation(p) {
+  let probe = path.resolve(p);
+  const rest = [];
+  while (!fs.existsSync(probe) && probe !== path.dirname(probe)) {
+    rest.unshift(path.basename(probe));
+    probe = path.dirname(probe);
+  }
+  const real = realOrNull(probe);
+  return real ? path.join(real, ...rest) : null;
+}
+
+function strictlyInside(p, dir) {
+  const rel = path.relative(path.resolve(dir).toLowerCase(), path.resolve(p).toLowerCase());
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+function placeProblem(p, home) {
+  if (isNetworkPath(p)) return 'it is a network folder, and the shared AI folder must be on this computer';
+  if (path.resolve(p).toLowerCase() === path.resolve(home).toLowerCase()) return 'it is your home folder itself; choose a folder inside it, such as ~/.ai';
+  if (!strictlyInside(p, home)) return 'it is outside your home folder; choose a folder inside it, such as ~/.ai';
+  return null;
+}
+
+/**
+ * Why a folder cannot be the shared AI folder, or null when it can (or when the value
+ * is empty, which switches the folder off).
+ *
+ * The folder is where an import writes files and what every export reads, and its
+ * `skills` folder is copied into every tool. So it must be a folder of the user's own,
+ * strictly inside the home folder: the home folder itself would let an import write a
+ * tool's settings or a Startup entry, and its ticks would carry `.ssh` into every
+ * export; a folder elsewhere could be anyone's; and a network folder would let a
+ * remote server decide which skills every tool loads. A link is followed before the
+ * check, so `~/x` leading to one of those places is refused too. A mapped drive that
+ * is really a network share cannot be told from a local drive this way and is not
+ * caught here.
+ */
+export function sharedFolderProblem(value, { home = os.homedir() } = {}) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  if (/\0/.test(raw)) return 'it is not a folder path';
+  if (isNetworkPath(raw)) return placeProblem(raw, home);
+  const resolved = expandHome(raw, home);
+  const literal = placeProblem(resolved, home);
+  if (literal) return literal;
+  const real = realLocation(resolved);
+  const realHome = realOrNull(home) ?? path.resolve(home);
+  return real ? placeProblem(real, realHome) : null;
+}
+
+/** sharedFolderProblem as an error, for a route that is about to store or use the folder. */
+export function checkSharedFolder(value, { home = os.homedir() } = {}) {
+  const problem = sharedFolderProblem(value, { home });
+  if (problem) throw new Error(`${expandHome(value, home) || value} cannot be the shared AI folder: ${problem}`);
+}
+
 /** The stored setting: the default when never set, an empty string when switched off. */
 export function sharedFolderSetting(settings) {
   const v = settings?.sharedAiFolder;
@@ -83,10 +168,16 @@ function isDirectory(p) {
   try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }
 
-/** The shared folder when it is set AND exists; null otherwise, so callers treat it as absent. */
+/**
+ * The shared folder when it is set, allowed AND exists; null otherwise, so callers treat
+ * it as absent. A stored value that is not allowed (an older version stored it, or the
+ * settings file was edited by hand) is checked here too, so nothing ever reads from or
+ * writes into such a folder whichever way the value got there.
+ */
 export function activeSharedFolder(settings, { home = os.homedir() } = {}) {
   const p = sharedFolderPath(settings, { home });
-  return p && isDirectory(p) ? p : null;
+  if (!p || sharedFolderProblem(sharedFolderSetting(settings), { home })) return null;
+  return isDirectory(p) ? p : null;
 }
 
 /**
@@ -123,7 +214,7 @@ export function listSharedSubfolders(folder) {
   let entries = [];
   try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return []; }
   return entries
-    .filter((e) => isPlainFolderName(e.name) && (e.isDirectory() || (e.isSymbolicLink() && isDirectory(path.join(folder, e.name)))))
+    .filter((e) => !backupFolderNameProblem(e.name) && (e.isDirectory() || (e.isSymbolicLink() && isDirectory(path.join(folder, e.name)))))
     .map((e) => e.name)
     .sort((a, b) => a.localeCompare(b));
 }
@@ -149,23 +240,26 @@ export function isInsideFolder(file, dir) {
 
 /**
  * Everything the Settings page and `switchboard settings` show about the folder.
- * `subfolders` lists only folders that exist, each with whether it is ticked.
+ * `subfolders` lists only folders that exist, each with whether it is ticked. A stored
+ * folder that is not allowed is reported with `problem` and treated as absent.
  */
 export function sharedFolderState(settings, { home = os.homedir() } = {}) {
   const setting = sharedFolderSetting(settings);
   const resolved = sharedFolderPath(settings, { home });
-  const exists = Boolean(resolved && isDirectory(resolved));
+  const problem = resolved ? sharedFolderProblem(setting, { home }) : null;
+  const exists = Boolean(resolved && !problem && isDirectory(resolved));
   const ticks = backupFolderSetting(settings);
   const subfolders = exists
     ? listSharedSubfolders(resolved).map((name) => ({ name, ticked: ticks.some((t) => t.toLowerCase() === name.toLowerCase()) }))
     : [];
-  return { setting, path: resolved, exists, backupFolders: ticks, subfolders };
+  return { setting, path: resolved, exists, problem, backupFolders: ticks, subfolders };
 }
 
 /** Settings with a new shared folder. `''` (or null) switches it off. */
 export function withSharedFolder(settings, value, { home = os.homedir() } = {}) {
   const raw = value == null ? '' : String(value).trim();
   if (/\0/.test(raw)) throw new Error('not a folder path');
+  checkSharedFolder(raw, { home });
   const stored = raw ? toSettingPath(raw, home) : '';
   if (stored) {
     const resolved = expandHome(stored, home);

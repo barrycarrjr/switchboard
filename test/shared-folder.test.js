@@ -10,8 +10,10 @@ import {
   DEFAULT_SHARED_AI_FOLDER,
   activeSharedFolder,
   isPlainFolderName,
+  listSharedSubfolders,
   normalizeBackupFolders,
   sharedFolderPath,
+  sharedFolderProblem,
   sharedFolderState,
   toSettingPath,
   withBackupFolders,
@@ -99,6 +101,58 @@ test('a backup folder is a plain name: separators and .. are refused', () => {
   assert.deepEqual(withBackupFolders({}, ['scripts']).sharedAiBackupFolders, ['scripts']);
 });
 
+test('the shared folder must sit inside the home folder: home itself, a folder outside it and a network share are refused', () => {
+  const m = machine();
+  const refused = [
+    ['~', /home folder itself/],
+    [m.home, /home folder itself/],
+    [`${m.home}${path.sep}`, /home folder itself/],
+    [path.join(m.base, 'other'), /outside your home folder/],
+    [path.join(m.home, '..', 'other'), /outside your home folder/],
+    ['\\\\server\\share\\ai', /network/],
+    ['//server/share/ai', /network/],
+  ];
+  for (const [value, why] of refused) {
+    assert.match(String(sharedFolderProblem(value, { home: m.home })), why, value);
+    assert.throws(() => withSharedFolder({}, value, { home: m.home }), why, value);
+  }
+  assert.equal(sharedFolderProblem('~/.ai', { home: m.home }), null);
+  assert.equal(sharedFolderProblem(path.join(m.home, 'shared', 'ai'), { home: m.home }), null);
+  assert.equal(sharedFolderProblem('', { home: m.home }), null, 'off is always allowed');
+  assert.equal(withSharedFolder({}, '~/.ai', { home: m.home }).sharedAiFolder, '~/.ai');
+});
+
+test('a folder under home that is a link to somewhere outside it is refused, even before the folder exists', () => {
+  const m = machine();
+  const outside = path.join(m.base, 'outside');
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, path.join(m.home, 'linked'), 'junction');
+  assert.match(String(sharedFolderProblem('~/linked', { home: m.home })), /outside your home folder/);
+  assert.match(String(sharedFolderProblem('~/linked/not-yet', { home: m.home })), /outside your home folder/);
+});
+
+test('a stored folder that is not allowed is treated as absent, and the state says why', () => {
+  const m = machine();
+  m.file('.ssh/id_key', 'secret');
+  const settings = { sharedAiFolder: '~' };
+  assert.equal(activeSharedFolder(settings, { home: m.home }), null);
+  const state = sharedFolderState(settings, { home: m.home });
+  assert.equal(state.exists, false);
+  assert.deepEqual(state.subfolders, []);
+  assert.match(state.problem, /home folder itself/);
+  assert.equal(sharedFolderState({ sharedAiFolder: '~/.ai' }, { home: m.home }).problem, null);
+});
+
+test('a hidden folder name can never be ticked, and is not offered as a tick', () => {
+  const m = machine();
+  for (const bad of ['.ssh', '.aws', '.claude', '.git']) {
+    assert.throws(() => normalizeBackupFolders([bad]), /hidden folder/, bad);
+  }
+  m.file('.ai/rules/a.md');
+  m.file('.ai/.git/HEAD');
+  assert.deepEqual(listSharedSubfolders(path.join(m.home, '.ai')), ['rules']);
+});
+
 test('ticks edited by hand into something unsafe read back as the default', () => {
   const m = machine();
   fs.writeFileSync(m.settingsPath, JSON.stringify({ sharedAiBackupFolders: ['../../evil'], sharedAiFolder: 7 }), 'utf8');
@@ -182,4 +236,18 @@ test('switchboard settings backup-folders stores plain names and refuses a path'
   assert.match(r.err, /not a plain folder name/);
   r = cli(m, 'help');
   assert.match(r.out, /settings \[shared-folder/);
+});
+
+test('switchboard settings refuses a shared folder outside home or a hidden tick, and changes nothing', () => {
+  const m = machine();
+  let r = cli(m, 'settings', 'shared-folder', '~');
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /home folder itself/);
+  r = cli(m, 'settings', 'shared-folder', '\\\\server\\share');
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /network/);
+  r = cli(m, 'settings', 'backup-folders', '.ssh');
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /hidden folder/);
+  assert.equal(fs.existsSync(m.settingsPath), false, 'nothing was saved');
 });

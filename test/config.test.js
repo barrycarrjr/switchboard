@@ -150,7 +150,7 @@ test('the updater writes a recovery config before launching setup', () => {
   const launch = main.indexOf("spawn(exe, []", updater);
   assert.ok(backup >= 0, 'the updater creates its recovery backup');
   assert.ok(launch > backup, 'setup launches only after the backup is written');
-  assert.match(main.slice(updater, launch), /const backupPath = saveRecoveryConfig\('before-upgrade'\)/);
+  assert.match(main.slice(updater, launch), /const \{ backupPath, filesLeftOut \} = saveRecoveryConfig\('before-upgrade'\)/);
   const quit = main.indexOf('app.quit()', launch);
   assert.ok(quit > launch, 'app quits after spawning installer so files are unlocked');
 });

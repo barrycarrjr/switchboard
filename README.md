@@ -383,10 +383,16 @@ switchboard skills sync [--dry-run] [--json]   copy the shared skills out now (-
   (never pruned; a later one gets `-2`, `-3` and so on) before the shared copy is written.
   It goes beside the skills folder rather than inside it, because a tool that loads every
   folder in `skills` would load the set-aside copy as a second skill of the same name. A
-  hand copy identical to the shared one is simply taken over. A copy Switchboard wrote and
-  someone later edited is set aside the same way before it is replaced.
-- A copy Switchboard wrote whose skill has left the shared folder is removed. A folder
-  without the marker, or a link, is never removed.
+  hand copy identical to the shared one is taken over in place, and its marker records
+  that it was. A copy Switchboard wrote and someone later edited is set aside the same way
+  before it is replaced.
+- A copy Switchboard wrote whose skill has left the shared folder is removed. A copy that
+  was taken over from a hand-kept folder, or that was edited, is set aside into
+  `skills.before-switchboard-skills/<name>` instead, without its marker, because it was
+  the person's own. A folder without the marker, or a link, is never removed.
+- A same-name entry that is a link (a symbolic link or junction) to any folder other than
+  its shared one is skipped and reported, even when the content matches: Switchboard never
+  writes through a link.
 - Switching a skill off for one tool in the Customizations tab (or with
   `switchboard customizations disable-skill <name> <client>`) is remembered, so the sync
   does not copy it back there, and removes the copy it wrote. Switching it on copies it
@@ -415,9 +421,15 @@ switchboard settings backup-folders <name> [name ...]  which of its top-level fo
 
 - Switchboard never creates the folder because the setting names it. Until it exists,
   nothing uses it and rule files can live anywhere.
+- It must be a folder inside your home folder: the home folder itself, a folder outside
+  it (a link leading outside it included) and a network folder (`\\server\share`) are
+  refused, from Settings, the command line and an import alike. A stored value like that
+  (from a hand-edited settings file) is shown with the reason and treated as absent. A
+  mapped drive letter that is really a network share is not detected.
 - "Back up these folders" lists the folders that exist inside it, each with a tick box. A
   fresh install ticks `rules` and `skills`. Ticks are plain folder names; a name with a
-  slash, a backslash or `..` is refused.
+  slash, a backslash or `..` is refused, and so is a hidden name (one starting with a
+  dot, such as `.ssh`), which is not offered either.
 - Its `skills` folder, when there is one, is copied to every tool (see "Skills from the
   shared AI folder" above).
 - Once the folder exists, a rule file added to the list must be inside it, and anything
@@ -456,15 +468,27 @@ The export and both recovery copies also carry a `files` section: the shared AI 
 setting and its ticks, the rule file list stored relative to the shared folder, the text of
 every file in each ticked folder (by path relative to the shared folder), and every file in
 Switchboard's own skills folder (`%APPDATA%\Switchboard\customizations\skills`). Only text
-travels: a file holding a NUL byte, one that is not UTF-8, one over 1 MB, and anything past
-15 MB in total are left out, each listed with its reason in the export and in a message when
-it is made. Switchboard's own backup copies (`*.bak-*`, `*.before-switchboard-rules`,
-`*.before-import-*`) are left out without a note, and nothing outside those two folders is
-ever included, including through a link.
+travels: a file holding a NUL byte, one that is not UTF-8, and one over 1 MB are left out,
+and the files stop at 15 MB in total, counted as written into the export. Switchboard's
+own skills are read first, so a large shared folder cannot crowd them out. Once the 15 MB
+is spent nothing further is read, and `node_modules`, `.git`, `__pycache__` and `.venv`
+folders are left out whole. What is left out is listed with its reason in the export and in
+a message when it is made; the list keeps 200 entries and counts the rest. Switchboard's own
+backup copies (`*.bak-*`, `*.before-switchboard-rules`, `*.before-import-*`) are left out
+without a note, and nothing outside those two folders is ever included, including through
+a link. An export or recovery copy is never larger than the 20 MB an import reads: if the
+files would take it past that, or cannot be gathered at all, it is written with the records
+only, and the export message, the import result or the upgrade result says so.
 
 Importing a file with that section says how many folders, files and bytes it holds and
 where the shared folder will go (the backup's own setting, resolved for this machine), with
-a button to choose another. Each file with the same text is left alone; one with different
+a button to choose another. It names that folder even when the backup holds no files,
+because the import stores it as the setting, and nothing is stored until you confirm. A
+backup naming a folder that Settings would refuse (the home folder itself, a folder outside
+it, a network folder) is not used: the confirmation says so and offers `~/.ai` instead, and
+a folder chosen with the button is checked the same way. Only files inside the backup's own
+ticked folders are restored, and hidden ticks are refused; anything else is skipped and
+reported. Each file with the same text is left alone; one with different
 text is copied aside as `<file>.before-import-<time>` and then replaced; a missing one is
 created with its folders. An entry whose path is absolute, contains `..`, or would land
 outside its folder (a link included) is skipped and reported. The rule file list then moves

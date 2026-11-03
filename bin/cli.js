@@ -1973,7 +1973,8 @@ async function main() {
         out('Shared AI folder: off. Set it with: switchboard settings shared-folder <folder>');
       } else {
         out(`Shared AI folder: ${state.path}${state.setting !== state.path ? `  (stored as ${state.setting})` : ''}`);
-        if (!state.exists) out('  It does not exist yet, so nothing uses it. Switchboard does not create it.');
+        if (state.problem) out(`  It cannot be used: ${state.problem}. Nothing reads from it or writes to it. Choose another with: switchboard settings shared-folder <folder>`);
+        else if (!state.exists) out('  It does not exist yet, so nothing uses it. Switchboard does not create it.');
       }
       out(`Back up these folders: ${state.backupFolders.length ? state.backupFolders.join(', ') : '(none)'}`);
       if (state.exists) {

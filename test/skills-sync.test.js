@@ -262,6 +262,63 @@ test('the skills list shows a shared skill, marked as shared, even when no tool 
   assert.equal(audit.state.codex, 'off');
 });
 
+test('a hand copy that was taken over is set aside, not deleted, when its shared skill goes, and the marker does not go with it', () => {
+  const m = machine({ tools: ['.codex'] });
+  const src = m.skill('audit', { 'SKILL.md': '# Same\n' });
+  const dest = m.copyIn('.codex', 'audit');
+  fs.mkdirSync(dest, { recursive: true });
+  fs.writeFileSync(path.join(dest, 'SKILL.md'), '# Same\n');
+  syncSkills(m.opts());
+  assert.equal(marker(dest).takenOver, true, 'the marker says the folder was someone\'s own');
+  // An update from the source keeps the record of where the folder came from.
+  fs.writeFileSync(path.join(src, 'SKILL.md'), '# Updated\n');
+  syncSkills(m.opts());
+  assert.equal(marker(dest).takenOver, true);
+  fs.rmSync(src, { recursive: true });
+  const res = syncSkills(m.opts());
+  const kept = path.join(m.home, '.codex', `skills${KEPT_FOLDER_SUFFIX}`, 'audit');
+  assert.equal(res.targets[0].action, 'remove');
+  assert.equal(res.targets[0].keepAs, kept);
+  assert.equal(fs.existsSync(dest), false);
+  assert.equal(read(path.join(kept, 'SKILL.md')), '# Updated\n');
+  assert.equal(fs.existsSync(path.join(kept, SKILL_MARKER)), false);
+});
+
+test('a copy Switchboard made itself is still removed outright when its skill goes', () => {
+  const m = machine({ tools: ['.codex'] });
+  const src = m.skill('audit');
+  syncSkills(m.opts());
+  assert.equal(marker(m.copyIn('.codex', 'audit')).takenOver, undefined);
+  fs.rmSync(src, { recursive: true });
+  const res = syncSkills(m.opts());
+  assert.equal(res.targets[0].keepAs, undefined);
+  assert.equal(fs.existsSync(path.join(m.home, '.codex', `skills${KEPT_FOLDER_SUFFIX}`)), false);
+});
+
+test('a same-name entry that links to another folder with the same content is skipped and nothing is written through it', () => {
+  const m = machine({ tools: ['.codex', '.claude'] });
+  const files = { 'SKILL.md': '# Same\n' };
+  m.skill('audit', files);
+  const otherShared = m.skill('other', files);
+  const elsewhere = path.join(m.root, 'elsewhere', 'audit');
+  fs.mkdirSync(elsewhere, { recursive: true });
+  fs.writeFileSync(path.join(elsewhere, 'SKILL.md'), '# Same\n');
+  fs.mkdirSync(path.join(m.home, '.codex', 'skills'));
+  fs.mkdirSync(path.join(m.home, '.claude', 'skills'));
+  fs.symlinkSync(elsewhere, m.copyIn('.codex', 'audit'), 'junction');
+  // A link into the shared skills folder, but to a different skill.
+  fs.symlinkSync(otherShared, m.copyIn('.claude', 'audit'), 'junction');
+  const res = syncSkills(m.opts());
+  for (const clientId of ['codex', 'claude']) {
+    const t = res.targets.find((x) => x.clientId === clientId && x.skill === 'audit');
+    assert.equal(t.action, 'skip', clientId);
+    assert.match(t.reason, /never writes through a link/, clientId);
+  }
+  assert.equal(fs.existsSync(path.join(elsewhere, SKILL_MARKER)), false);
+  assert.equal(fs.existsSync(path.join(otherShared, SKILL_MARKER)), false, 'nothing lands in the shared folder, so the watcher has nothing to fire on');
+  assert.ok(fs.lstatSync(m.copyIn('.codex', 'audit')).isSymbolicLink(), 'the link is left where it was');
+});
+
 test('a narrowed run never removes a copy it was not asked about', () => {
   const m = machine({ tools: ['.codex'] });
   const src = m.skill('gone');

@@ -3991,6 +3991,7 @@ function moveRuleSource(list, index, delta) {
 // What the Settings card says about the shared AI folder, in one line.
 function sharedFolderLine(st) {
   if (!st || !st.path) return 'Off. Rule files can live anywhere, and a backup carries no shared files.';
+  if (st.problem) return st.path + ' cannot be used: ' + st.problem + '. Nothing reads from it or writes to it. Choose another folder.';
   if (!st.exists) return st.path + ' does not exist yet, so nothing uses it. Switchboard does not create it.';
   return st.path;
 }
