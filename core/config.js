@@ -2,6 +2,7 @@ import path from 'node:path';
 import { PROVIDERS, normalizeColor } from './accounts.js';
 import { WATCH_MODES } from './settings.js';
 import { assertValidServer } from './mcp.js';
+import { filesSummary, normalizeFilesSection } from './shared-backup.js';
 
 export const CONFIG_FORMAT = 'switchboard-config';
 export const CONFIG_VERSION = 1;
@@ -152,7 +153,13 @@ function normalizeServers(value) {
   });
 }
 
-/** Validate and copy an imported config, discarding fields Switchboard does not own. */
+/**
+ * Validate and copy an imported config, discarding fields Switchboard does not own.
+ *
+ * A top-level key this version does not know is ignored, never refused: a file written
+ * by a later version must still import here, minus what this version cannot use. That is
+ * also how 0.34.0 and older treat the `files` section added after them.
+ */
 export function normalizeSwitchboardConfig(value) {
   const raw = object(value, 'the selected file is not a Switchboard config');
   if (raw.format !== CONFIG_FORMAT) throw new Error('the selected file is not a Switchboard config');
@@ -170,6 +177,9 @@ export function normalizeSwitchboardConfig(value) {
     activeAccounts: normalizeActiveAccounts(raw.activeAccounts, accounts),
     preferences: normalizePreferences(raw.preferences, accounts),
     mcpServers: normalizeServers(raw.mcpServers),
+    // The shared AI folder and Switchboard's skills as text (core/shared-backup.js). Absent
+    // in a backup made by 0.34.0 or older, which then imports exactly as it always did.
+    ...(raw.files != null ? { files: normalizeFilesSection(raw.files) } : {}),
   };
 }
 
@@ -197,7 +207,7 @@ function exportableAccount(account) {
   return color ? { ...rest, color } : rest;
 }
 
-export function createSwitchboardConfig({ registry, settings, mcp, activeAccounts = {}, now = new Date() }) {
+export function createSwitchboardConfig({ registry, settings, mcp, activeAccounts = {}, files = null, now = new Date() }) {
   // An account can be removed after a Desktop usage source was selected. The stale
   // preference is harmless in normal use and should not make a later export fail.
   const accountIds = new Set(registry.accounts.filter((a) => a.provider === 'claude').map((a) => a.id));
@@ -219,6 +229,7 @@ export function createSwitchboardConfig({ registry, settings, mcp, activeAccount
       updateRepo: settings.updateRepo,
     },
     mcpServers: mcp.servers.map(withoutEnv),
+    ...(files ? { files } : {}),
   });
 }
 
@@ -265,5 +276,6 @@ export function configSummary(config) {
     accounts: clean.accounts.length,
     customApps: clean.preferences.customApps.length,
     mcpServers: clean.mcpServers.length,
+    ...(clean.files ? { files: filesSummary(clean.files) } : {}),
   };
 }

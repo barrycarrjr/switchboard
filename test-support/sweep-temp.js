@@ -33,6 +33,7 @@ export const PREFIXES = [
   'sb-appdata2-',
   'sb-appdata3-',
   'sb-appdata4-',
+  'sb-backup-',
   'sb-c-',
   'sb-codex-',
   'sb-copilot-',

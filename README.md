@@ -397,6 +397,27 @@ validates the complete file and writes a pre-import recovery backup under
 An in-app upgrade writes the same kind of importable backup immediately before its setup
 program is launched; if that backup cannot be written, the upgrade does not start.
 
+The export and both recovery copies also carry a `files` section: the shared AI folder
+setting and its ticks, the rule file list stored relative to the shared folder, the text of
+every file in each ticked folder (by path relative to the shared folder), and every file in
+Switchboard's own skills folder (`%APPDATA%\Switchboard\customizations\skills`). Only text
+travels: a file holding a NUL byte, one that is not UTF-8, one over 1 MB, and anything past
+15 MB in total are left out, each listed with its reason in the export and in a message when
+it is made. Switchboard's own backup copies (`*.bak-*`, `*.before-switchboard-rules`,
+`*.before-import-*`) are left out without a note, and nothing outside those two folders is
+ever included, including through a link.
+
+Importing a file with that section says how many folders, files and bytes it holds and
+where the shared folder will go (the backup's own setting, resolved for this machine), with
+a button to choose another. Each file with the same text is left alone; one with different
+text is copied aside as `<file>.before-import-<time>` and then replaced; a missing one is
+created with its folders. An entry whose path is absolute, contains `..`, or would land
+outside its folder (a link included) is skipped and reported. The rule file list then moves
+onto the chosen folder, the setting and ticks are restored, and one rules sync runs. The
+import size limit is 20 MB. A backup made by 0.34.0 or older has no `files` section and
+imports exactly as before; 0.34.0 and older import a newer backup's records and ignore its
+files, but refuse any backup over their 2 MB limit.
+
 After installing, updates come from inside the app: it checks the [Releases](../../releases)
 automatically, and the version number in the header becomes an Update button when a newer
 version exists. The check asks GitHub without signing in, which GitHub allows 60 times an

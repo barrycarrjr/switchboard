@@ -66,6 +66,7 @@ import { createGatewayServer, provisionLocalAndWslClient, createSettingsWatcher,
 import { createRulesWatcher, loadRulesSources, saveRulesSources, sourcesOutsideSharedFolder, syncRules } from '../core/rules-sync.js';
 import { activeSharedFolder, sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
 import { listRuleVersions, restoreRuleVersion } from '../core/rules-history.js';
+import { collectFilesSection, describeSkipped, formatBytes, planFilesImport, restoreFilesSection, sharedSettingFor } from '../core/shared-backup.js';
 import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, refreshStaleT3Environments, withT3Lock, forgetT3, wslDistrosCached } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
@@ -135,11 +136,16 @@ function currentConfig() {
     const active = activeAccount(reg, provider);
     if (active) activeAccounts[provider] = active.id;
   }
+  const settings = loadSettings();
   return createSwitchboardConfig({
     registry: reg,
-    settings: loadSettings(),
+    settings,
     mcp: loadServers(),
     activeAccounts,
+    // The shared AI folder's ticked folders and Switchboard's own skills, as text. Built
+    // here for the export and for both recovery copies alike, so undoing an import or an
+    // upgrade puts the files back too.
+    files: collectFilesSection({ settings, rulesSources: loadRulesSources() }),
   });
 }
 
@@ -1479,6 +1485,18 @@ ipcMain.handle('sb:configExport', async () => {
   if (picked.canceled || !picked.filePath) return { ok: false };
   const config = currentConfig();
   fs.writeFileSync(picked.filePath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  const skipped = config.files?.skipped ?? [];
+  if (skipped.length) {
+    // Every file left out is also listed inside the export; this says so at the time.
+    await dialog.showMessageBox(win, {
+      type: 'info',
+      title: 'Some files were left out',
+      message: `${skipped.length} file(s) were left out of the export.`,
+      detail: describeSkipped(skipped).join('\n'),
+      buttons: ['OK'],
+      noLink: true,
+    });
+  }
   return { ok: true, filePath: picked.filePath, summary: configSummary(config) };
 });
 
@@ -1491,20 +1509,41 @@ ipcMain.handle('sb:configImport', async () => {
   });
   if (picked.canceled || !picked.filePaths[0]) return { ok: false };
   const filePath = picked.filePaths[0];
-  if (fs.statSync(filePath).size > 2 * 1024 * 1024) throw new Error('the selected config is too large');
+  // Room for the files section, which is capped at 15 MB of text (core/shared-backup.js).
+  if (fs.statSync(filePath).size > 20 * 1024 * 1024) throw new Error('the selected config is too large');
   const imported = parseSwitchboardConfig(fs.readFileSync(filePath, 'utf8'));
   const summary = configSummary(imported);
+  const filesPlan = imported.files ? planFilesImport(imported.files) : null;
+  let detail = `${summary.accounts} account registration(s), ${summary.customApps} custom app(s), and ${summary.mcpServers} custom MCP server(s) will be imported.`;
+  if (filesPlan) {
+    const f = filesPlan.summary;
+    detail += `\n\nFiles: ${f.folders} folder(s), ${f.files} file(s), ${formatBytes(f.bytes)}. A file already here with different text is kept beside it as <file>.before-import-<time>.`;
+    if (filesPlan.needsFolder) detail += `\nShared AI folder on this machine: ${filesPlan.suggested}`;
+    if (f.skipped) detail += `\n\nLeft out when the backup was made:\n${describeSkipped(imported.files.skipped).join('\n')}`;
+  }
+  detail += '\n\nThis does not copy, delete, or change vendor credential folders. MCP client registrations and sign-ins also remain untouched.';
+  const buttons = filesPlan?.needsFolder ? ['Import', 'Import into another folder...', 'Cancel'] : ['Import', 'Cancel'];
   const answer = await dialog.showMessageBox(win, {
     type: 'warning',
     title: 'Import Switchboard configuration?',
     message: `Replace this machine's Switchboard configuration with ${path.basename(filePath)}?`,
-    detail: `${summary.accounts} account registration(s), ${summary.customApps} custom app(s), and ${summary.mcpServers} custom MCP server(s) will be imported.\n\nThis does not copy, delete, or change vendor credential folders. MCP client registrations and sign-ins also remain untouched.`,
-    buttons: ['Import', 'Cancel'],
-    defaultId: 1,
-    cancelId: 1,
+    detail,
+    buttons,
+    defaultId: buttons.length - 1,
+    cancelId: buttons.length - 1,
     noLink: true,
   });
-  if (answer.response !== 0) return { ok: false };
+  if (answer.response === buttons.length - 1) return { ok: false };
+  let sharedRoot = filesPlan?.suggested ?? null;
+  if (filesPlan?.needsFolder && answer.response === 1) {
+    const chosen = await dialog.showOpenDialog(win, {
+      title: 'Where should the shared AI folder go on this machine?',
+      defaultPath: sharedRoot ?? app.getPath('home'),
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (chosen.canceled || !chosen.filePaths[0]) return { ok: false };
+    sharedRoot = chosen.filePaths[0];
+  }
 
   // Keep a known-good, importable snapshot before changing any of the three data files.
   const backupPath = saveRecoveryConfig('before-import');
@@ -1514,6 +1553,10 @@ ipcMain.handle('sb:configImport', async () => {
   const oldMcp = loadServers();
   const nextRegistry = { accounts: imported.accounts };
   const nextSettings = settingsFromConfig(imported, oldSettings);
+  if (imported.files) {
+    // Saved with the other records, before the rule list below is checked against it.
+    nextSettings.sharedAiFolder = filesPlan.needsFolder ? sharedSettingFor(sharedRoot) : imported.files.sharedFolder;
+  }
   // The copies held for switched-off servers are not part of an exported config and are
   // not something an import should throw away: they are the only way those servers come
   // back, and the machine they came from is this one.
@@ -1534,6 +1577,26 @@ ipcMain.handle('sb:configImport', async () => {
   }
 
   const warnings = [];
+  let filesResult = null;
+  if (imported.files) {
+    filesResult = restoreFilesSection(imported.files, { sharedRoot: filesPlan.needsFolder ? sharedRoot : null });
+    const s = loadSettings();
+    s.sharedAiBackupFolders = filesResult.backupFolders;
+    saveSettings(s);
+    if (imported.files.rulesSources.length) {
+      try {
+        if (filesResult.rulesSources.length) saveRulesSources(filesResult.rulesSources);
+        else warnings.push('None of the rule files the backup lists are on this machine, so the rule file list was left as it was.');
+      } catch (error) {
+        warnings.push(`Could not restore the rule file list: ${error.message || error}`);
+      }
+    }
+    // One sync, on the restored list and files, and the watcher moved onto them.
+    startRulesSync(await installedCustomizationToolIds().catch(() => []));
+    if (filesResult.skipped.length) {
+      warnings.push(`${filesResult.skipped.length} file(s) not restored: ${describeSkipped(filesResult.skipped, 5).join('; ')}.`);
+    }
+  }
   for (const [provider, id] of Object.entries(imported.activeAccounts)) {
     try {
       setActive(nextRegistry, id);
@@ -1546,7 +1609,13 @@ ipcMain.handle('sb:configImport', async () => {
   quotaInflight.clear();
   refresh();
   if (nextSettings.quotaWatch !== 'off') runQuotaWatch();
-  return { ok: true, filePath, backupPath, summary, warnings };
+  const files = filesResult && {
+    created: filesResult.created.length,
+    replaced: filesResult.replaced.length,
+    same: filesResult.same.length,
+    skipped: filesResult.skipped,
+  };
+  return { ok: true, filePath, backupPath, summary, warnings, files };
 });
 
 ipcMain.handle('sb:setActive', async (_e, id) => {

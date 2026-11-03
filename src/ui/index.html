@@ -3790,7 +3790,7 @@ async function renderSettings() {
     exportBtn.disabled = true;
     try {
       const r = await sb.configExport();
-      if (r.ok) toast(`Exported ${r.summary.accounts} account registration(s) to ${r.filePath.split(/[\\/]/).pop()}.`);
+      if (r.ok) toast(`Exported ${r.summary.accounts} account registration(s)${configFilesNote(r.summary.files)} to ${r.filePath.split(/[\\/]/).pop()}.`);
     } catch (e) {
       toast('Export failed: ' + (e.message || e));
     } finally {
@@ -3803,7 +3803,8 @@ async function renderSettings() {
       const r = await sb.configImport();
       if (r.ok) {
         const warning = r.warnings?.length ? ` ${r.warnings.join(' ')}` : '';
-        toast(`Imported ${r.summary.accounts} account registration(s). A pre-import backup was saved.${warning}`);
+        const files = r.files ? ` Files: ${r.files.created} created, ${r.files.replaced} replaced, ${r.files.same} already the same.` : '';
+        toast(`Imported ${r.summary.accounts} account registration(s). A pre-import backup was saved.${files}${warning}`);
         renderSettings();
       }
     } catch (e) {
@@ -3815,10 +3816,10 @@ async function renderSettings() {
   const { card: configCard } = cardShell({
     titleId: 'about-config',
     title: 'Switchboard configuration',
-    person: 'Accounts, preferences, custom launchers, and custom MCP servers',
+    person: 'Accounts, preferences, custom launchers, custom MCP servers, and the shared AI folder\'s files',
     actions: [exportBtn, importBtn],
   });
-  cardNote(configCard, 'What is included', 'Exports contain folder paths, but no tokens or vendor credential files. On another machine, those folders and sign-ins must be set up separately. Import replaces Switchboard\'s current records after validation and saves a recovery backup first.');
+  cardNote(configCard, 'What is included', 'Exports contain folder paths, but no tokens or vendor credential files. On another machine, those folders and sign-ins must be set up separately. Import replaces Switchboard\'s current records after validation and saves a recovery backup first. The files of the ticked shared folders and Switchboard\'s own skills travel as text; a file here with different text is kept beside it before it is replaced.');
   backup.appendChild(oneColumn(configCard));
   rightCol.appendChild(backup);
 
@@ -3967,6 +3968,13 @@ async function renderSettings() {
   panel.appendChild(notif);
 
   realPanel.replaceChildren(...panel.childNodes);
+}
+
+// The part of the export message about files, from the export summary.
+function configFilesNote(files) {
+  if (!files || !files.files) return '';
+  const left = files.skipped ? ', ' + files.skipped + ' left out' : '';
+  return ' and ' + files.files + ' file' + (files.files === 1 ? '' : 's') + left;
 }
 
 // The rule file list with one entry moved up (delta -1) or down (+1). A move past

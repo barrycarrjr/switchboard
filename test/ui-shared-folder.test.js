@@ -23,6 +23,7 @@ const moveRuleSource = load('moveRuleSource');
 const sharedFolderLine = load('sharedFolderLine');
 const toggledBackupFolders = load('toggledBackupFolders');
 const formatRuleVersion = load('formatRuleVersion');
+const configFilesNote = load('configFilesNote');
 
 test('moving a rule file up or down swaps it with its neighbour, and a move past either end changes nothing', () => {
   assert.deepEqual(moveRuleSource(['a', 'b', 'c'], 1, -1), ['b', 'a', 'c']);
@@ -65,4 +66,9 @@ test('a restore from the page asks first, and its handler syncs after writing', 
   assert.match(ui, /if \(!confirm\('Put this version of '/);
   const handler = main.slice(main.indexOf("ipcMain.handle('sb:rulesRestore'"));
   assert.ok(handler.indexOf('restoreRuleVersion(') < handler.indexOf('startRulesSync('), 'the file is put back before the sync runs');
+});
+test('the export message counts the files carried and says how many were left out', () => {
+  assert.equal(configFilesNote(undefined), '', 'a summary from a backup without files adds nothing');
+  assert.equal(configFilesNote({ files: 1, skipped: 0 }), ' and 1 file');
+  assert.equal(configFilesNote({ files: 12, skipped: 2 }), ' and 12 files, 2 left out');
 });
