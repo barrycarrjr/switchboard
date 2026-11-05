@@ -28,13 +28,19 @@ const MASKED_SECRET = '••••••';
 export const ANY_ACCOUNT_INSTANCE_ID = 'claudeAgent_sb_any';
 export const PROOF_PROMPT = 'Reply with exactly: ok';
 
+/** This machine's own T3 Code, set up by core/t3local.js rather than by a bash script. */
+export const LOCAL_TARGET = Object.freeze({ id: 'local', kind: 'local', name: 'this computer' });
+
 /**
- * `wsl:<distro>` or `ssh:<host>`; a bare name is a WSL distro when one by that name exists,
+ * `local`, `wsl:<distro>` or `ssh:<host>`; a bare name is a WSL distro when one by that name exists,
  * otherwise an ssh host (an alias from ~/.ssh/config works). The name is checked against a
  * strict character set because it ends up in a spawn argument list.
  */
 export function parseT3Target(spec, wslDistros = []) {
   const raw = String(spec ?? '').trim();
+  // This machine's own T3 (Windows). A WSL distro or ssh host literally named "local" is still
+  // reachable with the wsl: or ssh: prefix.
+  if (/^local$/i.test(raw)) return { ...LOCAL_TARGET };
   const m = /^(wsl|ssh):(.+)$/i.exec(raw);
   let kind;
   let name;
@@ -158,6 +164,23 @@ function basename(p) {
 }
 
 /**
+ * Where a Linux or macOS target keeps the files T3's entries point at, for
+ * mergeT3EnvironmentSettings: one script per account in ~/.local/bin, named by the wrapper.
+ * core/t3local.js has the Windows counterpart. `fileOf` turns an entry's binaryPath back into
+ * the wrapper name, `claudeHome` is the config folder a new Claude entry gets ('' leaves T3's
+ * field empty), and `codexDefaultHomes` are the spellings of Codex's own default folder.
+ */
+export function posixLayout(home) {
+  return {
+    binaryPath: (file) => `${home}/.local/bin/${file}`,
+    fileOf: basename,
+    claudeHome: '',
+    join: (rel) => `${home}/${rel}`,
+    codexDefaultHomes: ['', '~/.codex', `${home}/.codex`],
+  };
+}
+
+/**
  * The Codex accounts Switchboard knows, each with the folder its sign-in lives in on a target,
  * relative to the home folder. The account whose folder here is Codex's own default (.codex)
  * uses ~/.codex there too, the way T3's built-in Codex entry does; every other account gets its
@@ -208,11 +231,13 @@ export function enabledAntigravityIds(settings) {
  * - The quota hub entry Switchboard added before is moved to the new address when the broker's
  *   address changed, rather than a second one being added beside a dead one.
  * - Nothing is removed or disabled. A Claude entry that is not Switchboard's is reported.
+ * - `layout` says where the target keeps its wrapper files (posixLayout unless given); this
+ *   machine's own Windows T3 passes the layout from core/t3local.js.
  * Pure: returns the new settings object and never mutates `current`.
  */
-export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers = {}, hubUrl = null, codexAccounts = null, antigravity = false } = {}) {
-  if (!home || !String(home).startsWith('/')) throw new Error('the target home folder is required');
-  const bin = `${home}/.local/bin`;
+export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers = {}, hubUrl = null, codexAccounts = null, antigravity = false, layout = null } = {}) {
+  if (!layout && (!home || !String(home).startsWith('/'))) throw new Error('the target home folder is required');
+  const where = layout ?? posixLayout(home);
   const settings = current && typeof current === 'object' ? structuredClone(current) : {};
   const instances = settings.providerInstances && typeof settings.providerInstances === 'object'
     ? settings.providerInstances
@@ -224,7 +249,7 @@ export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers =
   const adoptedFiles = new Set(); // wrapper files that existed before and are rewritten
 
   const accountOf = (instance) => {
-    const file = basename(instance?.config?.binaryPath);
+    const file = where.fileOf(instance?.config?.binaryPath);
     if (file === 'switchboard-lease') return '*';
     if (!file.startsWith(WRAPPER_PREFIX)) return null;
     if (wrappers[file]) return wrappers[file];
@@ -246,7 +271,7 @@ export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers =
     if (adoptedId) {
       claimed.add(adoptedId);
       const inst = instances[adoptedId];
-      const file = basename(inst.config.binaryPath);
+      const file = where.fileOf(inst.config.binaryPath);
       // A wrapper file name the scripts would refuse is not reused; the account gets the usual one.
       const usable = /^t3-claude-[A-Za-z0-9._-]+$/.test(file) ? file : accountWrapperName(account.id);
       wrapperFiles[account.id] = usable;
@@ -255,7 +280,7 @@ export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers =
         ...inst,
         displayName: inst.displayName || `Claude - ${account.label} (Switchboard)`,
         ...(inst.accentColor || !account.color ? {} : { accentColor: account.color }),
-        config: { ...inst.config, binaryPath: `${bin}/${usable}` },
+        config: { ...inst.config, binaryPath: where.binaryPath(usable) },
       };
       if (JSON.stringify(next) !== JSON.stringify(inst)) {
         instances[adoptedId] = next;
@@ -273,7 +298,7 @@ export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers =
       displayName: `Claude - ${account.label} (Switchboard)`,
       ...(account.color ? { accentColor: account.color } : {}),
       enabled: true,
-      config: { binaryPath: `${bin}/${file}`, homePath: '', customModels: [], launchArgs: '' },
+      config: { binaryPath: where.binaryPath(file), homePath: where.claudeHome, customModels: [], launchArgs: '' },
     };
     changes.push(`added ${id} (${account.label})`);
   }
@@ -286,7 +311,7 @@ export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers =
       driver: 'claudeAgent',
       displayName: 'Claude - any account (Switchboard)',
       enabled: true,
-      config: { binaryPath: `${bin}/switchboard-lease`, homePath: '', customModels: [], launchArgs: '' },
+      config: { binaryPath: where.binaryPath('switchboard-lease'), homePath: where.claudeHome, customModels: [], launchArgs: '' },
     };
     changes.push(`added ${id} (whichever account has the most room)`);
   } else {
@@ -326,10 +351,10 @@ export function mergeT3EnvironmentSettings(current, { home, accounts, wrappers =
   // "codex"); an existing Codex entry with no shadow home is that one. Each further account is
   // the entry whose shadow home is its folder. Only missing entries are added; an existing one
   // keeps everything a person set on it.
-  const onDefaultHome = (inst) => ['', '~/.codex', `${home}/.codex`].includes(String(inst.config?.homePath ?? '').trim());
+  const onDefaultHome = (inst) => where.codexDefaultHomes.includes(String(inst.config?.homePath ?? '').trim());
   const claimedCodex = new Set();
   for (const acc of codexAccounts ?? []) {
-    const shadowAbs = acc.shadow ? `${home}/${acc.relHome}` : '';
+    const shadowAbs = acc.shadow ? (acc.absHome ?? where.join(acc.relHome)) : '';
     const isMine = (inst) => inst?.driver === 'codex' && onDefaultHome(inst) && (acc.shadow
       ? [shadowAbs, `~/${acc.relHome}`].includes(String(inst.config?.shadowHomePath ?? ''))
       : !String(inst.config?.shadowHomePath ?? '').trim());
@@ -920,18 +945,23 @@ export function signInsFor(target, inspected, codexAccounts, { antigravityIds = 
   const out = [];
   for (const acc of codexAccounts) {
     const what = acc.shadow ? `Codex (${acc.label})` : 'Codex';
+    const local = target.kind === 'local';
     if (!inspected.codexBin) {
-      const nodeFirst = inspected.nodeState === 'missing' ? `install Node.js first (${nodeInstallCommand(inspected.osFamily)}), then ` : '';
-      out.push({ provider: 'codex', account: acc.id, what, state: 'not-installed', how: `${nodeFirst}install Codex on that machine so it is on its PATH (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder), then run this again` });
+      const nodeFirst = inspected.nodeState === 'missing' ? `install Node.js first (${local ? 'Node.js 22 from https://nodejs.org' : nodeInstallCommand(inspected.osFamily)}), then ` : '';
+      out.push({ provider: 'codex', account: acc.id, what, state: 'not-installed', how: local ? `${nodeFirst}install Codex here (npm install -g @openai/codex), then run this again` : `${nodeFirst}install Codex on that machine so it is on its PATH (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder), then run this again` });
       continue;
     }
     const seen = inspected.codexStatus?.[acc.relHome];
     const state = seen === 'signed-in' ? 'signed-in' : seen === 'unknown' ? 'unknown' : 'needs-sign-in';
-    const manual = acc.shadow ? `mkdir -p ~/${acc.relHome} && CODEX_HOME=~/${acc.relHome} codex login --device-auth` : 'codex login --device-auth';
+    // This machine's own accounts live in their registered folders; elsewhere under ~/.codex-t3.
+    const folder = acc.absHome ?? `~/${acc.relHome}`;
+    const manual = !acc.shadow ? 'codex login --device-auth'
+      : local ? `set CODEX_HOME=${folder} and run codex login --device-auth`
+        : `mkdir -p ${folder} && CODEX_HOME=${folder} codex login --device-auth`;
     out.push({
       provider: 'codex', account: acc.id, what, state,
       how: state === 'unknown'
-        ? `Codex there could not say whether it is signed in (check: ${acc.shadow ? `CODEX_HOME=~/${acc.relHome} ` : ''}codex login status)`
+        ? `Codex there could not say whether it is signed in (check: ${acc.shadow ? `CODEX_HOME=${folder} ` : ''}codex login status)`
         : `run: switchboard t3 sign-in ${target.id} (or on that machine: ${manual}). Turn on device code sign-in in ChatGPT first: Settings, Security.`,
     });
   }
@@ -1135,14 +1165,17 @@ function ageText(ms, now) {
  * Each line carries its age, and a failed attempt to reach it since, so a reading is never
  * passed off as current.
  */
-export function t3EnvironmentStatus(settings, { leaseSha = null, lendableIds = [], codexIds = [], antigravity = false, port = null, brokerUrl = null, now = Date.now() } = {}) {
+export function t3EnvironmentStatus(settings, { leaseSha = null, localLeaseSha = null, lendableIds = [], codexIds = [], antigravity = false, port = null, brokerUrl = null, now = Date.now() } = {}) {
   return Object.values(settings?.t3Environments ?? {}).map((e) => {
+    // This machine runs the Node.js lease client, the others the bash one; each is compared
+    // with its own current version.
+    const shippedSha = e.kind === 'local' ? localLeaseSha : leaseSha;
     const missing = lendableIds.filter((id) => !(e.accounts ?? []).includes(id));
     // Codex and Antigravity entries are part of a setup too: a Codex account registered since,
     // or an environment set up before they were added, is missing them.
     const missingCodex = codexIds.filter((id) => !(e.codexAccounts ?? []).includes(id));
     const missingAntigravity = antigravity && e.antigravity !== true;
-    const wrapperOld = Boolean(leaseSha && e.leaseSha && e.leaseSha !== leaseSha);
+    const wrapperOld = Boolean(shippedSha && e.leaseSha && e.leaseSha !== shippedSha);
     const keyGone = Boolean(e.keyId && !settings?.gatewayKeys?.[e.keyId]);
     const moved = [
       port != null && e.port != null && e.port !== port ? `the broker's port changed to ${port}` : null,

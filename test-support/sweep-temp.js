@@ -78,6 +78,7 @@ export const PREFIXES = [
   'sb-so-',
   'sb-status-',
   'sb-t3env-',
+  'sb-t3local-',
   'sb-test-',
   'sb-u-',
   'sb-u2-',

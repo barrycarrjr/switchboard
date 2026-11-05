@@ -623,7 +623,7 @@ refreshes the wrapper in each distro when the file differs from this version's, 
 symlinks alone. A key created in the Gateway tab is installed the same way whatever its
 scope, `lan` included.
 
-`switchboard t3 setup [wsl:<distro>|ssh:<host> ...]` (or the T3 Code Environments card on
+`switchboard t3 setup [local|wsl:<distro>|ssh:<host> ...]` (or the T3 Code Environments card on
 the Gateway tab) points T3 Code on a WSL distro or another machine at the Claude accounts
 the broker lends, so T3 there needs no Claude sign-in. It installs the key and wrapper as
 above, writes one small wrapper per Claude account, and adds one T3 provider per account,
@@ -637,6 +637,15 @@ there, and Antigravity's is done in T3 itself (after installing Node.js on that 
 T3 needs for Antigravity and which the advice then says first). Health warns when an environment's setup failed or
 its wrapper is older than this Switchboard. The full behaviour is in
 `docs/references/cli-commands.md`.
+
+The target `local` is T3 Code on this Windows machine itself, which gets the same entries.
+T3 on Windows cannot start a script file as Claude, but it does start the folder layout an
+npm install of Claude leaves, so each account gets a folder of that shape under
+`~/.local/share/switchboard/t3`, and the program in it borrows the account through
+`bin/switchboard-lease.mjs`, a Node.js copy of the lease wrapper. It needs Node.js on PATH
+(T3 runs the entries with it). New entries use `~/.claude` as their config folder, so their
+conversations stay in one place whichever account Switchboard last picked. The entries T3
+already had for this machine's own sign-ins are left as they are.
 
 `switchboard watch` is the quota watch without the tray. `--once` takes a single pass, for
 Task Scheduler or cron; without it, it stays running and takes a pass every five minutes,
