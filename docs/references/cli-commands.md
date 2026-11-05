@@ -94,15 +94,24 @@ Points T3 Code environments (a WSL distro, or another machine reached with ssh) 
 Claude accounts the lease broker lends, so T3 there needs no Claude sign-in of its own.
 
 ```
-switchboard t3 setup [wsl:<distro>|ssh:<host> ...] [--all] [--replace-symlink] [--no-proof] [--json]
+switchboard t3 setup [local|wsl:<distro>|ssh:<host> ...] [--all] [--replace-symlink] [--no-proof] [--json]
 switchboard t3 status [--saved] [--json]
-switchboard t3 sign-in <wsl:<distro>|ssh:<host>>
-switchboard t3 forget <wsl:<distro>|ssh:<host>>
+switchboard t3 sign-in <local|wsl:<distro>|ssh:<host>>
+switchboard t3 forget <local|wsl:<distro>|ssh:<host>>
 ```
 
 - A bare name is a WSL distro when one by that name exists, otherwise an ssh host (an alias
   from `~/.ssh/config` works). With no target, every WSL distro is set up. `--all` sets up
   again every environment set up before.
+- `local` is T3 Code on this Windows machine. Nothing runs through a shell script there:
+  Switchboard writes `~/.local/share/switchboard/t3/switchboard-lease.mjs` (the Node.js lease
+  client) and one folder per account (plus `switchboard-lease` for "any account"), each holding
+  `<name>.cmd` and `node_modules/@anthropic-ai/claude-code/cli.js`, the layout T3 accepts for
+  an npm-installed Claude. T3 runs the cli.js with node for conversations and the .cmd for its
+  `--version` check. It needs Node.js and Claude Code (`~/.local/bin/claude.exe` or on PATH),
+  keeps the client key in `~/.config/switchboard/client-key` when the broker accepts it, gives
+  new entries `~/.claude` as their config folder, and proves every entry, "any account"
+  included, the way T3 starts it.
 - ssh runs with `BatchMode=yes`: the machine must accept a key sign-in, because a password
   prompt cannot be answered on a pipe. Everything sent to the target (the key included)
   travels inside a script on stdin, never on a command line.

@@ -12,6 +12,10 @@ import {
   t3EnvironmentStatus, lendableClaudeAccounts, sha256, codexAccountsFor, inspectScript, parseInspect, signInsFor,
   codexSignInCommand, enabledAntigravityIds, rememberSignIns, rememberAttempt,
 } from './t3env.js';
+import {
+  setupLocalT3Environment, readLocalLeaseClient, currentLocalLeaseSha, inspectLocal, localCodexAccounts,
+  localCodexSignInCommand,
+} from './t3local.js';
 
 /**
  * The real-machine wiring for core/t3env.js, shared by the CLI (`switchboard t3 ...`) and the
@@ -86,9 +90,11 @@ export async function resolveTargets(specs, { all = false, settings = loadSettin
  * starts and its steps when it ends. One target failing, even by an unexpected error, never
  * stops the others.
  */
-export async function runT3Setup(targets, { replaceSymlink = false, prove = true, refreshOnly = false, onProgress = () => {}, run = runScript, hostIp = null } = {}) {
+export async function runT3Setup(targets, { replaceSymlink = false, prove = true, refreshOnly = false, onProgress = () => {}, run = runScript, hostIp = null, setupLocal = setupLocalT3Environment } = {}) {
   const leaseScript = readLeaseScript();
   const leaseSha = sha256(leaseScript);
+  // This machine's own T3 runs the Node.js lease client; it is read only when it is needed.
+  const localClient = targets.some((t) => t.kind === 'local') ? readLocalLeaseClient() : null;
   // The broker must be on for anything to borrow; turning it on keeps the chosen scope and port.
   if (!refreshOnly) {
     const enabled = gatewayEnabledSettings(loadSettings());
@@ -106,6 +112,25 @@ export async function runT3Setup(targets, { replaceSymlink = false, prove = true
     let report;
     if (target.kind === 'ssh' && !addresses.lanUrl) {
       report = { ...blank, error: `the gateway's scope is ${addresses.scope}, so machines on the LAN cannot reach it. Run: switchboard gateway scope lan` };
+    } else if (target.kind === 'local') {
+      try {
+        report = await setupLocal({
+          registry,
+          loadSettings,
+          saveSettings,
+          canLend: brokerCanLend(loadSettings()),
+          leaseClient: localClient,
+          port: addresses.port,
+          // The quota hub this machine's T3 already shows is usually the LAN address; without a
+          // LAN scope it is the loopback one.
+          hubUrl: addresses.lanUrl ?? `http://127.0.0.1:${addresses.port}`,
+          codexAccounts: localCodexAccounts(registry),
+          antigravity: usesAntigravity(),
+          createKey: (s, label) => keyForEnvironment(s, label),
+        }, { prove, refreshOnly });
+      } catch (e) {
+        report = { ...blank, error: `setup stopped on an unexpected error: ${String(e?.message || e)}` };
+      }
     } else {
       try {
         report = await setupT3Environment(target, {
@@ -129,7 +154,7 @@ export async function runT3Setup(targets, { replaceSymlink = false, prove = true
     }
     for (const line of report.steps) onProgress(`  ${line}`);
     if (report.error) onProgress(`  Stopped: ${report.error}`);
-    saveSettings(rememberT3Environment(loadSettings(), target, report, { leaseSha }));
+    saveSettings(rememberT3Environment(loadSettings(), target, report, { leaseSha: target.kind === 'local' ? sha256(localClient) : leaseSha }));
     reports.push(report);
   }
   return reports;
@@ -169,7 +194,7 @@ export function currentT3Status({ hostIp = null, settings = loadSettings(), regi
   const lendableIds = lendableClaudeAccounts(registry, settings, { canLend: brokerCanLend(settings) }).lendable.map((a) => a.id);
   const codexIds = codexAccountsFor(registry).map((a) => a.id);
   return t3EnvironmentStatus(settings, {
-    leaseSha: currentLeaseSha(), lendableIds, codexIds, antigravity: antigravity ?? usesAntigravity({ settings }),
+    leaseSha: currentLeaseSha(), localLeaseSha: currentLocalLeaseSha(), lendableIds, codexIds, antigravity: antigravity ?? usesAntigravity({ settings }),
     port: addresses.port, brokerUrl: addresses.lanUrl,
   });
 }
@@ -184,8 +209,17 @@ const askTimeoutMs = (codexAccounts) => 60000 + 20000 * codexAccounts.length;
  * { error } when the machine did not answer or its T3 settings could not be read (a reading
  * then would drop the Antigravity line, so none is taken).
  */
-export async function checkT3SignIns(target, { run = runScript, codexAccounts, antigravity }) {
+export async function checkT3SignIns(target, { run = runScript, codexAccounts, antigravity, inspectHere = inspectLocal }) {
   const askedAt = Date.now();
+  if (target.kind === 'local') {
+    // This machine's accounts are asked in their own folders, not under ~/.codex-t3.
+    const ids = new Set(codexAccounts.map((a) => a.id));
+    const here = localCodexAccounts(loadRegistry()).filter((a) => ids.has(a.id));
+    const inspected = await inspectHere({ codexAccounts: here });
+    if (antigravity && (!inspected.t3 || inspected.settingsError)) return { error: `its T3 settings could not be read${inspected.settingsError ? ` (${inspected.settingsError})` : ''}` };
+    const signIns = signInsFor(target, inspected, here, { antigravityIds: antigravity ? enabledAntigravityIds(inspected.settings) : null });
+    return { inspected, signIns, askedAt, codexAccounts: here };
+  }
   const res = await run(target, inspectScript({ codexHomes: codexAccounts.map((a) => a.relHome), antigravity: Boolean(antigravity), wsl: target.kind === 'wsl' }), { timeoutMs: askTimeoutMs(codexAccounts) });
   const inspected = parseInspect(res.stdout);
   if (!inspected) return { error: (res.stderr || '').trim().split(/\r?\n/).filter(Boolean).pop() || 'no answer' };
@@ -226,16 +260,20 @@ export async function runT3SignIn(targetSpec, { onProgress = () => {}, spawnImpl
   if (reading.error) throw new Error(`could not read ${target.id}: ${reading.error}`);
   saveReading(target.id, reading);
   const todo = reading.signIns.filter((x) => x.provider === 'codex' && x.state === 'needs-sign-in');
-  if (codexAccounts.length && !reading.inspected.codexBin) onProgress(`Codex is not installed on ${target.id}; install it there first (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder).`);
+  if (codexAccounts.length && !reading.inspected.codexBin) onProgress(target.kind === 'local' ? 'Codex is not installed on this computer; install it first (npm install -g @openai/codex).' : `Codex is not installed on ${target.id}; install it there first (sudo npm install -g @openai/codex, or without sudo where npm installs into your home folder).`);
   else if (codexAccounts.length && !todo.length) onProgress(`Every Codex account is already signed in on ${target.id}.`);
   for (const item of todo) {
-    const acc = codexAccounts.find((a) => a.id === item.account);
+    const acc = (reading.codexAccounts ?? codexAccounts).find((a) => a.id === item.account);
     // Codex refuses a CODEX_HOME that does not exist yet.
-    await run(target, `set -u\nmkdir -p "$HOME/${acc.relHome}"\n`, { timeoutMs: 30000 });
+    if (target.kind === 'local') fs.mkdirSync(acc.absHome, { recursive: true });
+    else await run(target, `set -u\nmkdir -p "$HOME/${acc.relHome}"\n`, { timeoutMs: 30000 });
     onProgress(`Signing in ${item.what} on ${target.id}. Codex shows a link and a code: open the link in your browser and enter the code. (Device code sign-in must be on in ChatGPT: Settings, Security.)`);
-    const { file, args } = codexSignInCommand(target, { codexBin: reading.inspected.codexBin, home: reading.inspected.home, relHome: acc.relHome });
+    const launch = target.kind === 'local'
+      ? localCodexSignInCommand(reading.inspected.codexBin, acc)
+      : codexSignInCommand(target, { codexBin: reading.inspected.codexBin, home: reading.inspected.home, relHome: acc.relHome });
+    const { file, args } = launch;
     const code = await new Promise((done) => {
-      const child = spawnImpl(file, args, { stdio: 'inherit' });
+      const child = spawnImpl(file, args, { stdio: 'inherit', ...(launch.env ? { env: launch.env } : {}), ...(launch.shell ? { shell: true } : {}) });
       child.on('error', () => done(null));
       child.on('close', (c) => done(c));
     });

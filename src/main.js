@@ -2902,7 +2902,7 @@ ipcMain.handle('sb:gatewayRevokeKey', async (_e, keyId) => {
 // core/t3env-run.js; one setup runs at a time, shared with the start-up refresh.
 ipcMain.handle('sb:t3EnvState', async () => {
   try {
-    return { ok: true, environments: currentT3Status(), distros: await wslDistrosCached() };
+    return { ok: true, environments: currentT3Status(), distros: await wslDistrosCached(), local: process.platform === 'win32' };
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
   }

@@ -2969,6 +2969,7 @@ async function renderGateway() {
   const t3Form = el('div', 'card-form');
   const t3Pick = el('select');
   t3Pick.appendChild(new Option('Another machine (ssh)...', ''));
+  if (t3State?.local) t3Pick.appendChild(new Option('This computer', 'local'));
   for (const d of t3State?.distros ?? []) t3Pick.appendChild(new Option(`WSL: ${d}`, `wsl:${d}`));
   if (t3State?.distros?.length) t3Pick.value = `wsl:${t3State.distros[0]}`;
   t3Form.appendChild(t3Pick);

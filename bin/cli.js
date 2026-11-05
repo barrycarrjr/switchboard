@@ -2165,7 +2165,7 @@ async function main() {
         // reading with its age.
         const list = args.includes('--saved') ? currentT3Status() : await liveT3Status();
         if (asJson) { out(JSON.stringify(list, null, 2)); return; }
-        if (!list.length) { out('No T3 environment set up yet. Run: switchboard t3 setup [wsl:<distro>|ssh:<host> ...]'); return; }
+        if (!list.length) { out('No T3 environment set up yet. Run: switchboard t3 setup [local|wsl:<distro>|ssh:<host> ...]'); return; }
         for (const e of list) {
           out(`${e.id}  ${e.state}  ${e.detail}`);
           for (const x of e.signInsTodo ?? []) out(`    ${x.what}: ${x.how}`);
@@ -2175,7 +2175,7 @@ async function main() {
       }
       if (sub === 'sign-in') {
         const id = args[1];
-        if (!id || id.startsWith('--')) throw new Error('usage: switchboard t3 sign-in <wsl:<distro>|ssh:<host>>');
+        if (!id || id.startsWith('--')) throw new Error('usage: switchboard t3 sign-in <local|wsl:<distro>|ssh:<host>>');
         if (asJson) throw new Error('t3 sign-in is interactive (Codex shows a code to enter in your browser), so it has no --json form');
         const res = await runT3SignIn(id, { onProgress: out });
         // Only the Codex sign-ins are this command's to do; Antigravity's is done in T3.
@@ -2184,7 +2184,7 @@ async function main() {
       }
       if (sub === 'forget') {
         const id = args[1];
-        if (!id || id.startsWith('--')) throw new Error('usage: switchboard t3 forget <wsl:<distro>|ssh:<host>>');
+        if (!id || id.startsWith('--')) throw new Error('usage: switchboard t3 forget <local|wsl:<distro>|ssh:<host>>');
         forgetT3(id);
         out(`Forgot ${id}. Nothing on that machine was changed.`);
         return;
@@ -2325,10 +2325,10 @@ async function main() {
       out('  lane-token <laneId> [--remove|--check] | --missing   mint, delete or validate the token a lane hands to automation; --missing mints for every Claude lane without one');
       out('  gateway [status|serve|enable|disable|scope|port]   manage the local pass-through API gateway and lease broker');
       out('  gateway provision-client [--label <text>] [--replace-symlink] [--yes] [--json]   broker on, a key with the gateway scope, key file and wrapper here and in every WSL distro');
-      out('  t3 setup [wsl:<distro>|ssh:<host> ...] [--all] [--replace-symlink] [--no-proof] [--json]   give T3 Code there one provider per Claude account, borrowed from the broker (no target: every WSL distro)');
+      out('  t3 setup [local|wsl:<distro>|ssh:<host> ...] [--all] [--replace-symlink] [--no-proof] [--json]   give T3 Code there one provider per Claude account, borrowed from the broker (no target: every WSL distro)');
       out('  t3 status [--saved] [--json]   the T3 environments set up so far, their sign-ins asked of each machine now (--saved: last reading, no network)');
-      out('  t3 sign-in <wsl:<distro>|ssh:<host>>   sign each Codex account in on that machine (once; Codex shows a code for your browser)');
-      out('  t3 forget <wsl:<distro>|ssh:<host>>   stop listing and checking one (nothing on it is changed)');
+      out('  t3 sign-in <local|wsl:<distro>|ssh:<host>>   sign each Codex account in on that machine (once; Codex shows a code for your browser)');
+      out('  t3 forget <local|wsl:<distro>|ssh:<host>>   stop listing and checking one (nothing on it is changed)');
       out('  keys [list|create|update|revoke]   manage client keys (sb-key-...) for the gateway');
       out('  watch [--once] [--interval <minutes>] [--mode notify|auto] [--json]   the quota watch, without the tray');
       out('  notify [--webhook <url>] [--command <cmd>] [--threshold <w=pct>] [--test] [--json]   manage notification hooks');
