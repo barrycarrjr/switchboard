@@ -4,6 +4,7 @@ import path from 'node:path';
 import { toolExecutable } from './providers.js';
 import { cliLaunch } from './cli-launch.js';
 import { agyStampPath, markAgyCheckDone } from './agy-updates.js';
+import { watchLeftovers } from './leftovers.js';
 import { WINDOW_LIFETIME_MS } from './lanes-util.js';
 import { openCodeCredential } from './opencode-auth.js';
 
@@ -765,10 +766,17 @@ export function parseAntigravityCredits(raw) {
 
 /**
  * Quota for Antigravity via the `agy` CLI. Queries usage rate limit windows and remaining credits.
+ *
+ * Each of the two starts of the CLI also starts every MCP server in its lists, and the
+ * CLI ends without stopping them, so the reading is not finished until they have been
+ * stopped (see core/leftovers.js for the machine that ended up with 3,935 of them).
+ * `watchImpl` replaces the thing that does that; a caller that passes only `runImpl`
+ * starts no real process and so has nothing to stop.
  */
 export async function fetchAntigravityQuota({
   agyBin = null,
   runImpl = null,
+  watchImpl = null,
   agyStamp = null,
   now = Date.now(),
   plan = null,
@@ -788,24 +796,35 @@ export async function fetchAntigravityQuota({
     }
     if (!bin) return { error: 'unavailable' };
 
-    const execFn = runImpl || (async (file, args, options) => {
-      const { execFile } = await import('node:child_process');
-      const { promisify } = await import('node:util');
-      return promisify(execFile)(file, args, options);
-    });
-
     // Reading the quota starts the CLI, and a CLI that thinks it is due a version check
     // starts one in a command window of its own. Switchboard runs that update itself now
     // (see core/agy-updates.js), so the check is marked done before the CLI can decide.
-    markAgyCheckDone(agyStamp ?? agyStampPath());
+    const updateCheckMarked = markAgyCheckDone(agyStamp ?? agyStampPath());
+
+    // The CLI's own program is kept out of what gets stopped: the one thing it starts on
+    // purpose to outlive it is a copy of itself that updates it. Away from Windows that
+    // copy cannot be told apart from the rest, so there the tidying only happens when the
+    // CLI has just been told not to start one.
+    const watch = runImpl && !watchImpl
+      ? null
+      : (watchImpl ?? watchLeftovers)({ keep: [path.basename(bin)], wholeGroup: updateCheckMarked });
+    const execFn = runImpl || ((file, args, options) => watch.run(file, args, options));
 
     const usageLaunch = cliLaunch(bin, ['--output-format', 'json', '-p', '/usage']);
     const creditsLaunch = cliLaunch(bin, ['--output-format', 'json', '-p', '/credits']);
 
-    const [usageRes, creditsRes] = await Promise.allSettled([
-      execFn(usageLaunch.file, usageLaunch.args, { ...usageLaunch.options, windowsHide: true, timeout: 15000 }),
-      execFn(creditsLaunch.file, creditsLaunch.args, { ...creditsLaunch.options, windowsHide: true, timeout: 15000 }),
-    ]);
+    let usageRes;
+    let creditsRes;
+    try {
+      [usageRes, creditsRes] = await Promise.allSettled([
+        execFn(usageLaunch.file, usageLaunch.args, { ...usageLaunch.options, windowsHide: true, timeout: 15000 }),
+        execFn(creditsLaunch.file, creditsLaunch.args, { ...creditsLaunch.options, windowsHide: true, timeout: 15000 }),
+      ]);
+    } finally {
+      // Whatever the two runs came to, and a failed or timed-out one most of all. A
+      // tidying that goes wrong must not cost the reading.
+      try { await watch?.sweep(); } catch { /* the reading stands */ }
+    }
 
     if (usageRes.status !== 'fulfilled') {
       return { error: 'unavailable' };

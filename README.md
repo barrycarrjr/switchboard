@@ -108,7 +108,11 @@ For deep-dives into architecture, guides, and full command references, see the *
   the rate-limit reply its CLI recorded in that account's session log (usually the cause
   is a token that CLI has not refreshed in a while). It says why the fallback is standing
   in, and always shows when the snapshot was taken rather than passing it off as live.
-  Antigravity's usage is read by asking its own CLI. Gemini and Qwen publish nothing, and
+  Antigravity's usage is read by asking its own CLI. After each reading, Switchboard stops
+  helper processes that it can prove were started by that reading, including when the
+  reading fails or times out. It leaves existing sessions and the CLI's updater alone.
+  This does not remove helpers left by earlier versions. If Windows cannot list or stop
+  a process, cleanup may be incomplete. Gemini and Qwen publish nothing, and
   the card says so instead of showing an empty bar.
 - Claude plans differ in which windows they have. Most have a five-hour session window and
   a weekly one. Ultra (formerly Max 20x) has no five-hour window, only the weekly one plus
