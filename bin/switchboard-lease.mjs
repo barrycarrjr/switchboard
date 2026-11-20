@@ -40,6 +40,15 @@ export function firstLineOf(files) {
   return '';
 }
 
+/**
+ * A copy of env for claude, without the client key. The key leases any lane's sign-in, so claude
+ * and every command it runs must not get it. Windows keeps a variable's name in whatever case it
+ * was set in, so the name is matched without case.
+ */
+export function withoutClientKey(env) {
+  return Object.fromEntries(Object.entries(env).filter(([k]) => k.toUpperCase() !== 'SWITCHBOARD_CLIENT_KEY'));
+}
+
 function isFile(p) {
   try { return fs.statSync(p).isFile(); } catch { return false; }
 }
@@ -170,7 +179,7 @@ export async function main(args = process.argv.slice(2), { env = process.env, ho
 
   // T3 Code checks each provider with --version every few minutes, and --help is asked for by
   // hand. Neither runs a model, so neither borrows an account.
-  if (args.length === 1 && ['--version', '-v', '--help', '-h'].includes(args[0])) return runPassThrough(bin, args, env);
+  if (args.length === 1 && ['--version', '-v', '--help', '-h'].includes(args[0])) return runPassThrough(bin, args, withoutClientKey(env));
 
   const conf = path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'switchboard');
   const key = env.SWITCHBOARD_CLIENT_KEY || firstLineOf([path.join(conf, 'client-key'), path.join(home, '.switchboard-key')]);
@@ -202,7 +211,7 @@ export async function main(args = process.argv.slice(2), { env = process.env, ho
     if (r.status !== 200) say(`report failed (lease ${j.leaseId}, ${outcome})`);
   };
 
-  const childEnv = { ...env };
+  const childEnv = withoutClientKey(env);
   let lent = 0;
   for (const [name, value] of Object.entries(j.env ?? {})) {
     if (!/^[A-Za-z0-9_]+$/.test(name)) continue;

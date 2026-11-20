@@ -16,7 +16,7 @@ import {
   localLayout, localPaths, localWrapperFiles, localCliText, localCmdText, localWrapperAccountId, inspectLocal,
   setupLocalT3Environment, readLocalLeaseClient, localCodexAccounts, hasAntigravityKeyringTarget,
 } from '../core/t3local.js';
-import { rateLimitScanner, rateLimitDetails, findRealClaude } from '../bin/switchboard-lease.mjs';
+import { rateLimitScanner, rateLimitDetails, findRealClaude, withoutClientKey } from '../bin/switchboard-lease.mjs';
 
 const KEY = 'sb-key-stub';
 const accounts = [
@@ -243,6 +243,10 @@ test('the real claude is never one of Switchboard\'s own wrappers', () => {
   assert.equal(findRealClaude({ env: { CLAUDE_BIN: path.join(home, 'missing.exe') }, home }), null);
 });
 
+test('the client key is left out of claude\'s environment whatever case Windows kept its name in', () => {
+  assert.deepEqual(withoutClientKey({ SWITCHBOARD_CLIENT_KEY: KEY, Switchboard_Client_Key: KEY, PATH: 'p', CLAUDE_BIN: 'c' }), { PATH: 'p', CLAUDE_BIN: 'c' });
+});
+
 /** Write the local layout into a temp home and run one wrapper's cli.js the way T3 does. */
 function runWrapper(home, file, account, args, env) {
   const p = localPaths(home);
@@ -268,7 +272,7 @@ function fakeClaude(dir, { lines = ['ok'], code = 0 } = {}) {
   const record = path.join(dir, 'seen.json');
   fs.writeFileSync(file, [
     "import fs from 'node:fs';",
-    `fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, apiKey: process.env.ANTHROPIC_API_KEY ?? null }));`,
+    `fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, apiKey: process.env.ANTHROPIC_API_KEY ?? null, clientKeySeen: Object.values(process.env).includes(${JSON.stringify(KEY)}) }));`,
     `for (const l of ${JSON.stringify(lines)}) process.stdout.write(l + '\\n');`,
     `process.exitCode = ${code};`,
   ].join('\n'));
@@ -285,7 +289,7 @@ test('a local wrapper borrows its account, runs claude with the lent token and r
     assert.equal(r.code, 0, r.err);
     assert.equal(r.out.trim(), 'ok');
     assert.deepEqual(broker.leases, [{ provider: 'claude', harness: 'claude', account: 'claude-default' }]);
-    assert.deepEqual(claude.seen(), { args: ['-p', 'hi'], token: 'stub-token', apiKey: null });
+    assert.deepEqual(claude.seen(), { args: ['-p', 'hi'], token: 'stub-token', apiKey: null, clientKeySeen: false });
     assert.deepEqual(broker.reports.map((x) => [x.outcome, x.exitCode]), [['ok', 0]]);
   } finally {
     broker.server.close();
@@ -316,6 +320,7 @@ test('T3\'s --version check borrows nothing, and no free lane exits 75 so the ca
     const v = await runWrapper(home, 't3-claude-default', accounts[0], ['--version'], env);
     assert.equal(v.code, 0);
     assert.match(v.out, /Claude Code/);
+    assert.equal(claude.seen().clientKeySeen, false, 'the client key is not passed to claude');
     assert.equal(broker.leases.length, 0);
     const busy = await runWrapper(home, 't3-claude-default', accounts[0], ['-p', 'hi'], env);
     assert.equal(busy.code, 75, busy.err);
