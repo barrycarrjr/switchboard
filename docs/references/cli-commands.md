@@ -154,8 +154,15 @@ switchboard t3 forget <local|wsl:<distro>|ssh:<host>>
   a code to enter in your browser (device code sign-in must be on in ChatGPT, under Settings,
   Security). Antigravity's sign-in belongs to T3 itself, kept apart from the `agy` command's,
   so it is done in T3: pick the environment, then Settings, Providers, Antigravity (Install
-  first where T3 has not installed its Antigravity program there yet), then Sign in; T3 shows
-  a link to open in your own browser. T3 cannot install Antigravity on a machine without
+  first where T3 has not installed its Antigravity program there yet), then Sign in, and finish
+  the Google sign-in in the browser page it opens. Which file holds that sign-in depends on
+  the program T3 runs: up to 1.4 (`agy_acp_server`) it is `acp_token.json`, from 1.5 (`antigravity`,
+  `agy.exe` on Windows) it is `antigravity-oauth-token`, so the check reads the active version
+  and a 1.4 sign-in left behind after T3 updates is reported as still to do. From 1.5 the
+  program opens that page with `xdg-open`, which WSL lacks, so on a WSL machine where
+  Antigravity is used the setup adds `~/.local/bin/xdg-open`, which hands the link to the
+  Windows browser. It is added only where no `xdg-open` exists, is kept up to date while it
+  carries Switchboard's marker line, and one someone else put there is left alone. T3 cannot install Antigravity on a machine without
   Node.js, so on such a machine the advice starts with installing Node.js 22, with the command
   for that system (NodeSource for Debian, Ubuntu and Fedora families). `t3 status` prints the
   how-to under each machine for every sign-in still to do. Codex's usage reaches T3 through the Switchboard hub;

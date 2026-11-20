@@ -15,7 +15,7 @@ import { tempDir } from '../test-support/tempdir.js';
 process.env.APPDATA = tempDir('sb-t3env-');
 
 const {
-  codexAccountsFor, mergeT3EnvironmentSettings, inspectScript, parseInspect, signInsFor, codexSignInCommand,
+  codexAccountsFor, mergeT3EnvironmentSettings, inspectScript, parseInspect, signInsFor, codexSignInCommand, antigravityTokenStore,
   rememberT3Environment, t3EnvironmentStatus, antigravityProfileName, enabledAntigravityIds,
 } = await import('../core/t3env.js');
 const { runT3SignIn, usesAntigravity } = await import('../core/t3env-run.js');
@@ -89,7 +89,7 @@ test('inspection asks Codex about each account in that account\'s folder, and re
 
 test('inspection output gives each Codex account\'s state and which Antigravity profiles are signed in', () => {
   const r = parseInspect([mark('home', '/home/u'), mark('codexbin', '/usr/local/bin/codex'), mark('codexstatus', '.codex signed-in'),
-    mark('codexstatus', '.codex-t3/work unknown'), mark('agtoken', 'abc'), mark('settingssha', 'none'), mark('done', '1')].join('\n'));
+    mark('codexstatus', '.codex-t3/work unknown'), mark('agtoken', 'abc/antigravity-oauth-token'), mark('agactive', 'antigravity '), mark('settingssha', 'none'), mark('done', '1')].join('\n'));
   assert.equal(r.codexBin, '/usr/local/bin/codex');
   assert.deepEqual(r.codexStatus, { '.codex': 'signed-in', '.codex-t3/work': 'unknown' });
   assert.deepEqual(r.antigravityTokenProfiles, ['abc']);
@@ -250,4 +250,32 @@ test('a machine without Node.js is told to install it before Antigravity, with t
   assert.match(codex.how, /^install Node\.js first \(.*\), then install Codex/, 'npm needs Node.js, so the Codex step says so first');
   assert.match(nodeInstallCommand('fedora'), /rpm\.nodesource\.com.*-o \/tmp\/nodesource_setup\.sh && .*dnf install -y nodejs/);
   assert.equal(nodeInstallCommand('arch'), 'Node.js 22 from https://nodejs.org');
+});
+
+test('only the token file the Antigravity program T3 runs now reads counts as its sign-in', () => {
+  assert.equal(antigravityTokenStore(['agy_acp_server.par', 'localharness_external']), 'old');
+  assert.equal(antigravityTokenStore(['agy_acp_server.exe', 'localharness_external.exe']), 'old');
+  assert.equal(antigravityTokenStore(['antigravity']), 'new');
+  assert.equal(antigravityTokenStore(['agy.exe']), 'new', 'the Windows name of the 1.5 program');
+  assert.equal(antigravityTokenStore([]), null);
+  const inspect = (...lines) => parseInspect([...lines, mark('settingssha', 'none'), mark('done', '1')].join('\n'));
+  // What WSL had on 2026-11-19: the 1.4 sign-in left behind, the 1.5 program asking for a new one.
+  const leftBehind = inspect(mark('agtoken', 'p1/acp_token.json'), mark('agactive', 'antigravity '));
+  assert.deepEqual(leftBehind.antigravityTokenProfiles, [], 'the old file is not read by the new program');
+  const both = inspect(mark('agtoken', 'p1/acp_token.json'), mark('agtoken', 'p1/antigravity-oauth-token'), mark('agactive', 'antigravity '));
+  assert.deepEqual(both.antigravityTokenProfiles, ['p1']);
+  const old = inspect(mark('agtoken', 'p1/acp_token.json'), mark('agtoken', 'p2/antigravity-oauth-token'), mark('agactive', 'agy_acp_server.par localharness_external '));
+  assert.deepEqual(old.antigravityTokenProfiles, ['p1'], 'on the old program only the old file counts');
+  const unread = inspect(mark('agtoken', 'p1/acp_token.json'), mark('agtoken', 'p2/antigravity-oauth-token'));
+  assert.deepEqual(unread.antigravityTokenProfiles, ['p1', 'p2'], 'without an active version either file counts');
+});
+
+test('the inspection names the WSL browser opener as Switchboard\'s, someone else\'s, or missing', () => {
+  const inspect = (v) => parseInspect([...(v == null ? [] : [mark('xdgopen', v)]), mark('settingssha', 'none'), mark('done', '1')].join('\n')).xdgOpen;
+  assert.deepEqual(inspect('ours abc'), { state: 'ours', sha: 'abc' });
+  assert.deepEqual(inspect('other /usr/bin/xdg-open'), { state: 'other', path: '/usr/bin/xdg-open' });
+  assert.deepEqual(inspect('none'), { state: 'none' });
+  assert.equal(inspect(null), null, 'not asked off WSL');
+  assert.match(inspectScript({ wsl: true }), /emit xdgopen/);
+  assert.doesNotMatch(inspectScript({ wsl: false }), /xdgopen/);
 });

@@ -341,3 +341,20 @@ test('the .cmd T3 checks with --version starts the cli.js beside it', { skip: pr
   assert.equal(res.code, 0);
   assert.match(res.out, /Claude Code/);
 });
+
+test('on this machine, a sign-in the 1.4 Antigravity program left behind does not count once T3 runs 1.5', async () => {
+  const { home, env } = makeHome();
+  const p = localPaths(home);
+  const acp = path.join(p.providers, 'profile-a', 'antigravity-acp');
+  fs.mkdirSync(acp, { recursive: true });
+  fs.writeFileSync(path.join(acp, 'acp_token.json'), '{"x":1}');
+  const id = 'a'.repeat(64);
+  fs.mkdirSync(path.join(p.tools, 'win32-x64', 'versions', id), { recursive: true });
+  fs.writeFileSync(path.join(p.tools, 'win32-x64', 'versions', id, 'agy.exe'), '');
+  fs.writeFileSync(path.join(p.tools, 'win32-x64', 'active.json'), JSON.stringify({ releaseId: id }));
+  const before = await inspectLocal({ home, env });
+  assert.deepEqual(before.antigravityTokenProfiles, [], 'only the old file is there');
+  assert.equal(before.antigravityRuntime, true);
+  fs.writeFileSync(path.join(acp, 'antigravity-oauth-token'), '{"x":1}');
+  assert.deepEqual((await inspectLocal({ home, env })).antigravityTokenProfiles, ['profile-a']);
+});

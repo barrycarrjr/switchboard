@@ -8,7 +8,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { tempDir } from '../test-support/tempdir.js';
-import { inspectScript, applyScript, proveScript, parseInspect, parseMarkedOutput, parseProve, sha256 } from '../core/t3env.js';
+import { inspectScript, applyScript, proveScript, parseInspect, parseMarkedOutput, parseProve, sha256, WSL_XDG_OPEN_SCRIPT } from '../core/t3env.js';
 
 const hasTool = (cmd) => spawnSync('bash', ['-c', `command -v ${cmd}`], { stdio: 'ignore' }).status === 0;
 const skip = process.platform === 'win32' || !['base64', 'sha256sum', 'mktemp', 'curl'].every(hasTool)
@@ -257,4 +257,34 @@ test('the proof runs each wrapper with stdin closed and reports its exit code an
   const r = parseProve(run(home, proveScript(files, { timeoutSeconds: 10 })).stdout, files);
   assert.deepEqual(r.map((x) => [x.file, x.ok, x.code]), [['t3-claude-good', true, 0], ['t3-claude-bad', false, 1]]);
   assert.match(r[1].detail, /Invalid API key/);
+});
+
+test('inspection counts only the token file the active Antigravity program reads', { skip }, () => {
+  const home = freshHome();
+  const acp = path.join(home, '.t3', 'userdata', 'providers', 'antigravity', 'abc', 'antigravity-acp');
+  fs.mkdirSync(acp, { recursive: true });
+  fs.writeFileSync(path.join(acp, 'acp_token.json'), '{"x":1}');
+  const tools = path.join(home, '.t3', 'tools', 'antigravity-acp', 'linux-x64');
+  const id = 'b'.repeat(64);
+  fs.mkdirSync(path.join(tools, 'versions', id), { recursive: true });
+  fs.writeFileSync(path.join(tools, 'versions', id, 'antigravity'), '');
+  fs.writeFileSync(path.join(tools, 'active.json'), JSON.stringify({ releaseId: id }));
+  assert.deepEqual(parseInspect(run(home, inspectScript({})).stdout).antigravityTokenProfiles, [], 'the 1.4 file left behind does not count');
+  fs.writeFileSync(path.join(acp, 'antigravity-oauth-token'), '{"x":1}');
+  assert.deepEqual(parseInspect(run(home, inspectScript({})).stdout).antigravityTokenProfiles, ['abc']);
+});
+
+test('the WSL browser opener is installed where there is none, updated when it is ours, and never written over another', { skip }, () => {
+  const home = freshHome();
+  const xo = path.join(home, '.local', 'bin', 'xdg-open');
+  const xdg = () => parseInspect(run(home, inspectScript({ wsl: true })).stdout).xdgOpen;
+  assert.deepEqual(xdg(), { state: 'none' });
+  assert.equal(parseMarkedOutput(run(home, applyScript({ xdgOpenScript: WSL_XDG_OPEN_SCRIPT })).stdout).xdgopen, 'written');
+  assert.equal(fs.readFileSync(xo, 'utf8'), WSL_XDG_OPEN_SCRIPT);
+  assert.equal(fs.statSync(xo).mode & 0o111, 0o111, 'it can be run');
+  assert.deepEqual(xdg(), { state: 'ours', sha: sha256(WSL_XDG_OPEN_SCRIPT) });
+  fs.writeFileSync(xo, '#!/bin/sh\necho mine\n');
+  assert.deepEqual(xdg(), { state: 'other', path: xo });
+  assert.equal(parseMarkedOutput(run(home, applyScript({ xdgOpenScript: WSL_XDG_OPEN_SCRIPT })).stdout).xdgopen, 'kept');
+  assert.equal(fs.readFileSync(xo, 'utf8'), '#!/bin/sh\necho mine\n');
 });

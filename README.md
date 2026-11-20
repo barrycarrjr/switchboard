@@ -638,7 +638,9 @@ machine to prove it works. Codex and Antigravity cannot be lent, so it adds the 
 and Antigravity entries the main machine has and lists only the sign-ins still missing on
 that machine; `switchboard t3 sign-in <target>` runs Codex's one-time device-code sign-in
 there, and Antigravity's is done in T3 itself (after installing Node.js on that machine, which
-T3 needs for Antigravity and which the advice then says first). Health warns when an environment's setup failed or
+T3 needs for Antigravity and which the advice then says first). On WSL it also adds a small
+`~/.local/bin/xdg-open` that opens links in the Windows browser, because T3's Antigravity
+program opens its Google sign-in page with that command and WSL has none. Health warns when an environment's setup failed or
 its wrapper is older than this Switchboard. The full behaviour is in
 `docs/references/cli-commands.md`.
 

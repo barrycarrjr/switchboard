@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   parseT3Target, lendableClaudeAccounts, accountWrapperName, accountWrapperScript, wrapperAccountId,
   t3HubSourceId, t3HubSecretFileName, mergeT3EnvironmentSettings, inspectScript, applyScript, proveScript,
-  parseInspect, parseProve, parseMarkedOutput, targetCommand, setupT3Environment, rememberT3Environment,
+  parseInspect, parseProve, parseMarkedOutput, targetCommand, setupT3Environment, rememberT3Environment, WSL_XDG_OPEN_SCRIPT,
   t3EnvironmentStatus, keyForEnvironment, ANY_ACCOUNT_INSTANCE_ID, sha256,
   forgetT3Environment, T3_KEY_PURPOSE,
 } from '../core/t3env.js';
@@ -217,6 +217,7 @@ function fakeTarget(state) {
       if (state.settings) lines.push(mark('settings', JSON.stringify(state.settings)), mark('settingssha', state.sha ?? 'sha1'));
       else lines.push(mark('settingssha', 'none'));
       for (const [file, body] of Object.entries(state.wrappers ?? {})) lines.push(mark('wrapper', `${file}\n${body}`));
+      if (state.xdgopen) lines.push(mark('xdgopen', state.xdgopen));
       lines.push(mark('missing', state.missing ?? ''), mark('codex', state.codex ?? 'not-installed'), mark('done', '1'));
       return { code: 0, stdout: lines.join('\n'), stderr: '' };
     }
@@ -227,6 +228,7 @@ function fakeTarget(state) {
       if (/broker-url" 644/.test(script)) out.push(mark('brokerurl', 'written'));
       if (/switchboard-lease" 755/.test(script)) out.push(mark('lease', 'written'));
       for (const m of script.matchAll(/emit wrapper '([^']+)'/g)) out.push(mark('wrapper', m[1]));
+      if (script.includes('emit xdgopen written')) out.push(mark('xdgopen', 'written'));
       if (script.includes('settings.json"') && script.includes('emit settings written')) {
         out.push(mark('backup', '/home/u/.t3/userdata/settings.json.before-switchboard-x'), mark('settings', 'written'));
         state.written = script;
@@ -507,4 +509,42 @@ test('inspection output is parsed into the facts the plan needs', () => {
   assert.deepEqual(r.settings, { a: 1 });
   assert.deepEqual(r.hubSecrets, ['usage-limit-source-x.bin']);
   assert.equal(parseInspect('nothing marked'), null, 'output without the done mark is no answer');
+});
+
+const writtenOpener = (calls) => {
+  const apply = calls.find((c) => c.includes('emit xdgopen written'));
+  if (!apply) return null;
+  return Buffer.from(/put "\$xo" 755 '([^']+)'/.exec(apply)[1], 'base64').toString('utf8');
+};
+
+test('on WSL with Antigravity in use, the setup adds a browser opener where there is none, so its sign-in page can open', async () => {
+  const d = deps({ settings: {}, xdgopen: 'none' }, { antigravity: true });
+  const r = await setupT3Environment(U, d.deps, { prove: false });
+  assert.equal(r.ok, true, r.error);
+  assert.ok(r.steps.some((x) => /Installed a browser opener/.test(x)), r.steps.join('\n'));
+  const text = writtenOpener(d.fake.calls);
+  assert.equal(text, WSL_XDG_OPEN_SCRIPT);
+  assert.match(text, /rundll32\.exe/, 'it hands the link to Windows');
+});
+
+test('the browser opener is never written over someone else\'s, nor where Antigravity is not used, nor off WSL', async () => {
+  const theirs = deps({ settings: {}, xdgopen: 'other /usr/bin/xdg-open' }, { antigravity: true });
+  const r = await setupT3Environment(U, theirs.deps, { prove: false });
+  assert.equal(writtenOpener(theirs.fake.calls), null);
+  assert.ok(r.steps.some((x) => x.includes('Left the browser opener there alone (/usr/bin/xdg-open)')), r.steps.join('\n'));
+  const unused = deps({ settings: {}, xdgopen: 'none' }, { antigravity: false });
+  await setupT3Environment(U, unused.deps, { prove: false });
+  assert.equal(writtenOpener(unused.fake.calls), null);
+  const ssh = deps({ settings: {}, xdgopen: 'none' }, { antigravity: true });
+  await setupT3Environment(W, ssh.deps, { prove: false });
+  assert.equal(writtenOpener(ssh.fake.calls), null, 'an ssh machine is not WSL, so rundll32 means nothing there');
+});
+
+test('Switchboard\'s own browser opener is brought up to date, by the start-up refresh too, and left alone when current', async () => {
+  const old = deps({ key: 'present', probe: 200, settings: {}, xdgopen: 'ours 0000' });
+  await setupT3Environment(U, old.deps, { refreshOnly: true });
+  assert.equal(writtenOpener(old.fake.calls), WSL_XDG_OPEN_SCRIPT);
+  const current = deps({ key: 'present', probe: 200, settings: {}, xdgopen: `ours ${sha256(WSL_XDG_OPEN_SCRIPT)}` }, { antigravity: true });
+  await setupT3Environment(U, current.deps, { prove: false });
+  assert.equal(writtenOpener(current.fake.calls), null);
 });

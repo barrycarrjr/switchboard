@@ -7,6 +7,7 @@ import { findRealClaude } from '../bin/switchboard-lease.mjs';
 import {
   LOCAL_TARGET, PROOF_PROMPT, OTHER_SIGN_INS_NOTE, lendableClaudeAccounts, mergeT3EnvironmentSettings,
   t3HubSecretFileName, sha256, signInsFor, enabledAntigravityIds, codexAccountsFor,
+  ANTIGRAVITY_TOKEN_FILES, antigravityTokenStore, signedInAntigravityProfiles,
 } from './t3env.js';
 import { samePath } from './paths.js';
 
@@ -253,17 +254,30 @@ export async function inspectLocal({ home = os.homedir(), env = process.env, bro
     for (const acc of codexAccounts) out.codexStatus[acc.relHome] = await localCodexStatus(acc, out.codexBin, env);
   }
 
+  // The same reading as the inspection script: every non-empty token file, then the one the
+  // program T3 runs now reads (ANTIGRAVITY_TOKEN_FILES in t3env.js).
+  const found = [];
   try {
     for (const profile of fs.readdirSync(p.providers)) {
-      try { if (fs.statSync(path.join(p.providers, profile, 'antigravity-acp', 'acp_token.json')).size > 0) out.antigravityTokenProfiles.push(profile); } catch { /* none */ }
+      for (const file of Object.values(ANTIGRAVITY_TOKEN_FILES)) {
+        try { if (fs.statSync(path.join(p.providers, profile, 'antigravity-acp', file)).size > 0) found.push({ profile, file }); } catch { /* none */ }
+      }
     }
   } catch { /* no Antigravity profile yet */ }
+  let store = null;
   out.antigravityRuntime = false;
   try {
     for (const plat of fs.readdirSync(p.tools)) {
       try { if (fs.readdirSync(path.join(p.tools, plat, 'versions')).length) out.antigravityRuntime = true; } catch { /* none */ }
+      try {
+        const id = JSON.parse(fs.readFileSync(path.join(p.tools, plat, 'active.json'), 'utf8'))?.releaseId;
+        if (typeof id !== 'string' || !/^[0-9a-f]{16,}$/.test(id)) continue;
+        const s = antigravityTokenStore(fs.readdirSync(path.join(p.tools, plat, 'versions', id)));
+        store = store === 'old' || s === 'old' ? 'old' : store ?? s;
+      } catch { /* no active version */ }
     }
   } catch { /* not installed */ }
+  out.antigravityTokenProfiles = signedInAntigravityProfiles(found, store);
   return out;
 }
 

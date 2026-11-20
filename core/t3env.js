@@ -208,6 +208,64 @@ export function antigravityProfileName(instanceId) {
   return crypto.createHash('sha256').update(String(instanceId), 'utf8').digest('hex');
 }
 
+/**
+ * The file in an Antigravity profile's `antigravity-acp` folder that holds T3's sign-in, by the
+ * program T3 runs. Up to 1.4 that program was `agy_acp_server` and kept the sign-in in
+ * acp_token.json; from 1.5 it is the Antigravity CLI itself (`antigravity`, `agy.exe` on
+ * Windows), which keeps it in antigravity-oauth-token and never reads the old file. The old file
+ * stays behind after T3 moves to the new program, so counting it would call a machine signed in
+ * while every thread there asks for a new sign-in (seen 2026-11-19 after T3 moved to 1.5.13).
+ */
+export const ANTIGRAVITY_TOKEN_FILES = { old: 'acp_token.json', new: 'antigravity-oauth-token' };
+
+/**
+ * Which of those files the program T3 runs now reads, from the file names in its active version
+ * folder: 'old', 'new', or null when the active version cannot be read.
+ */
+export function antigravityTokenStore(activeFiles) {
+  const names = (Array.isArray(activeFiles) ? activeFiles : []).filter(Boolean);
+  if (!names.length) return null;
+  return names.some((n) => /^agy_acp_server/i.test(n)) ? 'old' : 'new';
+}
+
+/**
+ * The profiles signed in for that store, from the token files found ({ profile, file } pairs).
+ * When the active version cannot be read either file counts, which is what Switchboard did
+ * before it knew there were two.
+ */
+export function signedInAntigravityProfiles(found, store) {
+  const wanted = store ? [ANTIGRAVITY_TOKEN_FILES[store]] : Object.values(ANTIGRAVITY_TOKEN_FILES);
+  const out = [];
+  for (const { profile, file } of found ?? []) {
+    if (profile && wanted.includes(file) && !out.includes(profile)) out.push(profile);
+  }
+  return out;
+}
+
+/**
+ * WSL has no program to open a link with, and from 1.5 T3's Antigravity program opens its
+ * Google sign-in page with xdg-open (it no longer uses the BROWSER helper T3 gives it), so on
+ * WSL the sign-in failed with `exec: "xdg-open": executable file not found`. This one hands the
+ * link to Windows, so the page opens in the Windows default browser, and its sign-in returns to
+ * the local address the program listens on, which WSL shares with Windows. The marker line
+ * says the file is Switchboard's to update; one without it is never touched.
+ */
+export const WSL_XDG_OPEN_MARKER = '# switchboard-xdg-open';
+export const WSL_XDG_OPEN_SCRIPT = [
+  '#!/usr/bin/env bash',
+  `${WSL_XDG_OPEN_MARKER} 1`,
+  '# Installed by Switchboard (t3 setup): opens a link or file from WSL in its Windows program,',
+  '# so a sign-in page opened here (T3 Code\'s Antigravity) shows in the Windows browser.',
+  '# Remove the marker line above to keep your own changes; Switchboard then leaves this file alone.',
+  'target="${1:-}"',
+  '[ -n "$target" ] || { echo "usage: xdg-open <link or file>" >&2; exit 1; }',
+  '[ -e "$target" ] && target="$(wslpath -w "$target")"',
+  'opener="$(command -v rundll32.exe 2>/dev/null)"',
+  '[ -n "$opener" ] || opener=/mnt/c/Windows/System32/rundll32.exe',
+  'exec "$opener" url.dll,FileProtocolHandler "$target"',
+  '',
+].join('\n');
+
 /** The ids of the enabled Antigravity entries in a T3 settings object. */
 export function enabledAntigravityIds(settings) {
   return Object.entries(settings?.providerInstances ?? {})
@@ -459,11 +517,20 @@ export function inspectScript({ brokerUrls = [], defaultRoutePort = null, codexH
     // config, a timeout) is reported as unknown rather than guessed.
     ...codexHomes.map((h) => `if [ -n "$cx" ]; then if [ ! -d "$HOME/${h}" ]; then emit codexstatus '${h} not-signed-in'; else o="$(CODEX_HOME="$HOME/${h}" timeout 15 "$cx" login status </dev/null 2>&1)"; c=$?; if [ $c = 0 ]; then emit codexstatus '${h} signed-in'; elif printf '%s' "$o" | grep -qi 'not logged in'; then emit codexstatus '${h} not-signed-in'; else emit codexstatus "${h} unknown"; fi; fi; fi`),
     // T3 keeps its own Antigravity sign-in in a private profile per entry, apart from the agy
-    // command's; a token file there is that sign-in.
-    'for t in "$HOME"/.t3/userdata/providers/antigravity/*/antigravity-acp/acp_token.json; do [ -s "$t" ] && emit agtoken "$(basename "$(dirname "$(dirname "$t")")")"; done',
+    // command's. Each non-empty token file is named with its profile; which file counts depends
+    // on the program T3 runs now (ANTIGRAVITY_TOKEN_FILES), so the file names in its active
+    // version folder come back too.
+    `for p in "$HOME"/.t3/userdata/providers/antigravity/*/antigravity-acp; do for f in ${Object.values(ANTIGRAVITY_TOKEN_FILES).join(' ')}; do [ -s "$p/$f" ] && emit agtoken "$(basename "$(dirname "$p")")/$f"; done; done`,
+    `for a in "$HOME"/.t3/tools/antigravity-acp/*/active.json; do [ -r "$a" ] || continue; id="$(grep -o '[0-9a-f]\\{16,\\}' "$a" | head -n1)"; v="$(dirname "$a")/versions/$id"; [ -n "$id" ] && [ -d "$v" ] && emit agactive "$(ls -A "$v" | tr '\\n' ' ')"; done`,
     // T3 installs its own Antigravity program per machine (from that environment's provider
     // settings); until it has, there is nothing to sign in to.
     'r=no; for v in "$HOME"/.t3/tools/antigravity-acp/*/versions/*; do [ -d "$v" ] && r=yes && break; done; emit agruntime "$r"',
+    // The browser opener a WSL sign-in needs (WSL_XDG_OPEN_SCRIPT): Switchboard's (with its
+    // hash), someone else's, or none. Our place is looked at first because `wsl.exe --exec`
+    // leaves ~/.local/bin off PATH; a Windows program seen through /mnt does not count.
+    ...(wsl ? [
+      `xo="$HOME/.local/bin/xdg-open"; if [ ! -L "$xo" ] && [ -f "$xo" ] && grep -q '^${WSL_XDG_OPEN_MARKER}' "$xo"; then emit xdgopen "ours $(sha256sum "$xo" | cut -d" " -f1)"; elif [ -e "$xo" ] || [ -L "$xo" ]; then emit xdgopen "other $xo"; else o=""; for x in $(which -a xdg-open 2>/dev/null); do case "$x" in /mnt/*) ;; *) o="$x"; break ;; esac; done; if [ -n "$o" ]; then emit xdgopen "other $o"; else emit xdgopen none; fi; fi`,
+    ] : []),
     ...(antigravity ? nodeProbeLines({ wsl }) : []),
     'emit done 1',
     '',
@@ -517,7 +584,7 @@ export function parseMarkedOutput(text, repeated = []) {
 
 /** The inspect output as a plain object the planner reads. */
 export function parseInspect(text) {
-  const raw = parseMarkedOutput(text, ['probe', 'wrapper', 'hubsecret', 'codexstatus', 'agtoken']);
+  const raw = parseMarkedOutput(text, ['probe', 'wrapper', 'hubsecret', 'codexstatus', 'agtoken', 'agactive']);
   if (raw.done !== '1') return null;
   const probes = raw.probe.map((p) => {
     const [url, code] = p.split(' ');
@@ -560,8 +627,19 @@ export function parseInspect(text) {
     hubSecrets: raw.hubsecret,
     codexBin: raw.codexbin || null,
     codexStatus: Object.fromEntries(raw.codexstatus.map((v) => v.split(' '))),
-    antigravityTokenProfiles: raw.agtoken,
+    antigravityTokenProfiles: signedInAntigravityProfiles(
+      raw.agtoken.map((v) => ({ profile: v.slice(0, v.lastIndexOf('/')), file: v.slice(v.lastIndexOf('/') + 1) })),
+      // More than one platform folder is possible in principle; one on the old program is
+      // enough to make the old file count.
+      raw.agactive.map((v) => antigravityTokenStore(v.trim().split(/\s+/))).reduce((a, s) => (a === 'old' || s === 'old' ? 'old' : a ?? s), null),
+    ),
     antigravityRuntime: raw.agruntime == null ? null : raw.agruntime === 'yes',
+    // The WSL browser opener: { state: 'ours', sha } | { state: 'other', path } | { state: 'none' },
+    // or null when it was not asked about (not WSL).
+    xdgOpen: raw.xdgopen == null ? null
+      : raw.xdgopen.startsWith('ours ') ? { state: 'ours', sha: raw.xdgopen.slice(5).trim() }
+        : raw.xdgopen.startsWith('other ') ? { state: 'other', path: raw.xdgopen.slice(6).trim() }
+          : { state: 'none' },
     // found, missing or unknown; null when Node.js was not asked about. Only "missing" leads to
     // install advice, so a check that could not tell never becomes a definite answer.
     nodeState: raw.nodestate ?? null,
@@ -587,6 +665,7 @@ export function applyScript({
   expectSha = null,
   backupSuffix = 'before-switchboard',
   hubSecretFile = null,
+  xdgOpenScript = null,
 } = {}) {
   const lines = [
     ...SCRIPT_HEAD,
@@ -619,6 +698,14 @@ export function applyScript({
     // copy is kept next to it before it is replaced.
     if (w.backup) lines.push(`[ -f "$bin/${w.file}" ] && cp -p "$bin/${w.file}" "$bin/${w.file}.${backupSuffix}" && emit wrapperbackup ${shq(`${w.file}.${backupSuffix}`)}`);
     lines.push(`put "$bin/${w.file}" 755 ${shq(B64(w.text))}`, `emit wrapper ${shq(w.file)}`);
+  }
+  if (xdgOpenScript) {
+    // Written only where the inspection found none, or Switchboard's own: the check is made
+    // again here, so a file someone put there since is still left alone.
+    lines.push(
+      'xo="$bin/xdg-open"',
+      `if [ -L "$xo" ] || { [ -e "$xo" ] && ! grep -q '^${WSL_XDG_OPEN_MARKER}' "$xo"; }; then emit xdgopen kept; else put "$xo" 755 ${shq(B64(xdgOpenScript))}; emit xdgopen written; fi`,
+    );
   }
   if (hubSecretFile) {
     if (!/^usage-limit-source-[A-Za-z0-9_-]+\.bin$/.test(hubSecretFile)) throw new Error('unexpected hub secret file name');
@@ -845,6 +932,11 @@ export async function setupT3Environment(target, deps, { replaceSymlink = false,
     const leaseCurrent = inspected.lease === `file:${sha256(deps.leaseScript)}`;
     const settingsText = !refreshOnly && merged.changes.length ? `${JSON.stringify(merged.settings, null, 2)}\n` : null;
     const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+    const xdgOpen = target.kind === 'wsl' ? inspected.xdgOpen : null;
+    // WSL only, and only where Antigravity is in use: added where there is no opener at all,
+    // brought up to date where it is Switchboard's (the start-up refresh does only that).
+    const xdgOpenOutdated = xdgOpen?.state === 'ours' && xdgOpen.sha !== sha256(WSL_XDG_OPEN_SCRIPT);
+    const writeXdgOpen = xdgOpenOutdated || (!refreshOnly && wantAntigravity && xdgOpen?.state === 'none');
     const script = applyScript({
       key: keySecret,
       brokerUrl: target.kind === 'ssh' && inspected.brokerFile !== deps.brokerUrl ? deps.brokerUrl : null,
@@ -858,6 +950,7 @@ export async function setupT3Environment(target, deps, { replaceSymlink = false,
       expectSha: inspected.settingsSha,
       backupSuffix: `before-switchboard-${stamp}`,
       hubSecretFile,
+      xdgOpenScript: writeXdgOpen ? WSL_XDG_OPEN_SCRIPT : null,
     });
     const res2 = await deps.run(target, script, runOpts);
     const out = parseMarkedOutput(res2.stdout, ['wrapper', 'wrapperbackup']);
@@ -882,6 +975,9 @@ export async function setupT3Environment(target, deps, { replaceSymlink = false,
     if (leaseCurrent) step('The lease wrapper there is already this version.');
     step(out.wrapper.length ? `Wrote ${out.wrapper.length} account wrapper${out.wrapper.length === 1 ? '' : 's'}: ${out.wrapper.join(', ')}.` : 'The account wrappers there are already up to date.');
     for (const b of out.wrapperbackup) step(`Kept a copy of the hand-written wrapper it replaced: ~/.local/bin/${b}.`);
+    if (out.xdgopen === 'written') step('Installed a browser opener (~/.local/bin/xdg-open), so T3\'s Antigravity sign-in opens in the Windows browser.');
+    else if (out.xdgopen === 'kept') step('Left ~/.local/bin/xdg-open alone: someone else put it there.');
+    else if (!refreshOnly && wantAntigravity && xdgOpen?.state === 'other') step(`Left the browser opener there alone (${xdgOpen.path}).`);
     if (out.hubsecret === 'written') step('Saved the quota hub key for T3.');
     if (out.hubsecret === 'failed') step('Could not save the quota hub key; add it in T3 (Settings, Providers, Usage providers).');
     if (out.settings === 'written') {
@@ -979,7 +1075,7 @@ export function signInsFor(target, inspected, codexAccounts, { antigravityIds = 
     out.push({
       provider: 'antigravity', account: 'antigravity', what: 'Antigravity',
       state: signedIn ? 'signed-in' : installed ? 'needs-sign-in' : 'not-installed',
-      how: `${nodeFirst}in T3, pick this environment, then Settings, Providers, Antigravity${installed ? ',' : ': Install first, then'} Sign in; T3 shows a link to open in your own browser`,
+      how: `${nodeFirst}in T3, pick this environment, then Settings, Providers, Antigravity${installed ? ',' : ': Install first, then'} Sign in, and finish the Google sign-in in the browser page it opens (or the link T3 shows)`,
     });
   }
   return out;
