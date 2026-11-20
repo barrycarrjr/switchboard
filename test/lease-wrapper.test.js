@@ -222,6 +222,49 @@ test('--version runs claude directly and borrows nothing', { skip }, async () =>
   }
 });
 
+// A stand-in claude that writes its whole environment to a file, so a test can look for the
+// client key under any name. Each claude run, and every shell command it starts, sees this
+// environment, and a client key there could lease any lane's sign-in from the broker.
+function envClaude(dir) {
+  const file = path.join(dir, 'env-claude');
+  const seen = path.join(dir, 'claude-env');
+  fs.writeFileSync(file, `#!/usr/bin/env bash\nenv > '${seen}'\n`, { mode: 0o755 });
+  return { file, seen: () => fs.readFileSync(seen, 'utf8') };
+}
+
+test('claude does not get the client key, and the lease and its report still work', { skip }, async () => {
+  const dir = tempDir('sb-test-');
+  const broker = await startBroker();
+  try {
+    const claude = envClaude(dir);
+    // A caller's own exported variable named key must not carry the client key out either.
+    const run = await runWrapper({ SWITCHBOARD_CLIENT_KEY: KEY, SWITCHBOARD_BROKER_URL: broker.url, CLAUDE_BIN: claude.file, key: 'caller-value' });
+    assert.equal(run.code, 0);
+    const env = claude.seen();
+    assert.match(env, /^CLAUDE_CODE_OAUTH_TOKEN=stub-token$/m, 'the lease reached claude');
+    assert.doesNotMatch(env, /^SWITCHBOARD_CLIENT_KEY=/m);
+    assert.equal(env.includes(KEY), false, 'the key is in no variable claude can read');
+    assert.deepEqual(broker.reports.map((r) => [r.outcome, r.leaseId]), [['ok', 'lease_1']], 'the report after claude still used the key');
+  } finally {
+    broker.server.close();
+    removeTempDirs();
+  }
+});
+
+test('--version does not pass the client key to claude either', { skip }, async () => {
+  const dir = tempDir('sb-test-');
+  const broker = await startBroker();
+  try {
+    const claude = envClaude(dir);
+    const run = await runWrapper({ SWITCHBOARD_CLIENT_KEY: KEY, SWITCHBOARD_BROKER_URL: broker.url, CLAUDE_BIN: claude.file }, ['--version']);
+    assert.equal(run.code, 0);
+    assert.equal(claude.seen().includes(KEY), false);
+  } finally {
+    broker.server.close();
+    removeTempDirs();
+  }
+});
+
 test('a lease that carries no credential is refused rather than running claude on the machine\'s own sign-in', { skip }, async () => {
   const dir = tempDir('sb-test-');
   const broker = await startBroker({ leaseEnv: {} });

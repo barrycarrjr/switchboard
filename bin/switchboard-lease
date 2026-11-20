@@ -52,11 +52,16 @@ fi
 # settings write and a feed line every time, and a lane cooling down would make T3 mark the
 # provider broken.
 if [ "$#" -eq 1 ]; then
-    case "$1" in --version|-v|--help|-h) exec "$bin" "$1" ;; esac
+    case "$1" in --version|-v|--help|-h) unset SWITCHBOARD_CLIENT_KEY; exec "$bin" "$1" ;; esac
 fi
 
 conf="${XDG_CONFIG_HOME:-$HOME/.config}/switchboard"
 key="${SWITCHBOARD_CLIENT_KEY:-}"
+# The key leases any lane's sign-in, so claude and every command it runs must not get it. From
+# here it lives only in this shell variable, which the broker calls and the report read. A
+# caller's own exported variable named key would export it again, so that flag is cleared too.
+unset SWITCHBOARD_CLIENT_KEY
+export -n key
 [ -n "$key" ] || key="$(first_line_of "$conf/client-key" "$HOME/.switchboard-key")"
 [ -n "$key" ] || { echo "claude-leased: SWITCHBOARD_CLIENT_KEY is not set (and no ~/.config/switchboard/client-key found)" >&2; exit 78; }
 

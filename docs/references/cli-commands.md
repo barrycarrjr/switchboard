@@ -194,3 +194,6 @@ switchboard t3 forget <local|wsl:<distro>|ssh:<host>>
 - The lease wrapper itself passes `--version` and `--help` straight to claude without
   borrowing (T3 checks each provider with `--version` every few minutes), refuses to run
   claude when a lease carries no credential, and reports a session ended by a stop signal.
+  It never passes `SWITCHBOARD_CLIENT_KEY` on to claude, so neither claude nor a command it
+  runs holds a key that could lease a lane; the wrapper keeps the key to itself for the lease
+  and the report.
