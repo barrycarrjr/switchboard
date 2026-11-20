@@ -14,7 +14,7 @@ import { tempDir } from '../test-support/tempdir.js';
 import { parseT3Target, mergeT3EnvironmentSettings, t3EnvironmentStatus, signInsFor, LOCAL_TARGET } from '../core/t3env.js';
 import {
   localLayout, localPaths, localWrapperFiles, localCliText, localCmdText, localWrapperAccountId, inspectLocal,
-  setupLocalT3Environment, readLocalLeaseClient, localCodexAccounts,
+  setupLocalT3Environment, readLocalLeaseClient, localCodexAccounts, hasAntigravityKeyringTarget,
 } from '../core/t3local.js';
 import { rateLimitScanner, rateLimitDetails, findRealClaude } from '../bin/switchboard-lease.mjs';
 
@@ -352,9 +352,41 @@ test('on this machine, a sign-in the 1.4 Antigravity program left behind does no
   fs.mkdirSync(path.join(p.tools, 'win32-x64', 'versions', id), { recursive: true });
   fs.writeFileSync(path.join(p.tools, 'win32-x64', 'versions', id, 'agy.exe'), '');
   fs.writeFileSync(path.join(p.tools, 'win32-x64', 'active.json'), JSON.stringify({ releaseId: id }));
-  const before = await inspectLocal({ home, env });
+  const antigravityKeyring = async () => false;
+  const before = await inspectLocal({ home, env, antigravityKeyring });
   assert.deepEqual(before.antigravityTokenProfiles, [], 'only the old file is there');
   assert.equal(before.antigravityRuntime, true);
+  assert.equal(before.antigravityKeyring, false);
   fs.writeFileSync(path.join(acp, 'antigravity-oauth-token'), '{"x":1}');
-  assert.deepEqual((await inspectLocal({ home, env })).antigravityTokenProfiles, ['profile-a']);
+  assert.deepEqual((await inspectLocal({ home, env, antigravityKeyring })).antigravityTokenProfiles, ['profile-a']);
+});
+
+test('on Windows the 1.5 Antigravity sign-in in Credential Manager counts, and is only asked about for 1.5', async () => {
+  const { home, env } = makeHome();
+  const p = localPaths(home);
+  let asked = 0;
+  const antigravityKeyring = async () => { asked += 1; return true; };
+  const id = 'b'.repeat(64);
+  const versions = path.join(p.tools, 'win32-x64', 'versions', id);
+  fs.mkdirSync(versions, { recursive: true });
+  fs.writeFileSync(path.join(versions, 'agy_acp_server.exe'), '');
+  fs.writeFileSync(path.join(p.tools, 'win32-x64', 'active.json'), JSON.stringify({ releaseId: id }));
+  assert.equal((await inspectLocal({ home, env, antigravityKeyring })).antigravityKeyring, null, 'the 1.4 program does not use it');
+  assert.equal(asked, 0);
+  fs.rmSync(path.join(versions, 'agy_acp_server.exe'));
+  fs.writeFileSync(path.join(versions, 'agy.exe'), '');
+  assert.equal((await inspectLocal({ home, env, antigravityKeyring })).antigravityKeyring, true);
+  assert.equal(asked, 1);
+});
+
+test('the Credential Manager listing is read for the Antigravity target line only', () => {
+  assert.equal(hasAntigravityKeyringTarget('\r\nCurrently stored credentials:\r\n\r\n    Target: LegacyGeneric:target=gemini:antigravity\r\n    Type: Generic \r\n    User: someone\r\n'), true);
+  assert.equal(hasAntigravityKeyringTarget('\r\nCurrently stored credentials:\r\n\r\n* NONE *\r\n'), false);
+  assert.equal(hasAntigravityKeyringTarget('    Target: LegacyGeneric:target=gemini:antigravity-other\r\n'), false);
+  assert.equal(hasAntigravityKeyringTarget(null), false);
+  const insp = { codexStatus: {}, antigravityTokenProfiles: [], antigravityRuntime: true };
+  const [signedIn] = signInsFor(LOCAL_TARGET, { ...insp, antigravityKeyring: true }, [], { antigravityIds: ['antigravity_1'] });
+  assert.equal(signedIn.state, 'signed-in', 'no token file is needed when Credential Manager has it');
+  const [unknown] = signInsFor(LOCAL_TARGET, { ...insp, antigravityKeyring: null }, [], { antigravityIds: ['antigravity_1'] });
+  assert.equal(unknown.state, 'needs-sign-in');
 });

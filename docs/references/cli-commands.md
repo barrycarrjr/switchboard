@@ -158,7 +158,10 @@ switchboard t3 forget <local|wsl:<distro>|ssh:<host>>
   the Google sign-in in the browser page it opens. Which file holds that sign-in depends on
   the program T3 runs: up to 1.4 (`agy_acp_server`) it is `acp_token.json`, from 1.5 (`antigravity`,
   `agy.exe` on Windows) it is `antigravity-oauth-token`, so the check reads the active version
-  and a 1.4 sign-in left behind after T3 updates is reported as still to do. From 1.5 the
+  and a 1.4 sign-in left behind after T3 updates is reported as still to do. On Windows the
+  1.5 program keeps its sign-in in Windows Credential Manager instead (entry
+  `gemini:antigravity`, one for every T3 profile), so on this machine the check asks
+  `cmdkey` whether that entry exists; it never reads the secret itself. From 1.5 the
   program opens that page with `xdg-open`, which WSL lacks, so on a WSL machine where
   Antigravity is used the setup adds `~/.local/bin/xdg-open`, which hands the link to the
   Windows browser. It is added only where no `xdg-open` exists, is kept up to date while it

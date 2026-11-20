@@ -1063,7 +1063,7 @@ export function signInsFor(target, inspected, codexAccounts, { antigravityIds = 
   }
   if (antigravityIds?.length) {
     const profiles = new Set(inspected.antigravityTokenProfiles ?? []);
-    const signedIn = antigravityIds.some((id) => profiles.has(antigravityProfileName(id)));
+    const signedIn = inspected.antigravityKeyring === true || antigravityIds.some((id) => profiles.has(antigravityProfileName(id)));
     const installed = inspected.antigravityRuntime !== false;
     // T3 cannot install its Antigravity program without Node.js ("Antigravity requires
     // Node.js"), so a machine where it is not installed yet and Node.js is definitely missing is

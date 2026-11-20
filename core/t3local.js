@@ -200,15 +200,16 @@ export function localCodexAccounts(registry, home = os.homedir()) {
  *   brokerUrls      tried in order with the saved key
  *   fetchImpl       fetch, for tests
  *   codexStatus(a)  Codex's own answer for one account: signed-in | not-signed-in | unknown
+ *   antigravityKeyring()  whether Credential Manager holds the Antigravity sign-in, for tests
  */
-export async function inspectLocal({ home = os.homedir(), env = process.env, brokerUrls = [], fetchImpl = fetch, codexAccounts = [], codexStatus = null } = {}) {
+export async function inspectLocal({ home = os.homedir(), env = process.env, brokerUrls = [], fetchImpl = fetch, codexAccounts = [], codexStatus = null, antigravityKeyring = localAntigravityKeyring } = {}) {
   const p = localPaths(home);
   const out = {
     home, claude: findRealClaude({ env, home, skipDir: p.root }), node: findOnPath(['node.exe', 'node'], env),
     t3: isDir(p.userdata), settings: null, settingsError: null, settingsSha: 'none', settingsText: null,
     wrappers: {}, wrapperTexts: {}, lease: 'missing', key: 'missing', keyText: null, broker: null, probes: [],
     hubSecrets: [], codexBin: null, codexStatus: {}, antigravityTokenProfiles: [], antigravityRuntime: null,
-    nodeState: null, osFamily: '', missingTools: [],
+    antigravityKeyring: null, nodeState: null, osFamily: '', missingTools: [],
   };
   out.nodeState = out.node ? 'found' : 'missing';
 
@@ -278,7 +279,41 @@ export async function inspectLocal({ home = os.homedir(), env = process.env, bro
     }
   } catch { /* not installed */ }
   out.antigravityTokenProfiles = signedInAntigravityProfiles(found, store);
+  // On Windows the 1.5 program keeps its Google sign-in in Windows Credential Manager, whatever
+  // T3 asks of it, so the profile folder holds no token file at all and only the old 1.4 file
+  // is left there. One entry serves every T3 profile of this Windows user.
+  out.antigravityKeyring = store === 'new' && antigravityKeyring ? await antigravityKeyring() : null;
   return out;
+}
+
+/**
+ * Whether Windows Credential Manager holds the Antigravity 1.5 sign-in: true, false, or null
+ * when it cannot be asked. cmdkey lists target and user names only and never prints a stored
+ * secret, and only the presence of the target line is read.
+ */
+export function localAntigravityKeyring() {
+  if (process.platform !== 'win32') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let out = '';
+    let child;
+    try {
+      child = spawn('cmdkey', [`/list:${ANTIGRAVITY_KEYRING_TARGET}`], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch { resolve(null); return; }
+    const timer = setTimeout(() => { child.kill(); resolve(null); }, 5000);
+    child.stdout.on('data', (c) => (out += c));
+    child.on('error', () => { clearTimeout(timer); resolve(null); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 ? hasAntigravityKeyringTarget(out) : null);
+    });
+  });
+}
+
+export const ANTIGRAVITY_KEYRING_TARGET = 'gemini:antigravity';
+
+/** cmdkey names the entry "LegacyGeneric:target=gemini:antigravity" on the Target line. */
+export function hasAntigravityKeyringTarget(cmdkeyOutput) {
+  return /^\s*Target:.*[=:\s]gemini:antigravity\s*$/m.test(String(cmdkeyOutput ?? ''));
 }
 
 /**
