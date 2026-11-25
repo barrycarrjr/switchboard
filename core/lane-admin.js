@@ -125,9 +125,45 @@ export function removeLane(settings, laneId) {
   delete spendPolicies[laneId];
   const cooldowns = { ...(settings?.cooldowns ?? {}) };
   delete cooldowns[laneId];
+  const cooldownSince = { ...(settings?.cooldownSince ?? {}) };
+  delete cooldownSince[laneId];
   const laneTokens = { ...(settings?.laneTokens ?? {}) };
   delete laneTokens[laneId];
-  return { ...settings, lanes, spendPolicies, cooldowns, laneTokens };
+  return { ...settings, lanes, spendPolicies, cooldowns, cooldownSince, laneTokens };
+}
+
+/**
+ * Settings with one lane put on cooldown until `until`.
+ *
+ * `limitReportedAt` is given only when the hold answers a limit the vendor put a reset
+ * time on, and is then filed in `cooldownSince`. That is the one kind of hold a later
+ * usage reading may end early, because the reset time is what ties a meter to the refusal
+ * (see cooldownEnd in core/lanes.js). Any other hold drops the lane's entry there, so a
+ * time left behind by an earlier limit cannot vouch for a hold it has nothing to do with.
+ */
+export function holdLane(settings, laneId, until, limitReportedAt = null) {
+  const cooldowns = { ...(settings?.cooldowns ?? {}), [laneId]: until };
+  const cooldownSince = { ...(settings?.cooldownSince ?? {}) };
+  delete cooldownSince[laneId];
+  if (limitReportedAt != null) cooldownSince[laneId] = limitReportedAt;
+  return { ...settings, cooldowns, cooldownSince };
+}
+
+/**
+ * Settings with the cooldown of every lane in `laneIds` cleared, and how many of them
+ * were on one. The time a limit report placed each hold goes with it, so it cannot be
+ * read against whatever hold the lane is given next.
+ */
+export function releaseLanes(settings, laneIds = []) {
+  const cooldowns = { ...(settings?.cooldowns ?? {}) };
+  const cooldownSince = { ...(settings?.cooldownSince ?? {}) };
+  let cleared = 0;
+  for (const laneId of laneIds) {
+    if (cooldowns[laneId] != null) cleared += 1;
+    delete cooldowns[laneId];
+    delete cooldownSince[laneId];
+  }
+  return { settings: { ...settings, cooldowns, cooldownSince }, cleared };
 }
 
 /**

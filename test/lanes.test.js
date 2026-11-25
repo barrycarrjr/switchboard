@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { laneStatus, selectLane, selectLaneAsNeeded, narrowPool, lanesCallerCannotDrive, laneAnswersTo, selectionFailure, worthSwitchingTo, defaultFollowsLanes, followsLanesNote, switchedAgainstLanesNote, ordersBySoonestReset, ranksByReset, soonestResetOrder, accountUseOrder, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
-import { expiringWeek, hasHeadroom, isRunningOut, spentEvidence, tightestWindow, weekTurnover, SPEND_DOWN_HORIZON_MS, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
+import { cooldownEnd, laneStatus, selectLane, selectLaneAsNeeded, narrowPool, lanesCallerCannotDrive, laneAnswersTo, selectionFailure, worthSwitchingTo, defaultFollowsLanes, followsLanesNote, switchedAgainstLanesNote, ordersBySoonestReset, ranksByReset, soonestResetOrder, accountUseOrder, NO_LANES_CONFIGURED, NO_LANES_MATCH, NO_LANE_AVAILABLE } from '../core/lanes.js';
+import { expiringWeek, hasHeadroom, isRunningOut, limitLifted, spentEvidence, tightestWindow, weekTurnover, LIMIT_LIFTED_UNDER, SPEND_DOWN_HORIZON_MS, WINDOW_LIFETIME_MS } from '../core/lanes-util.js';
 
 function makeLane(id, accountId, billing = 'subscription') {
   return {
@@ -420,6 +420,179 @@ test('the filter still applies to a last-resort lane', () => {
   const ctx = contextFor({ unreadable: ['a1'] });
   assert.ok(selectLane(pool, { ...ctx, requirements: { provider: 'claude' } }), 'matching name, so it is offered');
   assert.equal(selectLane(pool, { ...ctx, requirements: { provider: 'openai' } }), null, 'wrong name, so it is not');
+});
+
+// ---- A cooldown the meter has overtaken ----
+//
+// A limit report holds a lane until the reset time the vendor gave with its refusal. The
+// vendor sometimes lifts a limit before then, and the hold used to run on regardless. Seen
+// 2026-11-24: an account refused two days earlier had been handed its whole week back, its
+// reading said 0% used, and the broker went on refusing to lend it, so T3 Code showed the
+// account's provider as broken.
+//
+// A reading may end such a hold now, but only when it proves the limit that was hit is
+// gone. Each test below is one piece of that proof, or one way it can be missing. A hold
+// is a deliberate thing, so anything short of proof leaves it exactly where it was.
+
+const HELD_AT = 10_000;      // when the limit report arrived
+const HELD_UNTIL = 900_000;  // the reset time the vendor stated in it
+const READ_AT = 20_000;      // after the report: when the readings below were taken
+const JUDGED_AT = 30_000;    // "now" for the lane being judged
+
+/**
+ * A reading of the weekly meters, which both turn over at `resetsAt`, taken at READ_AT
+ * unless `rest` says otherwise. `opus` is a per-model meter: it never stops an account as
+ * a whole, but it can be what refused a run.
+ */
+function weekReading({ week, opus = null, resetsAt = HELD_UNTIL, ...rest } = {}) {
+  const windows = [{ key: 'week', usedPercent: week, resetsAt }];
+  if (opus != null) windows.push({ key: 'week_opus', usedPercent: opus, resetsAt });
+  return { windows, observedAt: READ_AT, ...rest };
+}
+
+/** Lane l1 of account a1, held by a limit report since HELD_AT, judged on one reading. */
+function heldStatus(reading, over = {}) {
+  return laneStatus(makeLane('l1', 'a1'), {
+    now: JUDGED_AT,
+    loginStates: { a1: { signedIn: true } },
+    quotas: { a1: reading },
+    cooldowns: { l1: HELD_UNTIL },
+    cooldownSince: { l1: HELD_AT },
+    ...over,
+  });
+}
+
+test('a cooldown ends once a reading taken after it shows the limit that was hit has room again', () => {
+  const stat = heldStatus(weekReading({ week: 0, opus: 0 }));
+  assert.equal(stat.status, 'available', 'the vendor lifted the limit, so the lane is lent again');
+  assert.equal(stat.resetsAt, null, 'and the old reset time is no longer quoted as when it comes back');
+
+  const pool = [makeLane('l1', 'a1')];
+  const picked = selectLane(pool, {
+    now: JUDGED_AT,
+    loginStates: { a1: { signedIn: true } },
+    quotas: { a1: weekReading({ week: 0, opus: 0 }) },
+    cooldowns: { l1: HELD_UNTIL },
+    cooldownSince: { l1: HELD_AT },
+  });
+  assert.equal(picked?.lane.id, 'l1', 'so selection offers it');
+});
+
+test('a reading taken before the refusal cannot end the cooldown that followed it', () => {
+  // The usual case straight after a refusal: the reading on hand is a few minutes old and
+  // still shows the meter just short of full.
+  const before = heldStatus(weekReading({ week: 96, observedAt: HELD_AT - 1 }));
+  assert.equal(before.status, 'cooldown');
+  assert.equal(before.resetsAt, HELD_UNTIL);
+  assert.equal(heldStatus(weekReading({ week: 0, observedAt: HELD_AT })).status, 'cooldown', 'the same instant is not after');
+});
+
+test('a reading that does not say when it was taken cannot end a cooldown', () => {
+  assert.equal(heldStatus(weekReading({ week: 0, observedAt: undefined })).status, 'cooldown');
+  assert.equal(heldStatus(weekReading({ week: 0, observedAt: null })).status, 'cooldown', 'a time nobody recorded is no time');
+});
+
+test('a reading dated well after now cannot end a cooldown', () => {
+  // A clock that was set back: nothing says whether the reading came before the refusal.
+  assert.equal(heldStatus(weekReading({ week: 0, observedAt: JUDGED_AT + 60_001 })).status, 'cooldown');
+  // A reading fetched while the lane was being chosen is stamped a moment after `now`,
+  // and that one is as current as a reading gets.
+  assert.equal(heldStatus(weekReading({ week: 0, observedAt: JUDGED_AT + 2_000 })).status, 'available');
+});
+
+test('the time a sample was taken counts, not the time it was served', () => {
+  // The Claude Desktop fallback: a sample older than the refusal, read off disk after it.
+  const served = weekReading({ week: 0, sampledAt: HELD_AT - 5_000, observedAt: READ_AT });
+  assert.equal(heldStatus(served).status, 'cooldown');
+  assert.equal(heldStatus(weekReading({ week: 0, sampledAt: READ_AT, observedAt: undefined })).status, 'available', 'a sample taken after it is as good as any reading');
+});
+
+test('a cooldown holds while any meter that resets with it is still at its limit', () => {
+  // What an account can look like on the day it is refused: the week as a whole has room,
+  // and a per-model meter that turns over with it is full.
+  assert.equal(heldStatus(weekReading({ week: 88, opus: 100 })).status, 'cooldown', 'the per-model meter is what refused the run');
+  assert.equal(heldStatus(weekReading({ week: 100, opus: 40 })).status, 'cooldown');
+  assert.equal(heldStatus({ observedAt: READ_AT, windows: [
+    { key: 'week', usedPercent: 0, resetsAt: HELD_UNTIL },
+    { key: 'week_opus', usedPercent: null, resetsAt: HELD_UNTIL },
+  ] }).status, 'cooldown', 'a meter that could not be read cannot be vouched for either');
+});
+
+test('a meter only a point or two under its limit does not end a cooldown', () => {
+  // The usage sources read a couple of points apart for one account, so 98% after a
+  // refusal is the same full meter read from somewhere else, not a limit that was lifted.
+  assert.equal(LIMIT_LIFTED_UNDER, 97);
+  assert.equal(heldStatus(weekReading({ week: 99 })).status, 'cooldown');
+  assert.equal(heldStatus(weekReading({ week: 97 })).status, 'cooldown');
+  assert.equal(heldStatus(weekReading({ week: 96 })).status, 'available', 'under 97% is a meter the vendor lowered');
+});
+
+test('a reading with no meter that resets when the cooldown ends says nothing about it', () => {
+  // Otherwise a hold for a limit the reading cannot see would be lifted by every reading,
+  // and the lane would be lent straight back into the same refusal.
+  const elsewhere = { observedAt: READ_AT, windows: [
+    { key: 'session', usedPercent: 3, resetsAt: HELD_UNTIL - 600_000 },
+    { key: 'week', usedPercent: 5, resetsAt: HELD_UNTIL + 600_000 },
+  ] };
+  assert.equal(heldStatus(elsewhere).status, 'cooldown');
+  assert.equal(heldStatus({ observedAt: READ_AT, windows: [{ key: 'week', usedPercent: 0, resetsAt: null }] }).status, 'cooldown', 'a week with no reset stated is not the week that was refused');
+  assert.equal(heldStatus({ observedAt: READ_AT, windows: [] }).status, 'cooldown');
+});
+
+test('the reset time in a refusal and the one in a reading are matched to the minute', () => {
+  // The two the vendor gave for one weekly reset, to the second and to the millisecond.
+  const until = 1795741200000;
+  const at = (resetsAt) => heldStatus(weekReading({ week: 0, resetsAt, observedAt: 1795557861775 }), {
+    now: 1795558000000,
+    cooldowns: { l1: until },
+    cooldownSince: { l1: 1795361914000 },
+  }).status;
+  assert.equal(at(1795741199789), 'available');
+  assert.equal(at(until + 60_000), 'available', 'a minute either way is still the same reset');
+  assert.equal(at(until + 60_001), 'cooldown', 'and anything further off is some other window');
+});
+
+test('a cooldown that no limit report placed runs its course whatever the meter says', () => {
+  // A short hold after a refused sign-in or a server error, or one written by an older
+  // version: nothing ties it to a meter, so no meter can end it.
+  const stat = heldStatus(weekReading({ week: 0, opus: 0 }), { cooldownSince: {} });
+  assert.equal(stat.status, 'cooldown');
+  assert.equal(stat.resetsAt, HELD_UNTIL);
+  assert.equal(heldStatus(weekReading({ week: 0 }), { cooldownSince: undefined }).status, 'cooldown', 'a caller that passes nothing gets the hold as it always was');
+});
+
+test('a stale or failed reading cannot end a cooldown', () => {
+  assert.equal(heldStatus(weekReading({ week: 0, stale: true })).status, 'cooldown');
+  assert.equal(heldStatus({ error: 'rate-limited', observedAt: READ_AT }).status, 'cooldown');
+  assert.equal(heldStatus(undefined).status, 'cooldown', 'cooldown is a deliberate hold, not a missing reading');
+});
+
+test('a lane let off its cooldown is still judged on its meters', () => {
+  // The weekly limit was lifted, and the five-hour window has since filled up.
+  const stat = heldStatus({ observedAt: READ_AT, windows: [
+    { key: 'session', usedPercent: 100, resetsAt: JUDGED_AT + 60_000 },
+    { key: 'week', usedPercent: 12, resetsAt: HELD_UNTIL },
+  ] });
+  assert.equal(stat.status, 'exhausted', 'being let off the hold is not the same as having room');
+  assert.equal(stat.resetsAt, JUDGED_AT + 60_000);
+});
+
+test('cooldownEnd says when a hold still in force ends, and nothing for one that is over', () => {
+  const lane = makeLane('l1', 'a1');
+  const held = { now: JUDGED_AT, cooldowns: { l1: HELD_UNTIL }, cooldownSince: { l1: HELD_AT } };
+  assert.equal(cooldownEnd(lane, { ...held, quotas: { a1: weekReading({ week: 100 }) } }), HELD_UNTIL);
+  assert.equal(cooldownEnd(lane, { ...held, quotas: { a1: weekReading({ week: 0 }) } }), null, 'lifted by the meter');
+  assert.equal(cooldownEnd(lane, { ...held, now: HELD_UNTIL }), null, 'run out on its own');
+  assert.equal(cooldownEnd(lane, { now: JUDGED_AT }), null, 'never on one');
+});
+
+test('limitLifted needs both ends of the hold and the moment it is asked', () => {
+  const reading = weekReading({ week: 0 });
+  assert.equal(limitLifted(reading, { since: HELD_AT, until: HELD_UNTIL, now: JUDGED_AT }), true);
+  assert.equal(limitLifted(reading, { until: HELD_UNTIL, now: JUDGED_AT }), false, 'no start, so no way to say the reading came after it');
+  assert.equal(limitLifted(reading, { since: HELD_AT, now: JUDGED_AT }), false);
+  assert.equal(limitLifted(reading, { since: HELD_AT, until: HELD_UNTIL }), false);
+  assert.equal(limitLifted(reading), false);
 });
 
 // ---- Reading accounts only as far as the answer needs ----

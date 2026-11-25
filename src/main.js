@@ -339,7 +339,7 @@ async function stateSnapshot(forceAuthAccountId = null) {
   // The order the page lists a tool's accounts in when the watch picks them: the order
   // they would be used, from the same readings and sign-ins the tray menu is built from,
   // so the two list them the same way. Null when a person is choosing.
-  const listOrderContext = { now: Date.now(), quotas: trayFacts.quotas, loginStates: loginStatesFrom(signedIn), cooldowns: settings.cooldowns };
+  const listOrderContext = { now: Date.now(), quotas: trayFacts.quotas, loginStates: loginStatesFrom(signedIn), cooldowns: settings.cooldowns, cooldownSince: settings.cooldownSince };
   for (const p of Object.values(providers)) {
     if (!p.followsLanes) continue;
     p.accountOrder = accountUseOrder(reg.accounts, settings.lanes, p.id, listOrderContext, p.activeAccountId).map((a) => a.id);
@@ -730,6 +730,7 @@ function trayInputs() {
     terminals: trayFacts.terminals,
     watchMode: settings.quotaWatch,
     lanes: settings.lanes,
+    cooldownSince: settings.cooldownSince,
     cooldowns: settings.cooldowns,
     overrideBlocking: configuredClaudeOverrides().length > 0,
     strandedProviders: stranded,

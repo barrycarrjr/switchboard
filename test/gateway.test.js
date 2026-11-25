@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
 import { createGatewayKey } from '../core/gateway-keys.js';
-import { createGatewayServer, parseWslDistroList, provisionLocalAndWslClient, parseWrapperInstallOutput, wrapperInstallScript, syncWslLeaseWrapper, createSettingsWatcher } from '../core/gateway.js';
+import { applyLeaseReport, createGatewayServer, parseWslDistroList, provisionLocalAndWslClient, parseWrapperInstallOutput, wrapperInstallScript, syncWslLeaseWrapper, createSettingsWatcher } from '../core/gateway.js';
+import { writeSharedQuota } from '../core/quota-cache.js';
+import { loadSettings, saveSettings } from '../core/settings.js';
 
 const SETUP_PREFIX = ['sk', 'ant', 'oat01'].join('-') + '-';
 
@@ -387,6 +389,167 @@ test('broker serves read-only T3 Hub /v0/management/* endpoints from local cache
     assert.equal(fx.getSettings().cooldowns['lane-claude-1'], undefined);
   } finally {
     await broker.stop();
+  }
+});
+
+// ---- A cooldown the meter has overtaken ----
+//
+// A limit report holds a lane until the reset time the vendor stated. Seen 2026-11-24: an
+// account refused two days earlier had been handed its whole week back by the vendor, its
+// reading said 0% used, and the broker went on answering "no healthy lane" for it with
+// two days of the hold still to run, so T3 Code showed its provider as broken. A reading
+// taken after the report may end the hold now, when it shows the limit that was hit has
+// room again (cooldownEnd in core/lanes.js). The report is what makes that possible: it
+// has to keep the moment it arrived.
+
+test('a limit report with a stated reset records when the hold began, and no other hold does', () => {
+  const settings = {
+    lanes: [{ id: 'lane-1', harness: 'claude', provider: 'anthropic', accountId: 'a1', billing: 'subscription' }],
+    cooldowns: {},
+    laneTokens: {},
+  };
+  // A real clock time: a reset small enough to be a count of seconds is read as one.
+  const now = 1762000000000;
+  const reset = now + 3_600_000;
+
+  const limited = applyLeaseReport(settings, { laneId: 'lane-1', outcome: 'rate-limited', resetsAt: reset }, now);
+  assert.equal(limited.settings.cooldowns['lane-1'], reset);
+  assert.equal(limited.settings.cooldownSince['lane-1'], now);
+  assert.equal(applyLeaseReport(settings, { laneId: 'lane-1', outcome: 'exhausted', resetsAt: reset }, now).settings.cooldownSince['lane-1'], now);
+
+  // With no reset stated there is nothing to match a meter against: the hold is the short
+  // failover one, and the time of an earlier limit is not left behind to vouch for it.
+  const later = now + 10;
+  for (const report of [
+    { laneId: 'lane-1', outcome: 'rate-limited' },
+    { laneId: 'lane-1', outcome: 'rate-limited', resetsAt: now - 1 },
+    { laneId: 'lane-1', outcome: 'auth-failed' },
+  ]) {
+    const held = applyLeaseReport(limited.settings, report, later);
+    assert.equal(held.action, 'cooldown', JSON.stringify(report));
+    assert.ok(held.settings.cooldowns['lane-1'] > later && held.settings.cooldowns['lane-1'] < reset, JSON.stringify(report));
+    assert.equal(held.settings.cooldownSince['lane-1'], undefined, JSON.stringify(report));
+  }
+
+  // A run that went fine, or merely crashed, changes nothing at all.
+  assert.equal(applyLeaseReport(limited.settings, { laneId: 'lane-1', outcome: 'ok' }, later).settings, limited.settings);
+  assert.equal(applyLeaseReport(limited.settings, { laneId: 'lane-1', outcome: 'error' }, later).settings, limited.settings);
+});
+
+test('the time a limit report held a lane is kept across a save, and settings from before it load with none', () => {
+  const file = path.join(tempDir('sb-gw-'), 'settings.json');
+  assert.deepEqual(loadSettings(file).cooldownSince, {}, 'nothing saved yet');
+
+  fs.writeFileSync(file, JSON.stringify({ lanes: [], cooldowns: { 'lane-1': 2_000 } }));
+  const older = loadSettings(file);
+  assert.deepEqual(older.cooldowns, { 'lane-1': 2_000 });
+  assert.deepEqual(older.cooldownSince, {}, 'a hold an older version wrote has no start, so it runs its course');
+
+  saveSettings({ ...older, cooldownSince: { 'lane-1': 1_000 } }, file);
+  assert.deepEqual(loadSettings(file).cooldownSince, { 'lane-1': 1_000 });
+
+  for (const broken of [null, 'yes', [1]]) {
+    fs.writeFileSync(file, JSON.stringify({ cooldownSince: broken }));
+    assert.deepEqual(loadSettings(file).cooldownSince, {}, `${JSON.stringify(broken)} is not a map of lanes`);
+  }
+});
+
+test('the broker lends a lane again once a reading taken after its cooldown shows the limit lifted', async () => {
+  // The broker takes each account's usage from the shared cache under dataDir(), so that
+  // is pointed at a folder of this test's own and every reading below is put there by hand.
+  const prevAppData = process.env.APPDATA;
+  process.env.APPDATA = tempDir('sb-gw-');
+  const fx = makeFixture();
+  let clock = fx.now;
+  const broker = createGatewayServer({
+    getSettings: fx.getSettings,
+    setSettings: fx.setSettings,
+    getRegistry: fx.getRegistry,
+    fetchImpl: fx.mockFetch,
+    nowFn: () => clock,
+  });
+  const started = await broker.start({ port: 0, scope: 'localhost' });
+  const baseUrl = `http://127.0.0.1:${started.port}`;
+  const post = (route, body) => fetch(`${baseUrl}${route}`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${fx.clientSecret}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const leaseA = () => post('/v1/lease', { provider: 'claude', harness: 'claude', account: 'claude-a' });
+
+  // The week both meters belong to, as the vendor states it: to the second in a refusal,
+  // to the millisecond in a usage reading.
+  const weekResetSec = Math.floor((fx.now + 4 * 86400_000) / 1000);
+  const reading = (week, opus, takenAt) => writeSharedQuota('claude-a', 'k', {
+    windows: [
+      { key: 'week', label: 'Week (all models)', usedPercent: week, resetsAt: weekResetSec * 1000 - 211 },
+      { key: 'week_opus', label: 'Week (Opus)', usedPercent: opus, resetsAt: weekResetSec * 1000 },
+    ],
+    source: 'token',
+    vendor: 'Anthropic',
+    organizationUuid: 'org-uuid-a',
+  }, takenAt);
+
+  try {
+    // 1. The week as a whole has room, so the lane is lent, and the run is refused on the
+    //    per-model meter, which is not one that keeps an account out of the running.
+    reading(88, 99, clock - 60_000);
+    const first = await leaseA();
+    assert.equal(first.status, 200);
+    const lease = await first.json();
+    assert.equal(lease.laneId, 'lane-claude-1');
+
+    const report = await post('/v1/lease/report', {
+      leaseId: lease.leaseId,
+      laneId: 'lane-claude-1',
+      outcome: 'rate-limited',
+      rateLimitType: 'seven_day_opus',
+      resetsAt: weekResetSec,
+      exitCode: 1,
+    });
+    assert.equal(report.status, 200);
+    assert.equal(fx.getSettings().cooldowns['lane-claude-1'], weekResetSec * 1000);
+    assert.equal(fx.getSettings().cooldownSince['lane-claude-1'], fx.now, 'the report keeps the moment it arrived');
+
+    // 2. The reading on hand was taken before the refusal, and says nothing about after it.
+    clock = fx.now + 1_000;
+    const held = await leaseA();
+    assert.equal(held.status, 503);
+    const heldBody = await held.json();
+    assert.equal(heldBody.reason, 'no-healthy-lane');
+    assert.equal(heldBody.resetsAt, new Date(weekResetSec * 1000).toISOString());
+
+    // 3. A reading taken after it shows the meter that refused the run still full.
+    clock = fx.now + 6 * 60_000;
+    reading(89, 100, clock - 60_000);
+    assert.equal((await leaseA()).status, 503, 'the limit is still in force');
+
+    // 4. Two days on the vendor has given the week back. The reset time has not moved.
+    clock = fx.now + 2 * 86400_000;
+    reading(0, 0, clock - 60_000);
+    const again = await leaseA();
+    assert.equal(again.status, 200, 'two days short of the reset time it was held until');
+    const lent = await again.json();
+    assert.equal(lent.laneId, 'lane-claude-1');
+    assert.equal(lent.env.CLAUDE_CODE_OAUTH_TOKEN, fx.tokenA);
+    assert.equal(lent.headroom.weekly, 100);
+    assert.equal(fx.getSettings().cooldowns['lane-claude-1'], weekResetSec * 1000, 'judging the hold lifted rewrites nothing');
+
+    // 5. The hold is only set aside while the meter says so. If that meter fills up again,
+    //    the lane is held again with no new report needed.
+    clock += 3_600_000;
+    reading(40, 100, clock - 60_000);
+    assert.equal((await leaseA()).status, 503, 'the same limit, back in force');
+
+    // 6. Clearing the cooldown by hand takes the time it was placed with it.
+    const reset = await post('/v0/management/reset-quota', { auth_index: 'claude-a' });
+    assert.equal((await reset.json()).cleared, 1);
+    assert.equal(fx.getSettings().cooldowns['lane-claude-1'], undefined);
+    assert.equal(fx.getSettings().cooldownSince['lane-claude-1'], undefined);
+    assert.equal((await leaseA()).status, 200, 'and the lane is judged on its meters alone');
+  } finally {
+    await broker.stop();
+    process.env.APPDATA = prevAppData;
   }
 });
 

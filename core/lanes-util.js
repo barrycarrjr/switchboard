@@ -102,6 +102,79 @@ export function spentEvidence(snapshot, now) {
 }
 
 /**
+ * How far under its limit a meter has to read before a hold placed on the vendor's own
+ * refusal gives way to it.
+ *
+ * A refusal is harder evidence than a reading: it is the vendor saying no to a real run.
+ * Usage in a window only climbs until the window turns over, so a meter that refused work
+ * and now reads well under its limit was lowered by the vendor. A point or two under is
+ * something else: the usage sources read that far apart for one and the same account (see
+ * `HEADROOM_RETURNS_AT`), and letting a reading like that end the hold would lend the
+ * account straight back into the refusal it was held for. So a meter counts as lifted
+ * only under 97%, which leaves the same three-point band between the two answers.
+ */
+export const LIMIT_LIFTED_UNDER = SPENT_AT - 3;
+
+/**
+ * How far apart the vendor's two statements of one reset may be and still be one reset.
+ * The refusal states it to the second and the usage reading to the millisecond (seen for
+ * one weekly reset: 1795741200000 and 1795741199789), so the two never compare equal. A
+ * minute is far wider than they differ by and far narrower than the gap between any two
+ * windows of one account.
+ */
+const SAME_RESET_MS = 60 * 1000;
+
+/**
+ * How far ahead of `now` a reading's time may sit and still be believed. `now` is fixed
+ * when a caller starts choosing a lane, and a reading fetched while it chooses is stamped
+ * as it arrives, a moment later. A time further ahead than any fetch takes means the
+ * clock has been set back since the reading was taken, and then nothing says whether it
+ * came before the refusal or after it.
+ */
+const READING_LEAD_MS = 60 * 1000;
+
+/** When a reading was taken, or null when it does not say. */
+function takenAt(snapshot) {
+  if (Number.isFinite(snapshot?.sampledAt)) return snapshot.sampledAt;
+  return Number.isFinite(snapshot?.observedAt) ? snapshot.observedAt : null;
+}
+
+/**
+ * Whether a reading shows that a limit the vendor refused a run for has since been lifted,
+ * ahead of the time the vendor gave for it.
+ *
+ * `since` is when the refusal was reported and `until` is the reset time it stated. The
+ * reading has to be a current one, has to say when it was taken, and has to have been
+ * taken after the refusal and not after `now` (`READING_LEAD_MS` aside). An older one
+ * describes the account before it was refused, and one with no time, or a time still to
+ * come, cannot be placed either side of the refusal at all.
+ *
+ * Only the meters that turn over at `until` are asked, because that is the one way a
+ * reading names the limit that was hit. There has to be at least one, and every one of
+ * them has to read clear (`LIMIT_LIFTED_UNDER`), per-model meters included: those never
+ * stop an account as a whole (see `GATING`), but one of them can be what refused the run,
+ * and it turns over together with the weekly meter.
+ *
+ * Everything else leaves the hold alone, on purpose. A reading with no meter turning over
+ * at `until` says nothing about the limit that was hit: that is a short hold placed for
+ * some other failure, or a window the endpoint did not list, and a hold lifted on such a
+ * reading would be lifted on every reading, which is no hold at all. The same goes for a
+ * limit the vendor lifts by starting a fresh window with a new reset time. Nothing in the
+ * reading can be tied to the refusal any more, so the hold runs to the time it was given,
+ * as every hold did before this.
+ */
+export function limitLifted(snapshot, { since, until, now } = {}) {
+  if (!readable(snapshot)) return false;
+  if (!Number.isFinite(since) || !Number.isFinite(until) || !Number.isFinite(now)) return false;
+  const at = takenAt(snapshot);
+  if (at == null || at <= since || at > now + READING_LEAD_MS) return false;
+  const named = (snapshot.windows ?? [])
+    .filter((w) => Number.isFinite(w?.resetsAt) && Math.abs(w.resetsAt - until) <= SAME_RESET_MS);
+  return named.length > 0
+    && named.every((w) => w.usedPercent != null && w.usedPercent < LIMIT_LIFTED_UNDER);
+}
+
+/**
  * How full a window may get before an account stops being somewhere to send new work.
  *
  * `SPENT_AT` above answers a different question: whether an account can run at all. That

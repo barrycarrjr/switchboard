@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   addLane,
   buildLane,
+  holdLane,
   laneProblem,
   markLaneTokenDead,
   nextLaneId,
+  releaseLanes,
   removeLane,
   removeLaneToken,
   reorderLanes,
@@ -97,6 +99,51 @@ test('removeLane also drops the budget and cooldown filed under that id', () => 
   assert.deepEqual(next.lanes.map((l) => l.id), ['lane-2']);
   assert.deepEqual(next.spendPolicies, {});
   assert.deepEqual(next.cooldowns, {});
+});
+
+// A reused lane id must not inherit the moment an earlier lane was refused: read against
+// a new hold, it could let a reading end a cooldown it has nothing to do with.
+test('removeLane also drops the time a limit report held that lane', () => {
+  const settings = settingsWith(
+    [buildLane(accounts[0], 'subscription', 'lane-1'), buildLane(accounts[1], 'subscription', 'lane-2')],
+    { cooldowns: { 'lane-1': 999, 'lane-2': 888 }, cooldownSince: { 'lane-1': 111, 'lane-2': 222 } },
+  );
+  const next = removeLane(settings, 'lane-1');
+
+  assert.deepEqual(next.cooldowns, { 'lane-2': 888 });
+  assert.deepEqual(next.cooldownSince, { 'lane-2': 222 }, 'and the other lane keeps its own');
+  assert.deepEqual(settings.cooldownSince, { 'lane-1': 111, 'lane-2': 222 }, 'the settings given are left as they were');
+});
+
+// Only a hold that answers a limit with a stated reset can later be matched to a meter
+// (see cooldownEnd in core/lanes.js), so only that kind keeps the time it was placed.
+test('holdLane keeps the time of a limit report, and a hold for anything else forgets one', () => {
+  const settings = settingsWith([buildLane(accounts[0], 'subscription', 'lane-1')]);
+  const limited = holdLane(settings, 'lane-1', 5_000, 1_000);
+  assert.deepEqual(limited.cooldowns, { 'lane-1': 5_000 });
+  assert.deepEqual(limited.cooldownSince, { 'lane-1': 1_000 });
+
+  const other = holdLane(limited, 'lane-1', 2_000);
+  assert.deepEqual(other.cooldowns, { 'lane-1': 2_000 });
+  assert.deepEqual(other.cooldownSince, {}, 'the earlier limit cannot vouch for a hold placed for something else');
+  assert.deepEqual(limited.cooldownSince, { 'lane-1': 1_000 }, 'and the settings given are left as they were');
+
+  const fromOlder = holdLane({ lanes: settings.lanes }, 'lane-1', 5_000, 1_000);
+  assert.deepEqual(fromOlder.cooldownSince, { 'lane-1': 1_000 }, 'settings that never carried either map still work');
+});
+
+test('releaseLanes clears a cooldown together with the time it was placed, and counts only lanes that were held', () => {
+  const settings = settingsWith(
+    [buildLane(accounts[0], 'subscription', 'lane-1'), buildLane(accounts[1], 'subscription', 'lane-2')],
+    { cooldowns: { 'lane-1': 999, 'lane-2': 888 }, cooldownSince: { 'lane-1': 111 } },
+  );
+  const { settings: next, cleared } = releaseLanes(settings, ['lane-1', 'lane-3']);
+
+  assert.equal(cleared, 1, 'a lane that was not on cooldown is not counted');
+  assert.deepEqual(next.cooldowns, { 'lane-2': 888 });
+  assert.deepEqual(next.cooldownSince, {});
+  assert.equal(releaseLanes(settings, []).cleared, 0);
+  assert.deepEqual(settings.cooldowns, { 'lane-1': 999, 'lane-2': 888 }, 'the settings given are left as they were');
 });
 
 test('removeLane refuses an id that names no lane', () => {

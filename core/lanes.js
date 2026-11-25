@@ -1,5 +1,34 @@
 import { PROVIDERS } from './accounts.js';
-import { hasHeadroom, readable, spentEvidence, turnoverRank } from './lanes-util.js';
+import { hasHeadroom, limitLifted, readable, spentEvidence, turnoverRank } from './lanes-util.js';
+
+/**
+ * When a lane's cooldown ends, or null when the lane is not on one.
+ *
+ * A cooldown is a deliberate hold: a run on the lane came back refused, so no more work is
+ * sent there until the time it was given. A missing or unreadable meter never ends one.
+ * What can end one early is the meter saying the limit behind the refusal is gone.
+ * `cooldownSince` holds, for a hold that a limit report placed, when it was placed, and a
+ * reading taken after that which shows that limit lifted (`limitLifted`) outranks the
+ * reset time the vendor gave when it refused.
+ *
+ * Without this a hold ran to that time whatever happened in between. Seen 2026-11-24: an
+ * account refused two days earlier had been handed its whole week back by the vendor. Its
+ * reading said 0% used, the hold still had two days to run, and T3 Code showed the
+ * account's provider as broken while the account sat idle.
+ *
+ * A hold with no entry in `cooldownSince` runs its course, as before: one placed for
+ * something other than a stated limit, or one placed by a version older than this.
+ *
+ * `context` is what `laneStatus` reads. Decided here rather than by each caller, so the
+ * broker, the watch, the tray and the command line cannot disagree about which lanes are
+ * held.
+ */
+export function cooldownEnd(lane, { quotas = {}, cooldowns = {}, cooldownSince = {}, now } = {}) {
+  const until = cooldowns[lane.id];
+  if (!until || until <= now) return null;
+  if (limitLifted(quotas[lane.accountId], { since: cooldownSince[lane.id], until, now })) return null;
+  return until;
+}
 
 /**
  * pure status evaluation for a lane
@@ -18,7 +47,7 @@ import { hasHeadroom, readable, spentEvidence, turnoverRank } from './lanes-util
  * A stale verdict here is cleared by any successful reading, so this can hold an account
  * out no longer than the endpoint stays unreachable.
  */
-export function laneStatus(lane, { quotas = {}, loginStates = {}, spendPolicies = {}, now, cooldowns = {} } = {}) {
+export function laneStatus(lane, { quotas = {}, loginStates = {}, spendPolicies = {}, now, cooldowns = {}, cooldownSince = {} } = {}) {
   if (!now) throw new Error('now is required');
 
   const login = loginStates[lane.accountId];
@@ -29,8 +58,8 @@ export function laneStatus(lane, { quotas = {}, loginStates = {}, spendPolicies 
     return { status: 'signed-out', reason: 'Account is signed out', resetsAt: null };
   }
 
-  const cooldownReset = cooldowns[lane.id];
-  if (cooldownReset && cooldownReset > now) {
+  const cooldownReset = cooldownEnd(lane, { quotas, cooldowns, cooldownSince, now });
+  if (cooldownReset) {
     return { status: 'cooldown', reason: 'Lane is on cooldown', resetsAt: cooldownReset };
   }
 
@@ -189,7 +218,8 @@ function toolOf(lane) {
 /**
  * The lanes in the order they are tried when taken soonest weekly reset first.
  *
- * `context` is what `laneStatus` reads: `now`, `quotas`, `loginStates`, `cooldowns`.
+ * `context` is what `laneStatus` reads: `now`, `quotas`, `loginStates`, `cooldowns`,
+ * `cooldownSince`.
  *
  * Only subscription lanes of the same tool trade places, and only among the positions that
  * tool's subscription lanes already hold. So the order as set still decides which tool

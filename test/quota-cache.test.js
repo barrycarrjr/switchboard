@@ -95,6 +95,43 @@ test('sharedProviderQuota fetches live once, then serves the shared reading', as
   }
 });
 
+// A reading has to say when it was taken before anything can be concluded from the
+// order of events: a lane put on cooldown is only let back in by a reading taken after
+// that (limitLifted in core/lanes-util.js). The reading served from the cache always
+// said so, and the one just fetched did not. Left like that, the freshest reading would
+// be the one that cannot be dated, and a lane would be held or lent depending on which of
+// the two a caller happened to get.
+test('a reading fetched live says when it arrived, the same as when it is served from the cache', async () => {
+  const prevAppData = process.env.APPDATA;
+  process.env.APPDATA = tempDir('sb-appdata-');
+  try {
+    const home = tempDir('sb-qp-');
+    fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt: Date.now() + 60 * 60 * 1000 } }));
+    const account = { id: 'acct-5', provider: 'claude', home };
+    const good = async () => ({ ok: true, json: async () => ({ five_hour: { utilization: 7 } }) });
+
+    const before = Date.now();
+    const fetched = await sharedProviderQuota(account, { fetchImpl: good });
+    const after = Date.now();
+    assert.equal(fetched.cached, undefined, 'fetched, not served');
+    assert.ok(fetched.observedAt >= before && fetched.observedAt <= after, 'stamped as it arrived');
+
+    const served = await sharedProviderQuota(account, { fetchImpl: good });
+    assert.equal(served.cached, true);
+    assert.equal(served.observedAt, fetched.observedAt, 'and it is one and the same moment either way');
+
+    // A failure is not a reading of anything, so it has no time to give.
+    const other = { id: 'acct-6', provider: 'claude', home: tempDir('sb-qp-') };
+    fs.writeFileSync(path.join(other.home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 't', expiresAt: Date.now() + 60 * 60 * 1000 } }));
+    const failing = async () => { throw new Error('offline'); };
+    const failed = await sharedProviderQuota(other, { fetchImpl: failing });
+    assert.equal(failed.error, 'unavailable');
+    assert.equal(failed.observedAt, undefined);
+  } finally {
+    process.env.APPDATA = prevAppData;
+  }
+});
+
 // Deliberately not key-checked: the key embeds the credential file's mtime, and the
 // CLI rewrites that on every token refresh, which is the same account on the same
 // schedule. What must not be carried across a re-login is enforced on the account

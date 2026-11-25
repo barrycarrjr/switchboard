@@ -779,6 +779,36 @@ test('an expiring lane on cooldown falls through to the ordinary order', () => {
   }
 });
 
+// The other half of the test above. A hold that a limit report placed gives way to a
+// reading taken after it which shows the limit lifted (cooldownEnd in core/lanes.js), and
+// the watch has to be told when the hold began or it would keep the default off an
+// account the broker was already lending again.
+test('a lane whose cooldown a newer reading has lifted is back in the running for the default', () => {
+  for (const [quotaWatch, kind] of BOTH) {
+    const reset = planBase.now + 6 * HOUR;
+    const plan = (cooldownSince) => planDefaultSwitches({
+      ...planBase,
+      settings: {
+        quotaWatch,
+        lanes: [laneFor('l-a', 'a'), laneFor('l-b', 'b')],
+        cooldowns: { 'l-b': reset },
+        ...(cooldownSince ? { cooldownSince } : {}),
+        lastAutoSwitchAt: 0,
+      },
+      snapshots: {
+        a: snap(19, 71, { weekReset: planBase.now + 96 * HOUR }),
+        // Read a minute ago: the week b was refused for has been handed back.
+        b: snap(0, 0, { weekReset: reset, observedAt: planBase.now - 60 * 1000 }),
+      },
+    });
+    assert.deepEqual(plan(null), [], `${quotaWatch}: held, so the default stays on a`);
+    assert.deepEqual(plan({ 'l-b': planBase.now - 1000 }), [], `${quotaWatch}: a reading older than the hold changes nothing`);
+    const [decision] = plan({ 'l-b': planBase.now - HOUR });
+    assert.equal(decision?.kind, kind, quotaWatch);
+    assert.equal(decision.to, 'b', `${quotaWatch}: b can run again and its week ends first`);
+  }
+});
+
 test('the soonest-expiring lane heads the queue when several qualify', () => {
   const expected = {
     notify: 'c has unused quota that expires soon; spending it down before a',

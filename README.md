@@ -653,6 +653,24 @@ npm install of Claude leaves, so each account gets a folder of that shape under
 conversations stay in one place whichever account Switchboard last picked. The entries T3
 already had for this machine's own sign-ins are left as they are.
 
+When a run on a lent account comes back refused for a limit, the lease wrapper reports it
+with the reset time the vendor stated, and the broker lends that lane to nobody until then,
+so the next caller is not sent into the same refusal. That is a lane cooling down. The hold
+ends early when a usage reading taken after the report shows every meter that resets at
+that time back under 97%, which is what a limit the vendor has lifted looks like; a vendor
+can hand an account its week back days before the reset. A point or two under the limit
+does not count, because the usage sources read that far apart for one account. Anything
+short of that leaves the hold where it is: a reading from before the refusal, one that
+cannot be read or does not say when it was taken, one in which a meter resetting then is
+still full (a per-model meter counts here, because it can be what refused the run), or one
+with no meter resetting then at all. The five-minute hold placed for anything else (a
+refused sign-in, a pay-per-use request the vendor turned away, a limit reported with no
+reset time) never ends early. A hold used to run to the reset time whatever the readings
+said, so an account whose limit had been lifted stayed out of reach until then while its
+reading showed it unused. While a lane is held, T3 Code marks that account's provider as
+needing attention, because its account check cannot borrow the account; the wrapper's own
+message names the reason and the reset time.
+
 `switchboard watch` is the quota watch without the tray. `--once` takes a single pass, for
 Task Scheduler or cron; without it, it stays running and takes a pass every five minutes,
 or every `--interval <minutes>` if you would rather set the gap yourself. `--mode notify`

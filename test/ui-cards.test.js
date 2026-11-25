@@ -424,6 +424,19 @@ test('the accounts page records the order it drew and lists cards through the sh
   assert.match(main, /!notes\[id\] && tooFullForDefault\(/, 'an account the tray has a note for is not badged nearly out');
 });
 
+// Each of these builds its own picture of which lanes are held, and a cooldown can only be
+// judged with the time a limit report placed it (cooldownEnd in core/lanes.js). One of
+// them left without it would go on holding an account the others had already let back
+// in. Pinned at source because main.js and the command line need the whole app to run.
+test('the page, the tray and the command line all judge a cooldown with the time it was placed', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const main = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
+  assert.match(main, /cooldowns: settings\.cooldowns, cooldownSince: settings\.cooldownSince \};/, 'the order the page lists accounts in');
+  assert.match(main, /cooldownSince: settings\.cooldownSince,\s+cooldowns: settings\.cooldowns,/, 'what the tray menu and the usage monitor are built from');
+  const cli = fs.readFileSync(path.join(root, 'bin', 'cli.js'), 'utf8');
+  assert.match(cli, /context: \{ now, loginStates: \{\}, quotas: \{\}, spendPolicies, cooldowns, cooldownSince, requirements: overrides \}/, 'run, dry-run and the fallback');
+});
+
 // run, dry-run and the fallback all rank from what is already cached, and none of them may
 // quietly go back to reading every account of a tool from the vendor.
 test('every lane selection on the command line ranks from the cached look', () => {

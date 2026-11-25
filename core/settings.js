@@ -22,6 +22,10 @@ const DEFAULTS = {
   lanes: [],                  // ordered pool of lanes [{ id, harness, provider, accountId, billing, capabilities }]
   spendPolicies: {},          // laneId -> { budget }
   cooldowns: {},              // laneId -> epoch ms
+  // laneId -> epoch ms when a vendor limit report put that lane on cooldown. Only a hold
+  // listed here may end early, on a usage reading taken after it (cooldownEnd in
+  // core/lanes.js); a hold placed for any other reason has no entry and runs its course.
+  cooldownSince: {},
   // laneId -> { token, accountId, mintedAt, dead, deadReason, checkedAt }. Deliberately
   // NOT on the lane objects: `switchboard lanes --json` and the tray IPC print
   // settings.lanes verbatim, and a secret filed there would ride along.
@@ -125,6 +129,7 @@ export function loadSettings(file = settingsFile()) {
     if (!Array.isArray(merged.lanes)) merged.lanes = [];
     if (typeof merged.spendPolicies !== 'object' || merged.spendPolicies === null) merged.spendPolicies = {};
     if (typeof merged.cooldowns !== 'object' || merged.cooldowns === null) merged.cooldowns = {};
+    if (typeof merged.cooldownSince !== 'object' || merged.cooldownSince === null || Array.isArray(merged.cooldownSince)) merged.cooldownSince = {};
     if (typeof merged.laneTokens !== 'object' || merged.laneTokens === null || Array.isArray(merged.laneTokens)) {
       merged.laneTokens = {};
     }

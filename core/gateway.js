@@ -8,8 +8,8 @@ import path from 'node:path';
 import { loadRegistry, activeAccount, PROVIDERS } from './accounts.js';
 import { accountLoginState } from './doctor.js';
 import { loadSettings, saveSettings } from './settings.js';
-import { laneStatus, narrowPool, ordersBySoonestReset, selectLaneAsNeeded, soonestResetOrder } from './lanes.js';
-import { markLaneTokenDead } from './lane-admin.js';
+import { cooldownEnd, laneStatus, narrowPool, ordersBySoonestReset, selectLaneAsNeeded, soonestResetOrder } from './lanes.js';
+import { holdLane, markLaneTokenDead, releaseLanes } from './lane-admin.js';
 import { laneTokenFor, laneTokenIdentityMatches } from './lane-tokens.js';
 import { readClaudeAccountIdentity, toEpochMs } from './quota.js';
 import { lastSharedQuota, sharedProviderQuota } from './quota-cache.js';
@@ -359,6 +359,7 @@ export async function selectBrokerLease({
     quotas,
     spendPolicies: settings?.spendPolicies ?? {},
     cooldowns: settings?.cooldowns ?? {},
+    cooldownSince: settings?.cooldownSince ?? {},
     requirements: { provider },
   };
 
@@ -370,7 +371,9 @@ export async function selectBrokerLease({
     const acc = accounts.find((a) => a.id === lane.accountId);
     const stat = laneStatus(lane, context);
     const cred = inspectLaneLeaseCredential(lane, acc, settings, { allowFolder });
-    const cooldownUntil = settings?.cooldowns?.[lane.id] ?? null;
+    // The hold `laneStatus` just judged, not the stored one: a cooldown the meter has
+    // lifted must not go on being quoted as the time this lane comes back.
+    const cooldownUntil = cooldownEnd(lane, context);
     const qInfo = computeQuotaHeadroom(quotas[lane.accountId], cooldownUntil, now);
     const usableStat = stat.status === 'available' || stat.status === 'quota-unknown';
     const leaseable = usableStat && cred.ready;
@@ -564,12 +567,12 @@ export function applyLeaseReport(settings, report = {}, now = Date.now()) {
 
   if (outcome === 'exhausted' || outcome === 'rate-limited') {
     const parsedReset = toEpochMs(report?.resetsAt);
-    const cooldownUntil = (typeof parsedReset === 'number' && parsedReset > now)
-      ? parsedReset
-      : now + DEFAULT_FAILOVER_COOLDOWN_MS;
-    const cooldowns = { ...(settings?.cooldowns ?? {}), [laneId]: cooldownUntil };
+    // Only a reset time the vendor stated can later be matched to a meter, so only then is
+    // the moment of the report kept. With none stated the hold is the short failover one.
+    const stated = typeof parsedReset === 'number' && parsedReset > now;
+    const cooldownUntil = stated ? parsedReset : now + DEFAULT_FAILOVER_COOLDOWN_MS;
     return {
-      settings: { ...settings, cooldowns },
+      settings: holdLane(settings, laneId, cooldownUntil, stated ? now : null),
       action: 'cooldown',
       cooldownUntil,
       deadMarked: false,
@@ -601,9 +604,8 @@ export function applyLeaseReport(settings, report = {}, now = Date.now()) {
     }
 
     const cooldownUntil = now + DEFAULT_FAILOVER_COOLDOWN_MS;
-    const cooldowns = { ...(settings?.cooldowns ?? {}), [laneId]: cooldownUntil };
     return {
-      settings: { ...settings, cooldowns },
+      settings: holdLane(settings, laneId, cooldownUntil),
       action: 'cooldown',
       cooldownUntil,
       deadMarked: false,
@@ -1379,18 +1381,12 @@ export function createGatewayServer({
         }
         const targetAccId = String(bodyObj.auth_index ?? '').trim();
         const latest = getSettings();
-        const nextCooldowns = { ...(latest.cooldowns ?? {}) };
-        let cleared = 0;
-        for (const lane of latest.lanes ?? []) {
-          if (!targetAccId || lane.accountId === targetAccId) {
-            if (nextCooldowns[lane.id] != null) {
-              delete nextCooldowns[lane.id];
-              cleared += 1;
-            }
-          }
-        }
+        const laneIds = (latest.lanes ?? [])
+          .filter((lane) => !targetAccId || lane.accountId === targetAccId)
+          .map((lane) => lane.id);
+        const { settings: released, cleared } = releaseLanes(latest, laneIds);
         if (cleared > 0) {
-          setSettings({ ...latest, cooldowns: nextCooldowns });
+          setSettings(released);
         }
         return sendJson(res, 200, { ok: true, cleared });
       }
@@ -1509,9 +1505,7 @@ export function createGatewayServer({
           failoverFrom = candidate;
           if (candidate.lane?.id) {
             try {
-              const latest = getSettings();
-              const cooldowns = { ...(latest.cooldowns ?? {}), [candidate.lane.id]: now + DEFAULT_FAILOVER_COOLDOWN_MS };
-              setSettings({ ...latest, cooldowns });
+              setSettings(holdLane(getSettings(), candidate.lane.id, now + DEFAULT_FAILOVER_COOLDOWN_MS));
             } catch {
               // best-effort cooldown update
             }

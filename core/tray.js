@@ -260,10 +260,12 @@ export function trayModel({
   watchMode = 'off',
   lanes = [],
   // What the tray already holds about each account (usage, signed in or not) and each
-  // lane (cooldowns), to list accounts in the order they would be used.
+  // lane (cooldowns, and when a limit report placed them), to list accounts in the order
+  // they would be used.
   quotas = {},
   signedIn = {},
   cooldowns = {},
+  cooldownSince = {},
   overrideBlocking = false,
   strandedProviders = [],
   update = null,
@@ -284,7 +286,7 @@ export function trayModel({
     // order they would be used, so the heading and the list agree. See defaultFollowsLanes.
     const followsLanes = defaultFollowsLanes({ quotaWatch: watchMode, lanes }, provider.id);
     const mine = followsLanes
-      ? accountUseOrder(accounts, lanes, provider.id, { now, quotas, loginStates: loginStatesFrom(signedIn), cooldowns }, activeIds[provider.id] ?? null)
+      ? accountUseOrder(accounts, lanes, provider.id, { now, quotas, loginStates: loginStatesFrom(signedIn), cooldowns, cooldownSince }, activeIds[provider.id] ?? null)
       : accounts.filter((a) => a.provider === provider.id);
     if (!mine.length) continue; // a tool with no accounts is the window's business
     // A tool with no usage reading is never moved between subscription accounts (see
@@ -582,6 +584,7 @@ export function trayFlyoutModel({
   quotas = {},
   signedIn = {},
   cooldowns = {},
+  cooldownSince = {},
   overrideBlocking = false,
   strandedProviders = [],
   update = null,
@@ -621,7 +624,7 @@ export function trayFlyoutModel({
   for (const provider of providers) {
     const followsLanes = defaultFollowsLanes({ quotaWatch: watchMode, lanes }, provider.id);
     const mine = followsLanes
-      ? accountUseOrder(accounts, lanes, provider.id, { now, quotas, loginStates: loginStatesFrom(signedIn), cooldowns }, activeIds[provider.id] ?? null)
+      ? accountUseOrder(accounts, lanes, provider.id, { now, quotas, loginStates: loginStatesFrom(signedIn), cooldowns, cooldownSince }, activeIds[provider.id] ?? null)
       : accounts
           .filter((a) => a.provider === provider.id)
           .sort((a, b) => Number(activeIds[provider.id] === b.id) - Number(activeIds[provider.id] === a.id));

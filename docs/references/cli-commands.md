@@ -197,3 +197,10 @@ switchboard t3 forget <local|wsl:<distro>|ssh:<host>>
   It never passes `SWITCHBOARD_CLIENT_KEY` on to claude, so neither claude nor a command it
   runs holds a key that could lease a lane; the wrapper keeps the key to itself for the lease
   and the report.
+- A run the vendor refuses for a limit is reported with the reset time it stated, and the
+  broker holds that lane until then. The hold ends early once a usage reading taken after the
+  report shows every meter that resets at that time back under 97%, which is how a limit lifted
+  ahead of time shows up; a reading that is older, unreadable, undated, or that shows no meter
+  resetting then leaves the hold in place. While a lane is held T3 marks that account's
+  provider as needing attention, since its account check cannot borrow the account, and the
+  wrapper prints `no lane leased` with the reset time.

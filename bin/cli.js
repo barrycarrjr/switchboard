@@ -68,7 +68,7 @@ function fmtWindow(w) {
  * it actually reaches, which is what keeps `dry-run` quick; see there for why.
  */
 async function laneSelection(settings, registry, overrides = {}) {
-  const { lanes = [], spendPolicies = {}, cooldowns = {}, usageSources = {} } = settings;
+  const { lanes = [], spendPolicies = {}, cooldowns = {}, cooldownSince = {}, usageSources = {} } = settings;
   const accounts = await resolveAllAccounts(registry);
   const now = Date.now();
 
@@ -96,7 +96,7 @@ async function laneSelection(settings, registry, overrides = {}) {
 
   return {
     pool: lanes,
-    context: { now, loginStates: {}, quotas: {}, spendPolicies, cooldowns, requirements: overrides },
+    context: { now, loginStates: {}, quotas: {}, spendPolicies, cooldowns, cooldownSince, requirements: overrides },
     readAccount,
     peekAccount,
   };

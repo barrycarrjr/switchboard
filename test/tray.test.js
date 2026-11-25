@@ -92,6 +92,31 @@ test('a tool whose account is picked by reset lists its accounts in the order th
     'before anything has been read, the lane order is all there is to go on');
 });
 
+// A hold the meter has overtaken is over for these lists as well (cooldownEnd in
+// core/lanes.js). Left out of them, the tray would go on listing an account as waiting
+// behind the others while the broker was already lending it again.
+test('an account whose cooldown a newer reading has lifted is listed where it would be used again', () => {
+  const reset = NOW + 3 * HOUR;
+  const quotas = {
+    'claude-default': { windows: [{ key: 'session', usedPercent: 21 }, { key: 'week', usedPercent: 6, resetsAt: NOW + 6 * DAY }] },
+    // Read ten minutes ago: the week this account was refused for has been handed back.
+    'claude-account-2': { observedAt: NOW - 10 * 60 * 1000, windows: [{ key: 'session', usedPercent: 1 }, { key: 'week', usedPercent: 0, resetsAt: reset }] },
+  };
+  const held = { watchMode: 'auto', lanes: LANES, quotas, signedIn: { 'claude-default': true, 'claude-account-2': true }, cooldowns: { 'lane-2': reset } };
+  const lists = {
+    'the menu': (over) => kinds(model({ ...held, ...over }), 'account').map((r) => r.accountId).slice(0, 2),
+    'the usage monitor': (over) => trayFlyoutModel({ providers: PROVIDERS, accounts: ACCOUNTS, activeIds: { claude: 'claude-default' }, now: NOW, ...held, ...over })
+      .providers[0].accounts.map((a) => a.id),
+  };
+  for (const [name, list] of Object.entries(lists)) {
+    assert.deepEqual(list({}), ['claude-default', 'claude-account-2'], `${name}: held, as nothing says when the hold began`);
+    assert.deepEqual(list({ cooldownSince: { 'lane-2': NOW - HOUR } }), ['claude-account-2', 'claude-default'],
+      `${name}: read after the hold began, so the account is back and its sooner reset puts it first`);
+    assert.deepEqual(list({ cooldownSince: { 'lane-2': NOW - 60 * 1000 } }), ['claude-default', 'claude-account-2'],
+      `${name}: a reading older than the hold changes nothing`);
+  }
+});
+
 // Found in review: the account that resets soonest drops down the list once it is too
 // full to take the default, which looked out of order under "soonest weekly reset first".
 test('an account listed lower for being near its limit says so', () => {

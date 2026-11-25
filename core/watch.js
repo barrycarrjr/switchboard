@@ -206,6 +206,7 @@ export function planDefaultSwitches({
         quotas: snapshots,
         spendPolicies: settings.spendPolicies ?? {},
         cooldowns: settings.cooldowns ?? {},
+        cooldownSince: settings.cooldownSince ?? {},
         requirements: { harness: provider },
       };
 

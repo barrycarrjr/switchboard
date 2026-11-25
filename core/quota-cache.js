@@ -68,9 +68,14 @@ export function readSharedQuota(accountId, key, now = Date.now(), file = quotaCa
   }
 }
 
+/** Whether a reading came from the vendor's own live answer, not a failure or a fallback. */
+function isLive(result) {
+  return Boolean(result) && !result.error && (result.source === 'token' || result.source === 'cli');
+}
+
 /** Record a live reading for other processes. Failures and fallbacks are never shared. */
 export function writeSharedQuota(accountId, key, result, at = Date.now(), file = quotaCacheFile()) {
-  if (!result || result.error || (result.source !== 'token' && result.source !== 'cli')) return;
+  if (!isLive(result)) return;
   let all = {};
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -135,6 +140,9 @@ export function lastSharedQuota(accountId, file = quotaCacheFile()) {
  * A fallback snapshot older than the last shared reading does not replace it: the
  * shared reading is served instead, saying the newer check failed, and stale past the
  * same bound the tray uses. See heldReadingIsNewer.
+ *
+ * Every reading that comes back says when it was taken: `observedAt` for a live one,
+ * fetched just now or served from the cache, and `sampledAt` for a fallback.
  */
 export async function sharedProviderQuota(account, { usageSource = null, now = Date.now(), fetchImpl = fetch, file = quotaCacheFile(), antigravityQuotaFn = undefined } = {}) {
   const key = sharedQuotaKey(account.provider, account.home);
@@ -147,6 +155,13 @@ export async function sharedProviderQuota(account, { usageSource = null, now = D
     const aged = now - held.observedAt > DESKTOP_STALE_MS;
     return { ...held, cached: true, refreshError: result.fallbackReason ?? 'unavailable', ...(aged ? { stale: true } : {}) };
   }
-  writeSharedQuota(account.id, key, result, Date.now(), file);
-  return result;
+  const at = Date.now();
+  writeSharedQuota(account.id, key, result, at, file);
+  // A live reading says when it arrived, exactly as it will once it is served from the
+  // cache above. Left without a time, the freshest reading there is would be the one
+  // reading nothing can date: it could not be placed after the moment a lane was put on
+  // cooldown (see limitLifted in core/lanes-util.js), so a lane the cached reading let
+  // back in would be held again by the fresh one, and let back in by the next cached one.
+  // A fallback already carries the time its sample was taken, and keeps it.
+  return isLive(result) ? { ...result, observedAt: result.observedAt ?? at } : result;
 }
