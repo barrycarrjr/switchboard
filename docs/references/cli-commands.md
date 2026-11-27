@@ -112,6 +112,21 @@ switchboard t3 forget <local|wsl:<distro>|ssh:<host>>
   keeps the client key in `~/.config/switchboard/client-key` when the broker accepts it, gives
   new entries `~/.claude` as their config folder, and proves every entry, "any account"
   included, the way T3 starts it.
+- Those folders hold only those two files. T3 starts a real Claude at
+  `node_modules/@anthropic-ai/claude-code/bin/claude.exe` in preference to the cli.js, on the
+  sign-in in `~/.claude` and with nothing borrowed, and it offers to install one there
+  (`npm install -g --prefix <the folder>`) whenever a `package.json` lies beside the cli.js.
+  So no `package.json` is written (one left by 0.36.6 or earlier is removed), and every setup,
+  and the tray's start-up refresh, moves anything else out of the folders into
+  `~/.local/share/switchboard/t3-set-aside/<time>/<folder>`. It is kept there until you delete
+  it. A folder counts as a wrapper folder only while it holds its own `<name>.cmd`, so a copy
+  kept under another name is left alone, and a wrapper folder that is itself a link is never
+  emptied. After a real Claude was moved out, restart T3 Code; until then it looks for the copy
+  it found when it started and those entries do not start. A copy that is running is moved all
+  the same. If the copy cannot be moved, the wrappers are still written, then the setup stops,
+  says what the system answered, and asks you to close T3 Code and anything else that may have
+  the file open. `t3 status` shows this machine as not working while T3 would start something
+  other than the wrapper, and as out of date while other files lie there.
 - ssh runs with `BatchMode=yes`: the machine must accept a key sign-in, because a password
   prompt cannot be answered on a pipe. Everything sent to the target (the key included)
   travels inside a script on stdin, never on a command line.
@@ -177,18 +192,25 @@ switchboard t3 forget <local|wsl:<distro>|ssh:<host>>
   A remembered one that does not answer keeps its last result, with the failed attempt and
   its age shown beside it.
 - `t3 status` lists each environment as ready, out of date (its lease wrapper is older than
-  this Switchboard, an account was added, or the broker's port or address moved) or not
-  working (the last setup or proof failed, or its key was revoked), each with its age. It asks
+  this Switchboard, an account was added, the broker's port or address moved, or, on this
+  machine, its wrapper folders hold files Switchboard does not write) or not working (the last
+  setup or proof failed, its key was revoked, the start-up refresh failed, or, on this machine,
+  T3 would start a real Claude found in a wrapper folder), each with its age. It asks
   every machine at once which Codex and Antigravity sign-ins are done (read-only) and saves the
   answer with its time, so `--saved` and the Gateway tab show it afterwards with its age; a
   machine that does not answer keeps its last reading and is marked as not reached, with the
   reason. A Codex state it cannot read keeps what was known before. When there is nothing to
   ask (no Codex account, Antigravity not in use) no machine is contacted. `--saved` skips the
   asking. Health warns only about environments that are not working or out of date, not about
-  sign-ins still to do.
-  At start the tray refreshes the wrapper files of an environment
-  whose wrapper is out of date, and only those: it never issues a key (a revoked key stays
-  revoked), never writes T3's settings and never proves. `t3 forget` stops listing one;
+  sign-ins still to do. For a day after a real Claude was moved out of this machine's wrapper
+  folders, the status line and Health also say to restart T3 Code and where the copy was put.
+  At start, while the gateway is on, the tray refreshes an environment whose wrapper is out of
+  date, and this machine when its wrapper folders hold anything Switchboard does not write. It
+  touches only the wrapper files and, on this machine, what else lies in the wrapper folders
+  (moved out as above): it never issues a key (a revoked key stays revoked), never writes T3's
+  settings and never proves. Because it proves nothing and adds no account, it leaves the result
+  of the last full setup as it was; if the refresh itself fails, the environment shows as not
+  working with that reason until the next run. `t3 forget` stops listing one;
   nothing on the machine is changed. The Gateway tab's T3 Code Environments card does all of
   this in clicks.
 - The lease wrapper itself passes `--version` and `--help` straight to claude without

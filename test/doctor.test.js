@@ -828,3 +828,43 @@ test('a T3 environment whose setup failed, or whose wrapper is older than this S
   assert.match(t3.find((c) => c.id === 't3-env-ssh:w').detail, /cannot reach the broker.*switchboard t3 setup ssh:w/);
   assert.match(t3.find((c) => c.id === 't3-env-wsl:U').title, /out of date/);
 });
+
+test('this machine\'s T3 is a warning while T3 would start a real Claude in a wrapper folder, though its last setup passed', async () => {
+  const settings = {
+    lanes: [], laneTokens: {},
+    t3Environments: { local: { id: 'local', kind: 'local', name: 'this computer', lastOk: true, accounts: [], leaseSha: 'new' } },
+  };
+  const quiet = await runChecks({ settings, env: envNone, fetchImpl: noFetch, t3LeaseSha: 'new', t3LocalFolders: { takenOver: [], extras: [] } });
+  assert.equal(quiet.find((c) => c.id === 't3-env-local'), undefined);
+
+  // T3 lists such an entry as healthy and the wrapper is never run, so this line is the one
+  // place a person is told the entry is on this machine's own sign-in.
+  const checks = await runChecks({ settings, env: envNone, fetchImpl: noFetch, t3LeaseSha: 'new', t3LocalFolders: { takenOver: ['switchboard-lease'], extras: ['switchboard-lease'] } });
+  const c = checks.find((x) => x.id === 't3-env-local');
+  assert.equal(c.level, 'warn');
+  assert.match(c.title, /cannot borrow accounts from Switchboard/);
+  assert.match(c.detail, /copy of Claude found in switchboard-lease in place of Switchboard's wrapper.*Run: switchboard t3 setup local/);
+
+  const untidy = await runChecks({ settings, env: envNone, fetchImpl: noFetch, t3LeaseSha: 'new', t3LocalFolders: { takenOver: [], extras: ['t3-claude-default'] } });
+  assert.match(untidy.find((x) => x.id === 't3-env-local').title, /out of date/);
+});
+
+test('Health says to restart T3 Code for a day after a real Claude was moved out, without telling anyone to set up again', async () => {
+  const now = Date.parse('2026-11-27T21:00:00Z');
+  const hour = 60 * 60 * 1000;
+  const settings = {
+    lanes: [], laneTokens: {},
+    t3Environments: { local: { id: 'local', kind: 'local', name: 'this computer', lastOk: true, accounts: [], leaseSha: 'new', restartT3At: now - hour, setAside: '/kept/here' } },
+  };
+  const inputs = { settings, env: envNone, fetchImpl: noFetch, t3LeaseSha: 'new', t3LocalFolders: { takenOver: [], extras: [] } };
+
+  // The tray moves the copy out at start with nobody watching, and its steps are not shown.
+  // T3 then cannot start those entries until it is restarted, and this is where that is said.
+  const c = (await runChecks({ ...inputs, now })).find((x) => x.id === 't3-env-local');
+  assert.equal(c.level, 'info', 'not a warning: Switchboard cannot tell whether T3 was restarted since');
+  assert.match(c.title, /T3 Code may need a restart/);
+  assert.match(c.detail, /a copy of Claude was moved out of its wrapper folders 1 h ago \(kept in \/kept\/here\): restart T3 Code if its Switchboard entries do not start\.$/);
+  assert.doesNotMatch(c.detail, /switchboard t3 setup/, 'setting up again would change nothing');
+
+  assert.equal((await runChecks({ ...inputs, now: now + 25 * hour })).find((x) => x.id === 't3-env-local'), undefined);
+});

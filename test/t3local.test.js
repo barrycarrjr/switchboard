@@ -4,6 +4,11 @@
 // T3 on Windows refuses to start a .cmd as Claude but accepts the folder layout an npm install
 // of Claude leaves, so these tests check that layout is what gets written and that the cli.js
 // in it really borrows an account, by running it under node against a stand-in broker.
+//
+// T3 also decides from what else lies in such a folder: it starts a real Claude found there in
+// the wrapper's place, and a package.json there makes it offer to install one. So the tests
+// below also check that only the two wrapper files are written and that anything else is moved
+// out, noticed and reported.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,10 +16,11 @@ import http from 'node:http';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { tempDir } from '../test-support/tempdir.js';
-import { parseT3Target, mergeT3EnvironmentSettings, t3EnvironmentStatus, signInsFor, LOCAL_TARGET } from '../core/t3env.js';
+import { parseT3Target, mergeT3EnvironmentSettings, t3EnvironmentStatus, rememberT3Environment, signInsFor, LOCAL_TARGET } from '../core/t3env.js';
 import {
   localLayout, localPaths, localWrapperFiles, localCliText, localCmdText, localWrapperAccountId, inspectLocal,
   setupLocalT3Environment, readLocalLeaseClient, localCodexAccounts, hasAntigravityKeyringTarget,
+  localWrapperContents, localWrapperFolders, proveLocal, RETIRED_LOCAL_PACKAGE_JSON,
 } from '../core/t3local.js';
 import { rateLimitScanner, rateLimitDetails, findRealClaude, withoutClientKey } from '../bin/switchboard-lease.mjs';
 
@@ -80,6 +86,29 @@ function deps(home, env, port, extra = {}) {
   };
 }
 
+/** Every file under a folder, as paths inside it with forward slashes, in order. */
+function filesIn(dir, rel = '') {
+  return fs.readdirSync(path.join(dir, rel), { withFileTypes: true })
+    .flatMap((e) => (e.isDirectory() ? filesIn(dir, `${rel}${e.name}/`) : [`${rel}${e.name}`]))
+    .sort();
+}
+
+/**
+ * What `npm install -g --prefix <wrapper folder> @anthropic-ai/claude-code` leaves, which is
+ * the update T3 offered for these folders: the real package where the wrapper's cli.js was
+ * (npm replaces the folder, so the cli.js goes), and its launchers beside the .cmd.
+ */
+function installClaudeOver(w, { keepCli = false } = {}) {
+  const pkg = path.dirname(w.cli);
+  if (!keepCli) fs.rmSync(w.cli, { force: true });
+  fs.mkdirSync(path.join(pkg, 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(pkg, 'bin', 'claude.exe'), 'the real claude');
+  fs.writeFileSync(path.join(pkg, 'cli-wrapper.cjs'), '');
+  fs.writeFileSync(path.join(pkg, 'package.json'), '{"name":"@anthropic-ai/claude-code","type":"module"}\n');
+  fs.writeFileSync(path.join(w.dir, 'claude.cmd'), '');
+  return path.join(pkg, 'bin', 'claude.exe');
+}
+
 test('"local" names this machine, and wsl:local or ssh:local still name a machine called local', () => {
   assert.deepEqual(parseT3Target('local'), { ...LOCAL_TARGET });
   assert.deepEqual(parseT3Target('LOCAL'), { ...LOCAL_TARGET });
@@ -131,8 +160,12 @@ test('setting up this machine writes the wrappers, the lease client and T3 setti
     assert.equal(fs.readFileSync(p.lease, 'utf8'), readLocalLeaseClient());
     for (const file of ['t3-claude-default', 't3-claude-account-2', 'switchboard-lease']) {
       const w = localWrapperFiles(p.root, file);
-      assert.ok(fs.existsSync(w.cmd) && fs.existsSync(w.cli) && fs.existsSync(w.packageJson), file);
+      // No package.json: with one beside the cli.js, T3 offers to install Claude over the wrapper.
+      assert.deepEqual(filesIn(w.dir), ['node_modules/@anthropic-ai/claude-code/cli.js', `${file}.cmd`], file);
     }
+    assert.deepEqual(localWrapperFolders(home), { takenOver: [], extras: [] });
+    assert.equal(r.setAside, null);
+    assert.equal(r.restartT3, false);
     const written = JSON.parse(fs.readFileSync(p.settings, 'utf8'));
     assert.ok(written.providerInstances.claudeAgent_sb_default && written.providerInstances.claudeAgent_sb_any);
     assert.ok(written.providerInstances.claudeAgent, 'the entry on this machine\'s own sign-in is kept');
@@ -194,6 +227,373 @@ test('the local setup refuses to start where it cannot work, and says what to do
   }
 });
 
+test('a real Claude installed over a wrapper is moved out by the setup, which puts the wrapper back and says to restart T3', async () => {
+  const broker = await startBroker();
+  try {
+    const { home, p, env } = makeHome();
+    await setupLocalT3Environment(deps(home, env, broker.port));
+    const w = localWrapperFiles(p.root, 't3-claude-default');
+    const exe = installClaudeOver(w);
+    // This is the state T3 runs the real Claude in, on this machine's own sign-in.
+    assert.deepEqual(localWrapperFolders(home), { takenOver: ['t3-claude-default'], extras: ['t3-claude-default'] });
+    assert.equal(localWrapperContents(p.root, 't3-claude-default').takeover, exe);
+
+    const r = await setupLocalT3Environment(deps(home, env, broker.port), { now: Date.parse('2026-11-27T21:00:00Z') });
+    assert.equal(r.error, null, r.steps.join('\n'));
+    assert.equal(r.ok, true);
+    assert.deepEqual(filesIn(w.dir), ['node_modules/@anthropic-ai/claude-code/cli.js', 't3-claude-default.cmd']);
+    assert.equal(localWrapperAccountId(fs.readFileSync(w.cli, 'utf8')), 'claude-default', 'the wrapper npm removed is back');
+    assert.deepEqual(localWrapperFolders(home), { takenOver: [], extras: [] });
+
+    assert.equal(r.setAside, path.join(p.aside, '20261127T210000Z'));
+    const kept = path.join(r.setAside, 't3-claude-default');
+    assert.deepEqual(filesIn(kept), [
+      'claude.cmd',
+      'node_modules/@anthropic-ai/claude-code/bin/claude.exe',
+      'node_modules/@anthropic-ai/claude-code/cli-wrapper.cjs',
+      'node_modules/@anthropic-ai/claude-code/package.json',
+    ], 'moved with its place in the folder kept, not deleted');
+    assert.equal(fs.readFileSync(path.join(kept, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'), 'utf8'), 'the real claude');
+    assert.equal(r.restartT3, true);
+    assert.ok(r.steps.some((s) => /A copy of Claude was in t3-claude-default.*Restart T3 Code now/.test(s)), r.steps.join('\n'));
+    assert.ok(r.steps.some((s) => s.includes(`kept in ${r.setAside}`)), r.steps.join('\n'));
+
+    const again = await setupLocalT3Environment(deps(home, env, broker.port));
+    assert.equal(again.restartT3, false, 'a run that moves nothing asks for no restart');
+    assert.equal(again.setAside, null);
+  } finally {
+    broker.server.close();
+  }
+});
+
+test('the start-up refresh clears the folders too, and an earlier Switchboard\'s package.json is removed, not set aside', async () => {
+  const broker = await startBroker();
+  try {
+    const { home, p, env } = makeHome();
+    await setupLocalT3Environment(deps(home, env, broker.port));
+    const names = ['t3-claude-default', 't3-claude-account-2', 'switchboard-lease'];
+    for (const file of names) fs.writeFileSync(localWrapperFiles(p.root, file).packageJson, RETIRED_LOCAL_PACKAGE_JSON);
+    assert.deepEqual(localWrapperFolders(home), { takenOver: [], extras: [...names].sort() });
+
+    const quiet = await setupLocalT3Environment(deps(home, env, broker.port), { refreshOnly: true });
+    assert.equal(quiet.error, null, quiet.steps.join('\n'));
+    assert.equal(quiet.ok, true);
+    assert.ok(quiet.steps.some((s) => /^Removed the package\.json an earlier Switchboard wrote beside 3 wrappers/.test(s)), quiet.steps.join('\n'));
+    assert.deepEqual(localWrapperFolders(home), { takenOver: [], extras: [] });
+    assert.equal(quiet.setAside, null);
+    assert.equal(quiet.restartT3, false, 'T3 was running the wrapper all along');
+    assert.equal(fs.existsSync(p.aside), false, 'nothing was set aside');
+
+    // A wrapper whose cli.js went when Claude was installed over it is still one the refresh
+    // puts right, though the refresh adds no wrapper that was never there.
+    const any = localWrapperFiles(p.root, 'switchboard-lease');
+    installClaudeOver(any);
+    fs.rmSync(localWrapperFiles(p.root, 't3-claude-account-2').dir, { recursive: true });
+    const r = await setupLocalT3Environment(deps(home, env, broker.port), { refreshOnly: true, now: Date.parse('2026-11-27T21:00:00Z') });
+    assert.equal(r.error, null, r.steps.join('\n'));
+    assert.equal(r.ok, true);
+    assert.deepEqual(filesIn(any.dir), ['node_modules/@anthropic-ai/claude-code/cli.js', 'switchboard-lease.cmd']);
+    assert.equal(localWrapperAccountId(fs.readFileSync(any.cli, 'utf8')), '*');
+    assert.equal(r.restartT3, true);
+    assert.ok(fs.existsSync(path.join(r.setAside, 'switchboard-lease', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')));
+    assert.equal(fs.existsSync(localWrapperFiles(p.root, 't3-claude-account-2').dir), false);
+  } finally {
+    broker.server.close();
+  }
+});
+
+test('a folder that cannot be renamed is emptied piece by piece, and a copy of Claude that will not move stops the setup', async () => {
+  const broker = await startBroker();
+  try {
+    const { home, p, env } = makeHome();
+    await setupLocalT3Environment(deps(home, env, broker.port));
+    const w = localWrapperFiles(p.root, 't3-claude-default');
+    const bin = path.join(path.dirname(w.cli), 'bin');
+
+    // Windows refuses to rename a folder that a process has open (as its working folder, or
+    // through a file open inside it), but lets the files in it be renamed, a running program's
+    // own file included.
+    installClaudeOver(w, { keepCli: true });
+    const folderHeld = (from, to) => { if (from === bin) throw new Error('EPERM: the folder is in use'); fs.renameSync(from, to); };
+    const moved = await setupLocalT3Environment(deps(home, env, broker.port, { rename: folderHeld }), { now: Date.parse('2026-11-27T21:00:00Z') });
+    assert.equal(moved.error, null, moved.steps.join('\n'));
+    assert.equal(fs.existsSync(bin), false);
+    assert.ok(fs.existsSync(path.join(moved.setAside, 't3-claude-default', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')));
+    assert.equal(moved.restartT3, true);
+
+    // The program file itself will not move either (another program has it open): nothing
+    // Switchboard can do, so it stops and passes on what the system said instead of a guess.
+    const exe = installClaudeOver(w, { keepCli: true });
+    const held = (from, to) => { if (from === bin || from === exe) throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' }); fs.renameSync(from, to); };
+    const r = await setupLocalT3Environment(deps(home, env, broker.port, { rename: held }), { now: Date.parse('2026-11-27T22:00:00Z') });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /^a copy of Claude is in t3-claude-default \(the system said EBUSY\) and could not be moved out, .*Close T3 Code and anything else that may have the file open, then run the setup again\.$/);
+    assert.ok(r.steps.some((s) => /^Could not move .*claude\.exe \(the system said EBUSY\) in t3-claude-default\.$/.test(s)), r.steps.join('\n'));
+    assert.ok(fs.existsSync(exe));
+    assert.equal(r.restartT3, false, 'nothing changed for T3, so there is nothing to restart it for');
+    assert.deepEqual(localWrapperFolders(home).takenOver, ['t3-claude-default'], 'and the status list goes on saying so');
+  } finally {
+    broker.server.close();
+  }
+});
+
+test('when one copy of Claude will not move, every wrapper that was cleared still gets its cli.js back', async () => {
+  const broker = await startBroker();
+  try {
+    const { home, p, env } = makeHome();
+    await setupLocalT3Environment(deps(home, env, broker.port));
+    // Claude was installed over two wrappers, so npm removed both cli.js files.
+    const first = localWrapperFiles(p.root, 't3-claude-default');
+    const second = localWrapperFiles(p.root, 't3-claude-account-2');
+    installClaudeOver(first);
+    const heldExe = installClaudeOver(second);
+    const heldBin = path.dirname(heldExe);
+    const held = (from, to) => { if (from === heldBin || from === heldExe) throw Object.assign(new Error('busy'), { code: 'EBUSY' }); fs.renameSync(from, to); };
+
+    // The unattended path: the tray's start-up refresh. It stops on the copy that is held, but
+    // not before it has put back the wrapper of the folder it did clear, which would otherwise
+    // be left with neither a real Claude nor a cli.js, and with nothing to say so.
+    const stopped = await setupLocalT3Environment(deps(home, env, broker.port, { rename: held }), { refreshOnly: true });
+    assert.match(stopped.error, /a copy of Claude is in t3-claude-account-2 \(the system said EBUSY\) and could not be moved out/);
+    assert.equal(localWrapperAccountId(fs.readFileSync(first.cli, 'utf8')), 'claude-default');
+    assert.deepEqual(filesIn(first.dir), ['node_modules/@anthropic-ai/claude-code/cli.js', 't3-claude-default.cmd']);
+    assert.equal(localWrapperAccountId(fs.readFileSync(second.cli, 'utf8')), 'claude-account-2', 'the held folder has its cli.js back too; T3 passes it over while the copy lies there');
+    assert.equal(stopped.restartT3, true, 'the copy that did move was one T3 was starting');
+
+    // Once nothing holds the file, the next refresh finishes the job.
+    const done = await setupLocalT3Environment(deps(home, env, broker.port), { refreshOnly: true });
+    assert.equal(done.error, null, done.steps.join('\n'));
+    assert.deepEqual(localWrapperFolders(home), { takenOver: [], extras: [] });
+    for (const w of [first, second]) assert.ok(fs.existsSync(w.cli));
+  } finally {
+    broker.server.close();
+  }
+});
+
+test('a wrapper file that was moved out with the rest is written again in the same run', async () => {
+  const broker = await startBroker();
+  try {
+    const { home, p, env } = makeHome();
+    await setupLocalT3Environment(deps(home, env, broker.port));
+    // A folder where the cli.js belongs is not Switchboard's file, so it goes with the rest.
+    const w = localWrapperFiles(p.root, 'switchboard-lease');
+    fs.rmSync(w.cli);
+    fs.mkdirSync(w.cli);
+    fs.writeFileSync(path.join(w.cli, 'note.txt'), 'x');
+    const r = await setupLocalT3Environment(deps(home, env, broker.port), { refreshOnly: true });
+    assert.equal(r.error, null, r.steps.join('\n'));
+    assert.equal(localWrapperAccountId(fs.readFileSync(w.cli, 'utf8')), '*');
+    assert.ok(r.steps.includes('Wrote 1 account wrapper: switchboard-lease.'), r.steps.join('\n'));
+    assert.ok(fs.existsSync(path.join(r.setAside, 'switchboard-lease', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js', 'note.txt')));
+  } finally {
+    broker.server.close();
+  }
+});
+
+test('a piece that will not move leaves no empty folders behind where things are set aside', async () => {
+  const broker = await startBroker();
+  try {
+    const { home, p, env } = makeHome();
+    await setupLocalT3Environment(deps(home, env, broker.port));
+    const w = localWrapperFiles(p.root, 't3-claude-default');
+    const stray = path.join(path.dirname(w.cli), 'notes.txt');
+    fs.writeFileSync(stray, 'x');
+    const never = (from, to) => { if (from === stray) throw Object.assign(new Error('not permitted'), { code: 'EPERM' }); fs.renameSync(from, to); };
+    // While it stays stuck the folder stays out of date, so this runs at every start.
+    for (const hour of ['21', '22', '23']) {
+      const r = await setupLocalT3Environment(deps(home, env, broker.port, { rename: never }), { refreshOnly: true, now: Date.parse(`2026-11-27T${hour}:00:00Z`) });
+      assert.equal(r.error, null, 'a stray file T3 does not start is no reason to stop');
+      assert.equal(r.setAside, null);
+      assert.ok(r.steps.some((s) => s === `Could not move ${path.join('node_modules', '@anthropic-ai', 'claude-code', 'notes.txt')} (the system said EPERM) in t3-claude-default.`), r.steps.join('\n'));
+    }
+    assert.ok(fs.existsSync(stray));
+    assert.deepEqual(fs.existsSync(p.aside) ? fs.readdirSync(p.aside) : [], [], 'no dated folder was left for a move that never happened');
+  } finally {
+    broker.server.close();
+  }
+});
+
+test('a wrapper folder that is itself a link is never emptied, and a copy of a wrapper kept under another name is left alone', async () => {
+  const broker = await startBroker();
+  try {
+    const { home, p, env } = makeHome();
+    await setupLocalT3Environment(deps(home, env, broker.port));
+
+    // Someone's own folder, reached through a link named like a wrapper. It even holds a file
+    // by the wrapper's .cmd name, so it is found; what lies behind the link is still theirs.
+    const theirs = path.join(home, 'their-folder');
+    fs.mkdirSync(theirs);
+    fs.writeFileSync(path.join(theirs, 'my-notes.txt'), 'mine');
+    fs.writeFileSync(path.join(theirs, 't3-claude-linked.cmd'), '');
+    fs.symlinkSync(theirs, path.join(p.root, 't3-claude-linked'), 'junction');
+
+    // A copy kept while tidying up, with everything a taken-over wrapper has. No T3 entry
+    // points at it (its .cmd still carries the old name), so nothing is known of what T3 starts
+    // there, and nothing is said.
+    const copy = path.join(p.root, 't3-claude-default-old');
+    fs.cpSync(localWrapperFiles(p.root, 't3-claude-default').dir, copy, { recursive: true });
+    fs.mkdirSync(path.join(copy, 'node_modules', '@anthropic-ai', 'claude-code', 'bin'));
+    fs.writeFileSync(path.join(copy, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'), 'real');
+
+    assert.deepEqual(localWrapperFolders(home), { takenOver: [], extras: [] });
+    const r = await setupLocalT3Environment(deps(home, env, broker.port), { refreshOnly: true });
+    assert.equal(r.error, null, r.steps.join('\n'));
+    assert.equal(r.restartT3, false);
+    assert.deepEqual(fs.readdirSync(theirs).sort(), ['my-notes.txt', 't3-claude-linked.cmd']);
+    assert.deepEqual(filesIn(copy), ['node_modules/@anthropic-ai/claude-code/bin/claude.exe', 'node_modules/@anthropic-ai/claude-code/cli.js', 't3-claude-default.cmd']);
+    assert.equal(fs.existsSync(p.aside), false);
+  } finally {
+    broker.server.close();
+  }
+});
+
+test('a link found in a wrapper folder is moved as the link it is, and what it points at is never touched', async () => {
+  const broker = await startBroker();
+  try {
+    const { home, p, env } = makeHome();
+    await setupLocalT3Environment(deps(home, env, broker.port));
+    // Something of the user's own, elsewhere, that a link in the wrapper folder points at.
+    const elsewhere = path.join(home, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.writeFileSync(path.join(elsewhere, 'keep.txt'), 'not Switchboard\'s to move');
+    const w = localWrapperFiles(p.root, 't3-claude-default');
+    const link = path.join(path.dirname(w.cli), 'node_modules');
+    // A junction needs no special rights on Windows; elsewhere the type is ignored.
+    fs.symlinkSync(elsewhere, link, 'junction');
+    assert.deepEqual(localWrapperContents(p.root, 't3-claude-default').extras, [path.join('node_modules', '@anthropic-ai', 'claude-code', 'node_modules')]);
+
+    // Even when the link will not move, the folder behind it is not emptied in its stead.
+    const held = (from, to) => { if (from === link) throw new Error('EPERM'); fs.renameSync(from, to); };
+    const stuck = await setupLocalT3Environment(deps(home, env, broker.port, { rename: held }));
+    assert.equal(stuck.error, null, 'a link is no program T3 starts, so the setup goes on');
+    assert.ok(stuck.steps.some((s) => /^Could not move .*node_modules \(the system said EPERM\) in t3-claude-default\.$/.test(s)), stuck.steps.join('\n'));
+    assert.deepEqual(fs.readdirSync(elsewhere), ['keep.txt']);
+
+    const r = await setupLocalT3Environment(deps(home, env, broker.port), { now: Date.parse('2026-11-27T21:00:00Z') });
+    assert.equal(r.error, null, r.steps.join('\n'));
+    assert.equal(fs.existsSync(link), false);
+    assert.deepEqual(fs.readdirSync(elsewhere), ['keep.txt'], 'the link moved; its target stayed where it was, whole');
+    assert.equal(fs.lstatSync(path.join(r.setAside, 't3-claude-default', 'node_modules', '@anthropic-ai', 'claude-code', 'node_modules')).isSymbolicLink(), true);
+  } finally {
+    broker.server.close();
+  }
+});
+
+test('what does not belong in a wrapper folder is listed whole, and a write in progress is left alone', () => {
+  const { home, p } = makeHome();
+  const w = localWrapperFiles(p.root, 'switchboard-lease');
+  fs.mkdirSync(path.dirname(w.cli), { recursive: true });
+  fs.writeFileSync(w.cmd, localCmdText());
+  fs.writeFileSync(w.cli, localCliText(null, { leasePath: p.lease, root: p.root }));
+  assert.deepEqual(localWrapperContents(p.root, 'switchboard-lease'), { extras: [], retiredManifest: false, takeover: null });
+  assert.deepEqual(localWrapperFolders(home), { takenOver: [], extras: [] });
+
+  fs.writeFileSync(`${w.cli}.tmp-123`, 'half written by another Switchboard');
+  fs.writeFileSync(w.packageJson, RETIRED_LOCAL_PACKAGE_JSON);
+  fs.mkdirSync(path.join(w.dir, 'node_modules', 'other', 'deep'), { recursive: true });
+  const c = localWrapperContents(p.root, 'switchboard-lease');
+  assert.deepEqual(c.extras, [path.join('node_modules', 'other')], 'a folder that does not belong is one entry');
+  assert.equal(c.retiredManifest, true);
+  assert.equal(c.takeover, null, 'none of this is started by T3 in the wrapper\'s place');
+  assert.deepEqual(localWrapperFolders(home), { takenOver: [], extras: ['switchboard-lease'] });
+
+  // A package.json that is not the one Switchboard used to write is someone else's file.
+  fs.writeFileSync(w.packageJson, '{"type":"module"}\n');
+  const foreign = localWrapperContents(p.root, 'switchboard-lease');
+  assert.equal(foreign.retiredManifest, false);
+  assert.ok(foreign.extras.includes(path.join('node_modules', '@anthropic-ai', 'claude-code', 'package.json')));
+});
+
+test('the proof fails an entry T3 would not run the wrapper for, without running it', async () => {
+  const { home, p } = makeHome();
+  const w = localWrapperFiles(p.root, 't3-claude-default');
+  fs.mkdirSync(path.dirname(w.cli), { recursive: true });
+  fs.writeFileSync(w.cli, localCliText(accounts[0], { leasePath: p.lease, root: p.root }));
+  fs.writeFileSync(w.cmd, localCmdText());
+  const exe = installClaudeOver(w, { keepCli: true });
+  let ran = 0;
+  const run = async () => { ran += 1; return { code: 0, out: 'ok\n' }; };
+  const [taken] = await proveLocal(['t3-claude-default'], { home, node: 'node', run });
+  assert.equal(taken.ok, false);
+  assert.equal(taken.cooling, false);
+  assert.ok(taken.detail.includes(`T3 Code starts ${exe} in place of this wrapper`), taken.detail);
+  assert.equal(ran, 0, 'an answer through the cli.js would prove something T3 never does');
+
+  fs.rmSync(path.dirname(exe), { recursive: true });
+  const [fine] = await proveLocal(['t3-claude-default'], { home, node: 'node', run });
+  assert.equal(fine.ok, true);
+  assert.equal(ran, 2, 'the --version check and the borrowed run');
+});
+
+test('this machine reads as failed while T3 would start a real Claude in a wrapper folder, and as out of date while other files lie there', () => {
+  const settings = { t3Environments: {
+    local: { id: 'local', kind: 'local', name: 'this computer', lastOk: true, leaseSha: 'node-1', accounts: [] },
+    'wsl:U': { id: 'wsl:U', kind: 'wsl', name: 'U', lastOk: true, leaseSha: 'bash-1', accounts: [] },
+  } };
+  const shas = { leaseSha: 'bash-1', localLeaseSha: 'node-1' };
+  const row = (localFolders, id = 'local') => t3EnvironmentStatus(settings, { ...shas, localFolders }).find((r) => r.id === id);
+
+  const taken = row({ takenOver: ['t3-claude-default', 'switchboard-lease'], extras: ['t3-claude-default', 'switchboard-lease'] });
+  assert.equal(taken.state, 'failed', 'though its last setup and proof passed');
+  assert.match(taken.detail, /^T3 Code starts a copy of Claude found in t3-claude-default, switchboard-lease in place of Switchboard's wrapper, so those entries use this computer's own Claude sign-in; set up/);
+  assert.equal(taken.foldersDirty, true, 'the start-up refresh acts on this flag');
+
+  const untidy = row({ takenOver: [], extras: ['switchboard-lease'] });
+  assert.equal(untidy.state, 'stale');
+  assert.match(untidy.detail, /^its wrapper folders hold files this Switchboard does not write \(switchboard-lease\); set up/);
+  assert.equal(untidy.foldersDirty, true);
+
+  assert.deepEqual([row({ takenOver: [], extras: [] }).state, row({ takenOver: [], extras: [] }).foldersDirty], ['ok', false]);
+  assert.deepEqual([row(null).state, row(null).foldersDirty], ['ok', false], 'folders that were not looked at are not judged');
+  const other = row({ takenOver: ['t3-claude-default'], extras: ['t3-claude-default'] }, 'wsl:U');
+  assert.deepEqual([other.state, other.foldersDirty], ['ok', false], 'this machine\'s folders say nothing about another machine');
+});
+
+test('after a real Claude was moved out, the advice to restart T3 is shown for a day, with its age and where the copy went', () => {
+  const good = { ok: true, reached: true, accounts: [], proof: [] };
+  const hour = 60 * 60 * 1000;
+  let s = rememberT3Environment({}, LOCAL_TARGET, { ...good, restartT3: true, setAside: '/kept/here' }, { leaseSha: 'v1', now: 1000 });
+  assert.equal(s.t3Environments.local.restartT3At, 1000);
+  const soon = t3EnvironmentStatus(s, { now: 1000 + 3 * hour })[0];
+  assert.match(soon.detail, /; a copy of Claude was moved out of its wrapper folders 3 h ago \(kept in \/kept\/here\): restart T3 Code if its Switchboard entries do not start$/);
+  assert.equal(soon.state, 'ok', 'the entries are right again; only T3 has to catch up');
+  assert.equal(soon.restartT3, true, 'Health shows the advice on this flag, since the line is otherwise fine');
+  const later = t3EnvironmentStatus(s, { now: 1000 + 25 * hour })[0];
+  assert.doesNotMatch(later.detail, /restart T3 Code/);
+  assert.equal(later.restartT3, false);
+
+  s = rememberT3Environment(s, LOCAL_TARGET, good, { leaseSha: 'v1', now: 1000 + hour });
+  assert.equal(s.t3Environments.local.restartT3At, 1000, 'a later run that moved nothing does not forget when it happened');
+  assert.equal(s.t3Environments.local.setAside, '/kept/here');
+  assert.equal(rememberT3Environment({}, LOCAL_TARGET, good, { leaseSha: 'v1', now: 5 }).t3Environments.local.restartT3At, null);
+});
+
+test('a takeover is named beside an earlier failure, a revoked key and a failed refresh, which would otherwise hide it', () => {
+  const local = { id: 'local', kind: 'local', name: 'this computer', accounts: [], leaseSha: 'v1' };
+  const localFolders = { takenOver: ['switchboard-lease'], extras: ['switchboard-lease'] };
+  const line = (record, settings = {}) => t3EnvironmentStatus({ ...settings, t3Environments: { local: { ...local, ...record } } }, { localLeaseSha: 'v1', localFolders })[0];
+  const says = /; T3 Code starts a copy of Claude found in switchboard-lease in place of Switchboard's wrapper, so that entry uses this computer's own Claude sign-in; set up/;
+
+  // T3 goes on running that entry on this computer's sign-in whatever else is wrong with it.
+  const failedProof = line({ lastOk: false, proofFailed: ['second'] });
+  assert.equal(failedProof.state, 'failed');
+  assert.match(failedProof.detail, /^no answer from second/);
+  assert.match(failedProof.detail, says);
+
+  const revoked = line({ lastOk: true, keyId: 't3-gone' }, { gatewayKeys: {} });
+  assert.match(revoked.detail, /^the client key it was given has been revoked/);
+  assert.match(revoked.detail, says);
+
+  const refreshFailed = line({ lastOk: true, refreshError: 'the broker refuses this computer\'s client key (revoked?).' });
+  assert.equal(refreshFailed.state, 'failed');
+  assert.match(refreshFailed.detail, /^the broker refuses this computer's client key/);
+  assert.match(refreshFailed.detail, says);
+
+  const alone = line({ lastOk: true });
+  assert.match(alone.detail, /^T3 Code starts a copy of Claude found in switchboard-lease/, 'said once when it is the only thing wrong');
+  assert.equal(alone.detail.split('T3 Code starts a copy').length, 2);
+});
+
 test('the local entry is compared with the Node.js lease client, the others with the bash one', () => {
   const settings = { t3Environments: {
     local: { id: 'local', kind: 'local', name: 'this computer', lastOk: true, leaseSha: 'node-1', accounts: [] },
@@ -247,15 +647,19 @@ test('the client key is left out of claude\'s environment whatever case Windows 
   assert.deepEqual(withoutClientKey({ SWITCHBOARD_CLIENT_KEY: KEY, Switchboard_Client_Key: KEY, PATH: 'p', CLAUDE_BIN: 'c' }), { PATH: 'p', CLAUDE_BIN: 'c' });
 });
 
-/** Write the local layout into a temp home and run one wrapper's cli.js the way T3 does. */
-function runWrapper(home, file, account, args, env) {
+/**
+ * Write the local layout into a temp home and run one wrapper's cli.js the way T3 does. Nothing
+ * is written beside the cli.js, as in a real setup, unless a test asks for a `manifest`.
+ */
+function runWrapper(home, file, account, args, env, { manifest = null } = {}) {
   const p = localPaths(home);
   fs.mkdirSync(p.root, { recursive: true });
   fs.writeFileSync(p.lease, readLocalLeaseClient());
   const w = localWrapperFiles(p.root, file);
   fs.mkdirSync(path.dirname(w.cli), { recursive: true });
   fs.writeFileSync(w.cli, localCliText(account, { leasePath: p.lease, root: p.root }));
-  fs.writeFileSync(w.packageJson, '{"type":"commonjs"}\n');
+  if (manifest == null) fs.rmSync(w.packageJson, { force: true });
+  else fs.writeFileSync(w.packageJson, manifest);
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [w.cli, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
@@ -291,6 +695,25 @@ test('a local wrapper borrows its account, runs claude with the lent token and r
     assert.deepEqual(broker.leases, [{ provider: 'claude', harness: 'claude', account: 'claude-default' }]);
     assert.deepEqual(claude.seen(), { args: ['-p', 'hi'], token: 'stub-token', apiKey: null, clientKeySeen: false });
     assert.deepEqual(broker.reports.map((x) => [x.outcome, x.exitCode]), [['ok', 0]]);
+  } finally {
+    broker.server.close();
+  }
+});
+
+test('a wrapper runs the same whether node takes its folder for CommonJS or for ES modules', async () => {
+  const broker = await startBroker();
+  try {
+    // No package.json is written beside the cli.js any more, so nothing pins how node reads it;
+    // and a package.json left by something installed over the wrapper says "module".
+    for (const manifest of [null, '{"type":"module"}\n', '{"type":"commonjs"}\n']) {
+      const home = tempDir('sb-t3local-');
+      const claude = fakeClaude(home, { lines: ['ok'] });
+      const env = { ...process.env, USERPROFILE: home, HOME: home, CLAUDE_BIN: claude.file, SWITCHBOARD_CLIENT_KEY: KEY, SWITCHBOARD_BROKER_URL: `http://127.0.0.1:${broker.port}` };
+      const r = await runWrapper(home, 't3-claude-default', accounts[0], ['-p', 'hi'], env, { manifest });
+      assert.equal(r.code, 0, `${manifest}: ${r.err}`);
+      assert.equal(r.out.trim(), 'ok', String(manifest));
+      assert.equal(claude.seen().token, 'stub-token', String(manifest));
+    }
   } finally {
     broker.server.close();
   }

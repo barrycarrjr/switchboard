@@ -22,6 +22,14 @@ import { samePath } from './paths.js';
  *   .cmd it uses for its `--version` check. So each account gets a folder of that shape, and the
  *   cli.js in it borrows that account through bin/switchboard-lease.mjs (the Node.js lease
  *   client) instead of being Claude itself.
+ * - Only those two files may be in such a folder, because T3 decides what to start, and what to
+ *   offer, from what else it finds there (read from T3 Code 0.1.12). It looks for
+ *   node_modules/@anthropic-ai/claude-code/bin/claude.exe BEFORE cli.js, so a real Claude put
+ *   there is started in the wrapper's place, with the sign-in of the entry's config folder and
+ *   nothing borrowed, while T3 goes on showing the entry as healthy. And a package.json beside
+ *   cli.js makes T3 take the folder for an npm install of Claude and offer to update it with
+ *   `npm install -g --prefix <that folder>`, which is how a real Claude gets there. So no
+ *   package.json is written, and every setup and start-up refresh moves anything else out.
  * - The work is done here in Node.js, against this machine's files, instead of in a script.
  * - A new Claude entry names ~/.claude as its config folder. An empty field makes T3 pass on
  *   whatever CLAUDE_CONFIG_DIR it was started with, which Switchboard changes when an account is
@@ -50,6 +58,8 @@ export function localPaths(home = os.homedir()) {
     home,
     root,
     lease: path.join(root, 'switchboard-lease.mjs'),
+    // Beside the wrappers, not among them, and on the same drive, so moving is a rename.
+    aside: path.join(home, '.local', 'share', 'switchboard', 't3-set-aside'),
     userdata,
     settings: path.join(userdata, 'settings.json'),
     secrets: path.join(userdata, 'secrets'),
@@ -59,9 +69,11 @@ export function localPaths(home = os.homedir()) {
   };
 }
 
+const WRAPPER_NAME = /^(t3-claude-[A-Za-z0-9._-]+|switchboard-lease)$/;
+
 /** The files of one wrapper folder, by the wrapper name (`t3-claude-default`, `switchboard-lease`). */
 export function localWrapperFiles(root, file) {
-  if (!/^(t3-claude-[A-Za-z0-9._-]+|switchboard-lease)$/.test(file)) throw new Error(`unexpected wrapper name ${file}`);
+  if (!WRAPPER_NAME.test(file)) throw new Error(`unexpected wrapper name ${file}`);
   const dir = path.join(root, file);
   const pkg = path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code');
   return { dir, cmd: path.join(dir, `${file}.cmd`), cli: path.join(pkg, 'cli.js'), packageJson: path.join(pkg, 'package.json') };
@@ -93,7 +105,9 @@ export function localCmdText() {
 /**
  * The cli.js T3 runs with node: it names the account (or, for "any account", makes sure none is
  * named) and hands over to the lease client. Paths are written in as JSON strings, so a folder
- * name with quotes or backslashes cannot change the code.
+ * name with quotes or backslashes cannot change the code. Nothing beside it tells node whether
+ * it is CommonJS or an ES module (see RETIRED_LOCAL_PACKAGE_JSON), so it uses only what both
+ * allow: import() and no require.
  */
 export function localCliText(account, { leasePath, root }) {
   const id = account?.id ?? null;
@@ -104,9 +118,9 @@ export function localCliText(account, { leasePath, root }) {
     `// claude: it borrows ${id ? `the ${label} account` : 'whichever account has the most room'} from Switchboard's lease broker.`,
     '// Running the setup again rewrites it.',
     "'use strict';",
-    "const { pathToFileURL } = require('node:url');",
     id ? `process.env.SWITCHBOARD_ACCOUNT = ${JSON.stringify(id)};` : 'delete process.env.SWITCHBOARD_ACCOUNT;',
-    `import(pathToFileURL(${JSON.stringify(leasePath)}).href)`,
+    "import('node:url')",
+    `  .then(({ pathToFileURL }) => import(pathToFileURL(${JSON.stringify(leasePath)}).href))`,
     `  .then((m) => m.main(process.argv.slice(2), { wrappersDir: ${JSON.stringify(root)} }))`,
     '  .then((code) => { process.exitCode = code; })',
     "  .catch((e) => { process.stderr.write(`claude-leased: ${(e && e.message) || e}\\n`); process.exitCode = 78; });",
@@ -114,8 +128,13 @@ export function localCliText(account, { leasePath, root }) {
   ].join('\n');
 }
 
-/** Beside cli.js, so node reads it as CommonJS whatever a package.json further up says. */
-export const LOCAL_PACKAGE_JSON = `${JSON.stringify({ name: 'switchboard-t3-wrapper', private: true, type: 'commonjs' }, null, 2)}\n`;
+/**
+ * Versions up to 0.36.6 wrote this beside cli.js, so node read it as CommonJS. It is no longer
+ * written: a package.json there is what makes T3 Code offer to install Claude over the wrapper
+ * (see the note at the top of this file). The text is kept so that a copy an earlier version
+ * left behind is known to be Switchboard's own and is simply removed.
+ */
+export const RETIRED_LOCAL_PACKAGE_JSON = `${JSON.stringify({ name: 'switchboard-t3-wrapper', private: true, type: 'commonjs' }, null, 2)}\n`;
 
 /** The account a local cli.js names, '*' for the "any account" one, or null. */
 export function localWrapperAccountId(text) {
@@ -139,6 +158,151 @@ export function writeTextAtomic(file, text) {
   const tmp = `${file}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, text);
   fs.renameSync(tmp, file);
+}
+
+function isFile(p) {
+  try { return fs.statSync(p).isFile(); } catch { return false; }
+}
+
+/** A real folder. A link to one, which isDir follows, is not. */
+function isOwnDir(p) {
+  try { return fs.lstatSync(p).isDirectory(); } catch { return false; }
+}
+
+/**
+ * The wrapper folders under `root`, by name: a folder named as one that holds its own
+ * <name>.cmd, which is the file a T3 entry points at. The name alone is not enough to go by. A
+ * copy someone kept as t3-claude-default-old fits the pattern too; no T3 entry runs it, so
+ * nothing true can be said about what T3 starts there, and it is not Switchboard's to take apart.
+ */
+export function localWrapperNames(root) {
+  let names = [];
+  try { names = fs.readdirSync(root); } catch { names = []; }
+  return names.filter((name) => WRAPPER_NAME.test(name) && isFile(path.join(root, name, `${name}.cmd`))).sort();
+}
+
+/**
+ * The program T3 would start in place of this wrapper, or null: a file at
+ * node_modules/@anthropic-ai/claude-code/bin/claude.exe, the one place T3 looks before cli.js.
+ */
+export function localWrapperTakeover(root, file) {
+  const exe = path.join(path.dirname(localWrapperFiles(root, file).cli), 'bin', 'claude.exe');
+  try { return fs.statSync(exe).isFile() ? exe : null; } catch { return null; }
+}
+
+/**
+ * What is in one wrapper folder besides the two files Switchboard writes there. Read-only.
+ *   extras           everything else, as paths inside the folder; a folder that does not
+ *                    belong is one entry, whatever it holds
+ *   retiredManifest  the package.json an earlier Switchboard wrote is still there
+ *   takeover         the program T3 would start in the wrapper's place, or null
+ * A file that a write in progress has not renamed yet (`.tmp-<pid>`) is left out, so one
+ * Switchboard never moves a file another is in the middle of writing. A wrapper folder that is
+ * itself a link is not looked into: what lies behind it is someone else's folder, so nothing in
+ * it is listed and nothing is ever moved out of it. A real Claude that T3 would start through
+ * the link is still reported, and stops the setup.
+ */
+export function localWrapperContents(root, file) {
+  const f = localWrapperFiles(root, file);
+  const extras = [];
+  let retiredManifest = false;
+  if (!isOwnDir(f.dir)) return { extras, retiredManifest, takeover: localWrapperTakeover(root, file) };
+  // null marks a file, an object a folder and what may be in it.
+  const ours = { [`${file}.cmd`]: null, node_modules: { '@anthropic-ai': { 'claude-code': { 'cli.js': null } } } };
+  const walk = (dir, wanted, rel) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (/\.tmp-\d+$/.test(entry.name)) continue;
+      const at = rel ? path.join(rel, entry.name) : entry.name;
+      const want = Object.hasOwn(wanted, entry.name) ? wanted[entry.name] : undefined;
+      // A link counts as neither a file nor a folder of ours, so it is never followed.
+      const fits = want === null ? entry.isFile() : want !== undefined && entry.isDirectory();
+      if (fits) {
+        if (want !== null) walk(path.join(dir, entry.name), want, at);
+      } else if (path.join(dir, entry.name) === f.packageJson && readText(f.packageJson) === RETIRED_LOCAL_PACKAGE_JSON) {
+        retiredManifest = true;
+      } else {
+        extras.push(at);
+      }
+    }
+  };
+  walk(f.dir, ours, '');
+  return { extras, retiredManifest, takeover: localWrapperTakeover(root, file) };
+}
+
+/**
+ * The wrapper folders on this machine that are not as Switchboard left them, for `t3 status`,
+ * the Gateway tab, Health and the start-up refresh. Looking at the folders is the only way to
+ * know: T3 shows an entry whose wrapper was taken over as healthy, and so did Switchboard's proof.
+ *   takenOver  folders where T3 starts a real Claude in the wrapper's place
+ *   extras     folders holding anything Switchboard does not write, those above included
+ */
+export function localWrapperFolders(home = os.homedir()) {
+  const { root } = localPaths(home);
+  const out = { takenOver: [], extras: [] };
+  for (const name of localWrapperNames(root)) {
+    const c = localWrapperContents(root, name);
+    if (c.takeover) out.takenOver.push(name);
+    if (c.takeover || c.extras.length || c.retiredManifest) out.extras.push(name);
+  }
+  return out;
+}
+
+/** A folder under `base` named for this moment, that nothing is in yet. It is not created. */
+function freshAsideDir(base, now) {
+  const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  let dir = path.join(base, stamp);
+  for (let n = 2; fs.existsSync(dir); n += 1) dir = path.join(base, `${stamp}-${n}`);
+  return dir;
+}
+
+/**
+ * Take everything Switchboard does not write out of one wrapper folder. What an earlier
+ * Switchboard wrote (the retired package.json) is removed; the rest is moved under `aside`,
+ * keeping its place in the folder. Moved rather than deleted for two reasons: it is not
+ * Switchboard's to throw away, and it may be a program that is running, which Windows lets be
+ * renamed, its folder with it, but not deleted. A folder that a process has open (as its
+ * working folder, or through a file open inside it) cannot be renamed, so one that will not
+ * move whole is moved piece by piece. Returns what moved, what would not (`stuck`), and for each
+ * of those what the system said (`why`), so the reason reported is never a guess.
+ * `rename` exists for tests.
+ */
+export function clearLocalWrapper(root, file, aside, { rename = fs.renameSync } = {}) {
+  const f = localWrapperFiles(root, file);
+  const found = localWrapperContents(root, file);
+  const result = { file, moved: [], stuck: [], why: {}, removedManifest: false, takeover: Boolean(found.takeover) };
+  const refused = (rel, e) => { result.stuck.push(rel); result.why[rel] = String(e?.code || e?.message || e); };
+  if (found.retiredManifest) {
+    try { fs.rmSync(f.packageJson); result.removedManifest = true; } catch (e) { refused(path.relative(f.dir, f.packageJson), e); }
+  }
+  const move = (rel) => {
+    const from = path.join(f.dir, rel);
+    const to = path.join(aside, file, rel);
+    let refusal = null;
+    try {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      rename(from, to);
+      result.moved.push(rel);
+      return;
+    } catch (e) {
+      refusal = e;
+      // The folders just made for it are taken away again while they are empty. A piece that
+      // never moves would otherwise leave one more empty tree under `aside` at every start.
+      for (let dir = path.dirname(to); !path.relative(aside, dir).startsWith('..'); dir = path.dirname(dir)) {
+        try { fs.rmdirSync(dir); } catch { break; }
+      }
+    }
+    // lstat, not stat: a link to a folder elsewhere is moved as the link it is or not at all.
+    let inside = null;
+    try { if (fs.lstatSync(from).isDirectory()) inside = fs.readdirSync(from); } catch { inside = null; }
+    if (inside === null) { refused(rel, refusal); return; }
+    const stuckBefore = result.stuck.length;
+    for (const name of inside) move(path.join(rel, name));
+    try { fs.rmdirSync(from); } catch (e) { if (result.stuck.length === stuckBefore) refused(rel, e); }
+  };
+  for (const rel of found.extras) move(rel);
+  return result;
 }
 
 /** The first file by one of these names in a PATH folder, or null. */
@@ -207,7 +371,7 @@ export async function inspectLocal({ home = os.homedir(), env = process.env, bro
   const out = {
     home, claude: findRealClaude({ env, home, skipDir: p.root }), node: findOnPath(['node.exe', 'node'], env),
     t3: isDir(p.userdata), settings: null, settingsError: null, settingsSha: 'none', settingsText: null,
-    wrappers: {}, wrapperTexts: {}, lease: 'missing', key: 'missing', keyText: null, broker: null, probes: [],
+    wrappers: {}, wrapperTexts: {}, wrapperExtras: {}, lease: 'missing', key: 'missing', keyText: null, broker: null, probes: [],
     hubSecrets: [], codexBin: null, codexStatus: {}, antigravityTokenProfiles: [], antigravityRuntime: null,
     antigravityKeyring: null, nodeState: null, osFamily: '', missingTools: [],
   };
@@ -225,8 +389,15 @@ export async function inspectLocal({ home = os.homedir(), env = process.env, bro
 
   let names = [];
   try { names = fs.readdirSync(p.root); } catch { names = []; }
+  const wrapperFolders = new Set(localWrapperNames(p.root));
   for (const name of names) {
-    if (!/^(t3-claude-[A-Za-z0-9._-]+|switchboard-lease)$/.test(name)) continue;
+    if (!WRAPPER_NAME.test(name)) continue;
+    // Noted before the cli.js is read, because what is installed over a wrapper can remove it,
+    // and a folder that lost its cli.js that way is still one of Switchboard's to put right.
+    if (wrapperFolders.has(name)) {
+      const contents = localWrapperContents(p.root, name);
+      if (contents.takeover || contents.extras.length || contents.retiredManifest) out.wrapperExtras[name] = contents;
+    }
     const text = readText(localWrapperFiles(p.root, name).cli);
     if (text == null) continue;
     out.wrapperTexts[name] = text;
@@ -341,13 +512,20 @@ export function localCodexSignInCommand(codexBin, acc, env = process.env) {
 
 /**
  * One tiny borrowed run per wrapper, the way T3 starts it (node running the cli.js), plus T3's
- * own `--version` check through the .cmd. Returns parseProve's shape.
+ * own `--version` check through the .cmd. A wrapper T3 would pass over for a real Claude in its
+ * folder fails without being run: an answer through the cli.js would prove something T3 never
+ * does. Returns parseProve's shape.
  */
 export async function proveLocal(files, { home = os.homedir(), node, env = process.env, run = runToEnd, timeoutMs = 150000, model = 'haiku' } = {}) {
   const { root } = localPaths(home);
   const results = [];
   for (const file of files) {
     const w = localWrapperFiles(root, file);
+    const takeover = localWrapperTakeover(root, file);
+    if (takeover) {
+      results.push({ file, ok: false, cooling: false, code: null, detail: `T3 Code starts ${takeover} in place of this wrapper, so the entry would use this computer's own Claude sign-in and borrow nothing. Run the setup again: it moves that copy out, or says why it cannot.` });
+      continue;
+    }
     const version = await run(cmdLine(w.cmd, ['--version']), [], { env, cwd: home, shell: true, timeoutMs: 30000 });
     if (version.code !== 0) {
       results.push({ file, ok: false, cooling: false, code: version.code, detail: `T3's --version check through ${path.basename(w.cmd)} failed: ${String(version.out).trim().slice(-300)}` });
@@ -369,8 +547,11 @@ export async function proveLocal(files, { home = os.homedir(), node, env = proce
  *   platform      process.platform
  *   inspect(o)    inspectLocal, for tests
  *   prove(f, o)   proveLocal, for tests
+ *   rename(a, b)  fs.renameSync, for tests
  * and the same options. Returns the same report shape, so the CLI, the tray and the saved
- * environment list treat it like any other target.
+ * environment list treat it like any other target, plus `setAside` (where what was moved out of
+ * the wrapper folders went) and `restartT3` (a real Claude was moved out, and T3 keeps looking
+ * for it until it is restarted).
  */
 export async function setupLocalT3Environment(deps, { prove = true, refreshOnly = false, now = Date.now() } = {}) {
   const target = LOCAL_TARGET;
@@ -380,6 +561,7 @@ export async function setupLocalT3Environment(deps, { prove = true, refreshOnly 
   const report = {
     target: target.id, ok: false, reached: false, steps: [], accounts: [], skipped: [], leftovers: [],
     proof: [], signIns: [], keyId: null, keyCreated: false, error: null, backup: null, port: deps.port ?? 8318, brokerUrl: null,
+    setAside: null, restartT3: false, refreshOnly,
   };
   const step = (text) => report.steps.push(text);
   const fail = (text) => { report.error = text; return report; };
@@ -437,9 +619,37 @@ export async function setupLocalT3Environment(deps, { prove = true, refreshOnly 
       ...lendable.map((a) => ({ file: merged.wrapperFiles[a.id], text: localCliText(a, { leasePath: p.lease, root: p.root }) })),
       { file: anyFile, text: localCliText(null, { leasePath: p.lease, root: p.root }) },
     ];
+    // Folders are cleared before they are written, and by the start-up refresh too: what T3
+    // starts is decided by what lies in the folder, not by anything the wrapper says.
+    const extras = inspected.wrapperExtras ?? {};
+    let cleared = [];
+    if (Object.keys(extras).length) {
+      const aside = freshAsideDir(p.aside, now);
+      cleared = Object.keys(extras).map((file) => clearLocalWrapper(p.root, file, aside, { rename: deps.rename }));
+      const manifests = cleared.filter((c) => c.removedManifest).length;
+      if (manifests) step(`Removed the package.json an earlier Switchboard wrote beside ${manifests} wrapper${manifests === 1 ? '' : 's'}: it let T3 Code offer to install Claude over ${manifests === 1 ? 'it' : 'them'}.`);
+      const movedFrom = cleared.filter((c) => c.moved.length).map((c) => c.file);
+      if (movedFrom.length) {
+        report.setAside = aside;
+        step(`Moved what is not Switchboard's out of ${movedFrom.join(', ')}; it is kept in ${aside}.`);
+      }
+      const stuck = cleared.filter((c) => c.stuck.length);
+      if (stuck.length) step(`Could not move ${stuck.map((c) => `${c.stuck.map((at) => `${at} (the system said ${c.why[at]})`).join(', ')} in ${c.file}`).join('; ')}.`);
+      const freed = cleared.filter((c) => c.takeover && !localWrapperTakeover(p.root, c.file)).map((c) => c.file);
+      if (freed.length) {
+        report.restartT3 = true;
+        step(`A copy of Claude was in ${freed.join(', ')}, and T3 Code was starting it in place of the wrapper, on this computer's own Claude sign-in. Restart T3 Code now: it goes on looking for that copy until it is restarted, so ${freed.length === 1 ? 'that entry does' : 'those entries do'} not start until then.`);
+      }
+    }
+
+    // What to write is decided from the folders as they are now, after the clearing, not from
+    // the earlier reading: a wrapper file that went when something was installed over the
+    // wrapper, or that was moved out with the rest (a folder in its place, its name in other
+    // letters), is written again in this same run.
     const toWrite = wanted
-      .filter((w) => inspected.wrapperTexts[w.file] !== w.text)
-      .filter((w) => !refreshOnly || w.file in inspected.wrapperTexts);
+      .filter((w) => { const f = localWrapperFiles(p.root, w.file); return readText(f.cli) !== w.text || !isFile(f.cmd); })
+      // The refresh brings the wrapper folders that are there up to date and adds none.
+      .filter((w) => !refreshOnly || isDir(localWrapperFiles(p.root, w.file).dir));
     const leaseCurrent = inspected.lease === `file:${sha256(deps.leaseClient)}`;
     if (!leaseCurrent) {
       writeTextAtomic(p.lease, deps.leaseClient);
@@ -450,10 +660,20 @@ export async function setupLocalT3Environment(deps, { prove = true, refreshOnly 
     for (const w of toWrite) {
       const f = localWrapperFiles(p.root, w.file);
       writeTextAtomic(f.cmd, localCmdText());
-      writeTextAtomic(f.packageJson, LOCAL_PACKAGE_JSON);
       writeTextAtomic(f.cli, w.text);
     }
     step(toWrite.length ? `Wrote ${toWrite.length} account wrapper${toWrite.length === 1 ? '' : 's'}: ${toWrite.map((w) => w.file).join(', ')}.` : 'The account wrappers here are already up to date.');
+
+    // Asked only now, after the wrappers are written, so that every folder that was cleared has
+    // its wrapper back even when the run stops here. A cli.js beside a copy T3 prefers does no
+    // harm. The reason given is what the system said when the copy would not move, never a
+    // guess; a copy behind a wrapper folder that is a link was not tried at all, and has none.
+    const taken = localWrapperNames(p.root).filter((name) => localWrapperTakeover(p.root, name));
+    if (taken.length) {
+      const said = (name) => [...new Set(Object.values(cleared.find((c) => c.file === name)?.why ?? {}))].join(', ');
+      const named = taken.map((name) => (said(name) ? `${name} (the system said ${said(name)})` : name)).join(', ');
+      return fail(`a copy of Claude is in ${named} and could not be moved out, so T3 Code starts it in place of Switchboard's wrapper and ${taken.length === 1 ? 'that entry borrows' : 'those entries borrow'} nothing. If something is still installing into that folder, let it finish. Close T3 Code and anything else that may have the file open, then run the setup again.`);
+    }
 
     // The hub key follows the client key, as on the other machines.
     const hubKnown = merged.hubId && (!refreshOnly || inspected.settings?.usageLimitSources?.[merged.hubId]);

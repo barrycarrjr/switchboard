@@ -40,7 +40,7 @@ import { createGatewayServer, provisionLocalAndWslClient } from '../core/gateway
 import { loadRulesSources, saveRulesSources, syncRules } from '../core/rules-sync.js';
 import { sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
 import { listRuleVersions, restoreRuleVersion } from '../core/rules-history.js';
-import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, forgetT3, runT3SignIn, liveT3Status } from '../core/t3env-run.js';
+import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, t3HealthInputs, forgetT3, runT3SignIn, liveT3Status } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, listGatewayKeys, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings, GATEWAY_SCOPE_LABELS, chooseProvisionKey, gatewayEnabledSettings } from '../core/gateway-keys.js';
 import readline from 'node:readline/promises';
 import path from 'node:path';
@@ -1260,7 +1260,7 @@ async function main() {
     }
     case 'doctor': {
       const installedIds = new Set((await detectInstalled()).filter((t) => t.installed).map((t) => t.id));
-      const checks = await runChecks({ accounts: registry.accounts, settings: loadSettings(), isInstalled: (id) => installedIds.has(id), t3LeaseSha: currentLeaseSha() });
+      const checks = await runChecks({ accounts: registry.accounts, settings: loadSettings(), isInstalled: (id) => installedIds.has(id), ...t3HealthInputs() });
       const mark = { ok: 'OK  ', info: 'INFO', warn: 'WARN', bad: 'FAIL' };
       for (const c of checks) out(`${mark[c.level]}  ${c.title}\n      ${c.detail}`);
       if (checks.some((c) => c.level === 'bad')) process.exitCode = 1;

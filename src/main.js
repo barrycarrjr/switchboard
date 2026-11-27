@@ -67,7 +67,7 @@ import { createSkillsWatcher, setSkillState, syncSkills } from '../core/skills-s
 import { activeSharedFolder, activeSharedSkillsFolder, sharedFolderProblem, sharedFolderState, withBackupFolders, withSharedFolder } from '../core/shared-folder.js';
 import { listRuleVersions, restoreRuleVersion } from '../core/rules-history.js';
 import { collectFilesSection, describeSkipped, formatBytes, planFilesImport, restoreFilesSection, sharedSettingFor } from '../core/shared-backup.js';
-import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, currentLeaseSha, refreshStaleT3Environments, withT3Lock, forgetT3, wslDistrosCached } from '../core/t3env-run.js';
+import { runT3Setup, resolveTargets as resolveT3Targets, currentT3Status, t3HealthInputs, refreshStaleT3Environments, withT3Lock, forgetT3, wslDistrosCached } from '../core/t3env-run.js';
 import { createGatewayKey, updateGatewayKey, revokeGatewayKey, normalizeGatewayPort, normalizeGatewayScope, normalizeGatewaySettings } from '../core/gateway-keys.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -1215,7 +1215,9 @@ app.whenReady().then(async () => {
     // is out of date is touched, and only its wrapper files: no key is issued (a revoked
     // one stays revoked) and T3's settings there are not written. A machine that is off or
     // would ask for a password (ssh runs with BatchMode) keeps its last record; Health shows
-    // the failed attempt beside it.
+    // the failed attempt beside it. This machine's own T3 is also refreshed when its wrapper
+    // folders hold anything Switchboard does not write, which is moved out: T3 starts a real
+    // Claude it finds there in the wrapper's place, on this machine's own sign-in.
     refreshStaleT3Environments().catch(() => {});
   }
   settingsWatcher = createSettingsWatcher({ file: settingsFile(), onChange: applyGatewaySettings });
@@ -1951,7 +1953,7 @@ ipcMain.handle('sb:doctor', async () => {
   // Settings ride along so a dead lane token surfaces here; the checks only ever name
   // the lane and account, never the token value.
   const installedIds = new Set((await detectInstalled()).filter((t) => t.installed).map((t) => t.id));
-  return runChecks({ accounts, loginStates, settings: loadSettings(), isInstalled: (id) => installedIds.has(id), t3LeaseSha: currentLeaseSha() });
+  return runChecks({ accounts, loginStates, settings: loadSettings(), isInstalled: (id) => installedIds.has(id), ...t3HealthInputs() });
 });
 
 // A vendor status page belongs to the tool, not to any one account, so this needs

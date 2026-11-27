@@ -375,6 +375,45 @@ test('a remembered environment reads as stale when the wrapper changed or an acc
   assert.equal(t3EnvironmentStatus(s, { leaseSha: 'v1', lendableIds: ['claude-default'] })[0].state, 'ok');
 });
 
+test('the start-up refresh proves nothing and adds no account, so it leaves the result of the last full setup as it was', () => {
+  const refresh = { ...good, refreshOnly: true, accounts: [{ id: 'claude-default' }, { id: 'claude-account-2' }] };
+  const lendableIds = ['claude-default', 'claude-account-2'];
+
+  // A setup whose proof failed stays failed: the refresh sent no message that could have passed.
+  let s = rememberT3Environment({}, U, { ...good, ok: false, proof: [{ label: 'second', ok: false, cooling: false }] }, { leaseSha: 'v1', now: 5 });
+  s = rememberT3Environment(s, U, refresh, { leaseSha: 'v2', now: 9 });
+  const failed = s.t3Environments['wsl:U'];
+  assert.deepEqual([failed.lastOk, failed.proofFailed, failed.lastSetupAt, failed.refreshError], [false, ['second'], 5, null]);
+  assert.equal(failed.leaseSha, 'v2', 'what the refresh did do is recorded: the wrapper is this version\'s now');
+  assert.match(t3EnvironmentStatus(s, { leaseSha: 'v2' })[0].detail, /^no answer from second/);
+
+  // An environment set up before an account was added is still missing it afterwards.
+  s = rememberT3Environment({}, U, good, { leaseSha: 'v1', now: 5 });
+  s = rememberT3Environment(s, U, refresh, { leaseSha: 'v2', now: 9 });
+  assert.deepEqual(s.t3Environments['wsl:U'].accounts, ['claude-default']);
+  const stale = t3EnvironmentStatus(s, { leaseSha: 'v2', lendableIds })[0];
+  assert.deepEqual([stale.state, stale.wrapperOld], ['stale', false]);
+  assert.match(stale.detail, /^not yet set up for claude-account-2/);
+
+  // A refresh that itself failed shows as failed with its reason, and neither sticks after the
+  // next good run nor wipes what the last setup found.
+  s = rememberT3Environment(s, U, { ...refresh, ok: false, error: 'the broker refuses the key' }, { leaseSha: 'v2', now: 12 });
+  assert.equal(s.t3Environments['wsl:U'].lastOk, true);
+  assert.equal(s.t3Environments['wsl:U'].leaseSha, 'v2', 'a failed run changes nothing it is sure of');
+  const refused = t3EnvironmentStatus(s, { leaseSha: 'v2', lendableIds: ['claude-default'] })[0];
+  assert.equal(refused.state, 'failed');
+  assert.match(refused.detail, /^the broker refuses the key/);
+  s = rememberT3Environment(s, U, refresh, { leaseSha: 'v2', now: 15 });
+  assert.equal(s.t3Environments['wsl:U'].refreshError, null);
+  assert.equal(t3EnvironmentStatus(s, { leaseSha: 'v2', lendableIds: ['claude-default'] })[0].state, 'ok');
+
+  // A full setup is recorded as before, and clears a refresh failure.
+  s = rememberT3Environment(s, U, { ...refresh, ok: false, error: 'boom' }, { leaseSha: 'v2', now: 16 });
+  s = rememberT3Environment(s, U, { ...good, accounts: refresh.accounts }, { leaseSha: 'v2', now: 20 });
+  const full = s.t3Environments['wsl:U'];
+  assert.deepEqual([full.lastOk, full.accounts, full.lastSetupAt, full.refreshError], [true, lendableIds, 20, null]);
+});
+
 test('a machine that does not answer keeps its last record, and one never set up is not remembered at all', () => {
   const s = rememberT3Environment({}, U, good, { leaseSha: 'v1', now: 5 });
   const asleep = rememberT3Environment(s, U, { ok: false, reached: false, error: 'could not reach wsl:U' }, { now: 10 });

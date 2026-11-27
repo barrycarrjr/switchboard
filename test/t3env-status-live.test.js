@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { tempDir } from '../test-support/tempdir.js';
 
 // Settings are written through dataDir(), so this suite never touches the real ones, even when
@@ -83,6 +84,72 @@ test('t3 sign-in saves what it finds even when there is nothing to sign in', asy
   const after = loadSettings().t3Environments['ssh:w'];
   assert.deepEqual(after.signInsMissing, [], 'the stale note about Codex is cleared');
   assert.ok(after.signInsCheckedAt > before, 'with the time of this reading');
+});
+
+test('the start-up refresh acts on this machine when its wrapper folders hold what Switchboard does not write', async () => {
+  const { currentT3Status, environmentsToRefresh, currentLocalWrapperFolders } = await import('../core/t3env-run.js');
+  const local = { id: 'local', kind: 'local', name: 'this computer', lastOk: true, lastSetupAt: Date.now(), accounts: [], codexAccounts: ['codex-default'], antigravity: false };
+  const other = { ...env('wsl:U'), signInsMissing: [] };
+  const settings = { ...loadSettings(), t3Environments: { local, 'wsl:U': other } };
+  const status = (localFolders) => currentT3Status({ settings, antigravity: false, localFolders });
+
+  // Its lease client is this version's, so the folders are the only reason to touch it.
+  assert.deepEqual(environmentsToRefresh(status({ takenOver: [], extras: [] })), []);
+  assert.deepEqual(environmentsToRefresh(status({ takenOver: [], extras: ['switchboard-lease'] })).map((e) => e.id), ['local']);
+  const taken = environmentsToRefresh(status({ takenOver: ['switchboard-lease'], extras: ['switchboard-lease'] }));
+  assert.deepEqual(taken.map((e) => [e.id, e.state]), [['local', 'failed']], 'the case that matters most: T3 is running a real Claude there');
+  assert.deepEqual(environmentsToRefresh(status(null)), [], 'folders that were not looked at start nothing');
+
+  assert.equal(currentLocalWrapperFolders({ t3Environments: { 'wsl:U': other } }), null, 'nothing is read where this machine\'s own T3 was never set up');
+});
+
+test('the status list, Health and the start-up refresh each look in this machine\'s wrapper folders for themselves', async () => {
+  const { currentT3Status, t3HealthInputs, refreshStaleT3Environments } = await import('../core/t3env-run.js');
+  const { localPaths, localWrapperFiles, localCmdText } = await import('../core/t3local.js');
+  const home = tempDir('sb-t3env-');
+  const w = localWrapperFiles(localPaths(home).root, 'switchboard-lease');
+  const bin = path.join(path.dirname(w.cli), 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(w.cmd, localCmdText());
+  fs.writeFileSync(w.cli, 'the wrapper');
+  fs.writeFileSync(path.join(bin, 'claude.exe'), 'a real claude');
+  const local = { id: 'local', kind: 'local', name: 'this computer', lastOk: true, lastSetupAt: Date.now(), accounts: [], codexAccounts: ['codex-default'], antigravity: false };
+  const settings = { ...loadSettings(), t3Environments: { local } };
+  const status = () => currentT3Status({ settings, antigravity: false, home });
+
+  // Nothing is handed in about the folders: each of these reads them, which is the point. T3
+  // shows such an entry as healthy, so if one of these stopped looking nobody would be told.
+  const [row] = status();
+  assert.equal(row.state, 'failed');
+  assert.match(row.detail, /^T3 Code starts a copy of Claude found in switchboard-lease/);
+  assert.deepEqual(t3HealthInputs({ settings, home }).t3LocalFolders, { takenOver: ['switchboard-lease'], extras: ['switchboard-lease'] });
+
+  const ran = [];
+  const reports = await refreshStaleT3Environments({
+    status,
+    resolve: async (ids) => ids.map((id) => ({ id })),
+    setup: async (targets, opts) => { ran.push([targets.map((t) => t.id), opts]); return ['its report']; },
+  });
+  assert.deepEqual(ran, [[['local'], { refreshOnly: true }]], 'a refresh, never a full setup');
+  assert.deepEqual(reports, ['its report']);
+
+  fs.rmSync(bin, { recursive: true });
+  assert.equal(status()[0].state, 'ok');
+  assert.deepEqual(await refreshStaleT3Environments({ status, setup: async () => { throw new Error('there is nothing to refresh'); } }), []);
+});
+
+test('setup --all finds every remembered environment again, this computer included', async () => {
+  const { resolveTargets } = await import('../core/t3env-run.js');
+  const { rememberT3Environment, parseT3Target } = await import('../core/t3env.js');
+  const report = { ok: true, reached: true, accounts: [], proof: [] };
+  let settings = {};
+  for (const target of [parseT3Target('local'), parseT3Target('wsl:Ubuntu', ['Ubuntu']), parseT3Target('ssh:box')]) {
+    settings = rememberT3Environment(settings, target, report, { leaseSha: 'v1' });
+  }
+  // This machine is remembered as the bare word `local`; rebuilt from its kind and name it was
+  // "local:this computer", which names nothing and stopped --all for every environment.
+  const targets = await resolveTargets([], { all: true, settings, wslDistros: ['Ubuntu'] });
+  assert.deepEqual(targets.map((t) => [t.id, t.kind]), [['local', 'local'], ['wsl:Ubuntu', 'wsl'], ['ssh:box', 'ssh']]);
 });
 
 test('the how-to for each sign-in still to do is saved per account and shown by status', async () => {

@@ -840,13 +840,14 @@ export function sha256(text) {
  *                   writes T3's settings (a provider someone removed stays removed), and never
  *                   proves.
  * The report's `reached` says whether the target answered at all, so a machine that is merely
- * asleep is not recorded as broken.
+ * asleep is not recorded as broken. Its `refreshOnly` says which kind of run it was, so that
+ * what is remembered afterwards never passes a refresh off as a setup (rememberT3Environment).
  */
 export async function setupT3Environment(target, deps, { replaceSymlink = false, prove = true, refreshOnly = false, now = Date.now() } = {}) {
   const report = {
     target: target.id, ok: false, reached: false, steps: [], accounts: [], skipped: [], leftovers: [],
     proof: [], signIns: [], keyId: null, keyCreated: false, error: null, backup: null, port: deps.port ?? 8318,
-    brokerUrl: target.kind === 'ssh' ? deps.brokerUrl : null,
+    brokerUrl: target.kind === 'ssh' ? deps.brokerUrl : null, refreshOnly,
   };
   const step = (text) => report.steps.push(text);
   const fail = (text) => { report.error = text; return report; };
@@ -1145,6 +1146,12 @@ export function keyForEnvironment(settings, label, { now = Date.now() } = {}) {
  * that never answered and was not known before is not remembered (a typo stays a typo); one
  * that was known and is unreachable now keeps its last good record, with the failed attempt
  * noted beside it, because a machine that is asleep is not broken.
+ *
+ * The start-up refresh (a report with `refreshOnly`) proves nothing and adds no account, so it
+ * leaves the outcome of the last full setup as it was: whether that passed, why it failed, which
+ * accounts it covered and when it ran. A refresh that itself failed is kept apart, in
+ * `refreshError`, and the next run clears it. Without this a refresh turned a setup whose proof
+ * had failed, or one still missing an account, into a clean record.
  */
 export function rememberT3Environment(settings, target, report, { leaseSha = null, now = Date.now() } = {}) {
   const envs = { ...(settings?.t3Environments ?? {}) };
@@ -1158,6 +1165,7 @@ export function rememberT3Environment(settings, target, report, { leaseSha = nul
     // Reached but refused before anything was written there (no T3, no claude, no broker).
     return settings;
   }
+  const kept = report.refreshOnly === true && prev ? prev : null;
   envs[target.id] = {
     id: target.id,
     kind: target.kind,
@@ -1165,13 +1173,14 @@ export function rememberT3Environment(settings, target, report, { leaseSha = nul
     keyId: report.keyId ?? prev?.keyId ?? null,
     port: report.port ?? prev?.port ?? null,
     brokerUrl: report.brokerUrl ?? prev?.brokerUrl ?? null,
-    lastSetupAt: now,
-    lastOk: Boolean(report.ok),
-    lastError: report.error ?? null,
+    lastSetupAt: kept ? (kept.lastSetupAt ?? null) : now,
+    lastOk: kept ? Boolean(kept.lastOk) : Boolean(report.ok),
+    lastError: kept ? (kept.lastError ?? null) : (report.error ?? null),
+    refreshError: kept ? (report.error ?? null) : null,
     lastAttemptAt: now,
     lastAttemptError: null,
-    accounts: (report.accounts ?? []).map((a) => a.id),
-    proofFailed: (report.proof ?? []).filter((r) => !r.ok && !r.cooling).map((r) => r.label),
+    accounts: kept ? (kept.accounts ?? []) : (report.accounts ?? []).map((a) => a.id),
+    proofFailed: kept ? (kept.proofFailed ?? []) : (report.proof ?? []).filter((r) => !r.ok && !r.cooling).map((r) => r.label),
     // Only a run that actually asked the machine replaces what is known about its sign-ins.
     signInsCheckedAt: report.signInsChecked ? now : (prev?.signInsCheckedAt ?? null),
     signInsMissing: report.signInsChecked
@@ -1183,6 +1192,11 @@ export function rememberT3Environment(settings, target, report, { leaseSha = nul
     codexAccounts: report.signInsChecked ? report.codexAccountIds : (prev?.codexAccounts ?? null),
     antigravity: report.signInsChecked ? report.antigravity : (prev?.antigravity ?? null),
     leaseSha: report.error ? (prev?.leaseSha ?? null) : leaseSha,
+    // A real Claude was moved out of this machine's wrapper folders (core/t3local.js). T3 goes
+    // on looking for it until a person restarts T3, so when it happened, and where the copy
+    // was put, are kept to say so: the start-up refresh does this with nobody watching.
+    restartT3At: report.restartT3 ? now : (prev?.restartT3At ?? null),
+    setAside: report.restartT3 ? (report.setAside ?? null) : (prev?.setAside ?? null),
   };
   return { ...settings, t3Environments: envs };
 }
@@ -1251,17 +1265,28 @@ function ageText(ms, now) {
   return `${Math.round(hours / 24)} days ago`;
 }
 
+// Switchboard cannot tell whether T3 has been restarted since a real Claude was moved out of a
+// wrapper folder, so the advice to restart it is shown for a day, with its age, rather than
+// for ever or not at all.
+const RESTART_T3_NOTE_MS = 24 * 60 * 60 * 1000;
+
 /**
  * One line of state per remembered environment, for `t3 status`, the Gateway tab and Health.
  * It is judged from what Switchboard knows here, without reaching out to the machine:
- * - failed: the last setup or proof failed, or the key it was given has since been revoked.
- * - stale: its lease wrapper is older than this Switchboard's (`wrapperOld`, which the tray's
- *   start-up refresh acts on), an account was added since, or the broker's port or address
- *   moved after it was set up. Running the setup again fixes each of these.
- * Each line carries its age, and a failed attempt to reach it since, so a reading is never
- * passed off as current.
+ * - failed: the last setup or proof failed, the key it was given has since been revoked, the
+ *   start-up refresh failed, or (this machine only) T3 starts a real Claude found in a wrapper
+ *   folder in the wrapper's place.
+ * - stale: its lease wrapper is older than this Switchboard's (`wrapperOld`), its wrapper
+ *   folders hold files Switchboard does not write (`foldersDirty`, this machine only), an
+ *   account was added since, or the broker's port or address moved after it was set up. The
+ *   tray's start-up refresh acts on the two flags. Running the setup again fixes each of these.
+ * `localFolders` is what localWrapperFolders (core/t3local.js) found in this machine's wrapper
+ * folders, or null when they were not looked at. `restartT3` on a line says a real Claude was
+ * moved out of those folders within the last day, so T3 may still have to be restarted; Health
+ * shows that even on a line that is otherwise fine. Each line carries its age, and a failed
+ * attempt to reach it since, so a reading is never passed off as current.
  */
-export function t3EnvironmentStatus(settings, { leaseSha = null, localLeaseSha = null, lendableIds = [], codexIds = [], antigravity = false, port = null, brokerUrl = null, now = Date.now() } = {}) {
+export function t3EnvironmentStatus(settings, { leaseSha = null, localLeaseSha = null, localFolders = null, lendableIds = [], codexIds = [], antigravity = false, port = null, brokerUrl = null, now = Date.now() } = {}) {
   return Object.values(settings?.t3Environments ?? {}).map((e) => {
     // This machine runs the Node.js lease client, the others the bash one; each is compared
     // with its own current version.
@@ -1273,10 +1298,19 @@ export function t3EnvironmentStatus(settings, { leaseSha = null, localLeaseSha =
     const missingAntigravity = antigravity && e.antigravity !== true;
     const wrapperOld = Boolean(shippedSha && e.leaseSha && e.leaseSha !== shippedSha);
     const keyGone = Boolean(e.keyId && !settings?.gatewayKeys?.[e.keyId]);
+    // Nothing but the folders themselves shows a wrapper that was taken over: T3 lists the
+    // entry as healthy, and the wrapper is never run to say otherwise.
+    const folders = e.kind === 'local' ? localFolders : null;
+    const takenOver = folders?.takenOver ?? [];
+    const dirtyFolders = folders?.extras ?? [];
+    const foldersDirty = takenOver.length > 0 || dirtyFolders.length > 0;
     const moved = [
       port != null && e.port != null && e.port !== port ? `the broker's port changed to ${port}` : null,
       e.kind === 'ssh' && brokerUrl && e.brokerUrl && e.brokerUrl !== brokerUrl ? `the broker's address changed to ${brokerUrl}` : null,
     ].filter(Boolean);
+    const takeoverNote = takenOver.length
+      ? `T3 Code starts a copy of Claude found in ${takenOver.join(', ')} in place of Switchboard's wrapper, so ${takenOver.length === 1 ? 'that entry uses' : 'those entries use'} this computer's own Claude sign-in`
+      : null;
     let state = 'ok';
     let detail = `${(e.accounts ?? []).length} accounts`;
     if (!e.lastOk) {
@@ -1285,16 +1319,29 @@ export function t3EnvironmentStatus(settings, { leaseSha = null, localLeaseSha =
     } else if (keyGone) {
       state = 'failed';
       detail = 'the client key it was given has been revoked';
-    } else if (wrapperOld || missing.length || missingCodex.length || missingAntigravity || moved.length) {
+    } else if (e.refreshError) {
+      state = 'failed';
+      detail = e.refreshError;
+    } else if (takeoverNote) {
+      state = 'failed';
+      detail = takeoverNote;
+    } else if (wrapperOld || foldersDirty || missing.length || missingCodex.length || missingAntigravity || moved.length) {
       state = 'stale';
-      detail = [wrapperOld ? 'the lease wrapper there is out of date' : null, missing.length ? `not yet set up for ${missing.join(', ')}` : null,
+      detail = [wrapperOld ? 'the lease wrapper there is out of date' : null,
+        foldersDirty ? `its wrapper folders hold files this Switchboard does not write (${dirtyFolders.join(', ')})` : null,
+        missing.length ? `not yet set up for ${missing.join(', ')}` : null,
         missingCodex.length ? `no Codex entry yet for ${missingCodex.join(', ')}` : null, missingAntigravity ? 'no Antigravity entry yet' : null, ...moved].filter(Boolean).join('; ');
     }
+    // An earlier failure, a revoked key or a failed refresh names only itself, and T3 goes on
+    // running that entry on this computer's sign-in whatever else is wrong, so it is said too.
+    if (takeoverNote && detail !== takeoverNote) detail += `; ${takeoverNote}`;
     const checked = ageText(e.signInsCheckedAt ?? e.lastSetupAt, now);
     if (e.signInsMissing?.length) detail += `; still to sign in: ${e.signInsMissing.join(', ')} (checked ${checked})`;
     else if (e.signInsCheckedAt) detail += `; sign-ins checked ${checked}`;
     detail += `; set up ${ageText(e.lastSetupAt, now)}`;
     if (e.lastAttemptError) detail += `; could not reach it ${ageText(e.lastAttemptAt, now)} (${e.lastAttemptError})`;
-    return { id: e.id, kind: e.kind, name: e.name, state, detail, wrapperOld, signInsMissing: e.signInsMissing ?? [], signInsTodo: (e.signInsTodo ?? []).filter((x) => x.how), signInsCheckedAt: e.signInsCheckedAt ?? null, lastSetupAt: e.lastSetupAt ?? null };
+    const restartT3 = Boolean(e.restartT3At && now >= e.restartT3At && now - e.restartT3At < RESTART_T3_NOTE_MS);
+    if (restartT3) detail += `; a copy of Claude was moved out of its wrapper folders ${ageText(e.restartT3At, now)}${e.setAside ? ` (kept in ${e.setAside})` : ''}: restart T3 Code if its Switchboard entries do not start`;
+    return { id: e.id, kind: e.kind, name: e.name, state, detail, wrapperOld, foldersDirty, restartT3, signInsMissing: e.signInsMissing ?? [], signInsTodo: (e.signInsTodo ?? []).filter((x) => x.how), signInsCheckedAt: e.signInsCheckedAt ?? null, lastSetupAt: e.lastSetupAt ?? null };
   });
 }

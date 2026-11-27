@@ -10,11 +10,11 @@ import { listWslDistros, inspectLaneLeaseCredential } from './gateway.js';
 import {
   parseT3Target, setupT3Environment, rememberT3Environment, forgetT3Environment, keyForEnvironment, runScript,
   t3EnvironmentStatus, lendableClaudeAccounts, sha256, codexAccountsFor, inspectScript, parseInspect, signInsFor,
-  codexSignInCommand, enabledAntigravityIds, rememberSignIns, rememberAttempt,
+  codexSignInCommand, enabledAntigravityIds, rememberSignIns, rememberAttempt, LOCAL_TARGET,
 } from './t3env.js';
 import {
   setupLocalT3Environment, readLocalLeaseClient, currentLocalLeaseSha, inspectLocal, localCodexAccounts,
-  localCodexSignInCommand,
+  localCodexSignInCommand, localWrapperFolders,
 } from './t3local.js';
 
 /**
@@ -80,7 +80,9 @@ export async function wslDistrosCached({ now = Date.now(), maxAgeMs = 60000 } = 
 /** Turn targets as typed (or `--all`) into parsed targets, with the WSL distros on this machine. */
 export async function resolveTargets(specs, { all = false, settings = loadSettings(), wslDistros = null } = {}) {
   const distros = wslDistros ?? await wslDistrosCached();
-  if (all) return Object.values(settings.t3Environments ?? {}).map((e) => parseT3Target(`${e.kind}:${e.name}`, distros));
+  // By the remembered id, which is what was typed: this machine's is the bare word `local`, and
+  // rebuilding it from kind and name ("local:this computer") names nothing and stopped --all.
+  if (all) return Object.values(settings.t3Environments ?? {}).map((e) => parseT3Target(e.id, distros));
   if (!specs.length) return distros.map((d) => parseT3Target(`wsl:${d}`, distros));
   return specs.map((s) => parseT3Target(s, distros));
 }
@@ -172,14 +174,26 @@ export async function withT3Lock(fn) {
 }
 
 /**
- * The tray's start-up refresh: every remembered environment whose lease wrapper is older than
- * this Switchboard gets the current wrappers, nothing more (see setupT3Environment's
- * refreshOnly: no key is made, T3's settings are not written, nothing is proved).
+ * The environments the start-up refresh acts on, from the status list: one whose lease wrapper
+ * is older than this Switchboard, and this machine when its wrapper folders hold something
+ * Switchboard does not write. The second matters most: a real Claude in such a folder is
+ * started by T3 in the wrapper's place, on this machine's own sign-in, for as long as it lies
+ * there, and no one is told.
  */
-export async function refreshStaleT3Environments() {
-  const stale = currentT3Status().filter((e) => e.wrapperOld);
+export function environmentsToRefresh(rows) {
+  return rows.filter((e) => e.wrapperOld || e.foldersDirty);
+}
+
+/**
+ * The tray's start-up refresh: every environment environmentsToRefresh names gets the current
+ * wrappers and has its wrapper folders cleared, nothing more (see setupT3Environment's
+ * refreshOnly: no key is made, T3's settings are not written, nothing is proved).
+ * `status`, `setup` and `resolve` exist for tests.
+ */
+export async function refreshStaleT3Environments({ status = currentT3Status, setup = runT3Setup, resolve = resolveTargets } = {}) {
+  const stale = environmentsToRefresh(status());
   if (!stale.length) return [];
-  const res = await withT3Lock(async () => runT3Setup(await resolveTargets(stale.map((e) => e.id)), { refreshOnly: true }));
+  const res = await withT3Lock(async () => setup(await resolve(stale.map((e) => e.id)), { refreshOnly: true }));
   return res.value ?? [];
 }
 
@@ -188,13 +202,34 @@ export function forgetT3(targetId) {
   saveSettings(forgetT3Environment(loadSettings(), targetId));
 }
 
-/** The status list with the facts it is judged against filled in from this machine. */
-export function currentT3Status({ hostIp = null, settings = loadSettings(), registry = loadRegistry(), antigravity = null } = {}) {
+/**
+ * What is in this machine's wrapper folders, for the status list and Health, or null when this
+ * machine's own T3 was never set up (there is then nothing to look at, and nothing is read).
+ * `home` exists for tests.
+ */
+export function currentLocalWrapperFolders(settings = loadSettings(), home = undefined) {
+  return settings?.t3Environments?.[LOCAL_TARGET.id] ? localWrapperFolders(home) : null;
+}
+
+/**
+ * What Health is told about T3 environments from this machine, under runChecks' own names. It
+ * is gathered here so the CLI and the tray cannot hand Health different facts. `home` exists
+ * for tests.
+ */
+export function t3HealthInputs({ settings = loadSettings(), home = undefined } = {}) {
+  return { t3LeaseSha: currentLeaseSha(), t3LocalFolders: currentLocalWrapperFolders(settings, home) };
+}
+
+/**
+ * The status list with the facts it is judged against filled in from this machine. `home`
+ * exists for tests.
+ */
+export function currentT3Status({ hostIp = null, settings = loadSettings(), registry = loadRegistry(), antigravity = null, home = undefined, localFolders = currentLocalWrapperFolders(settings, home) } = {}) {
   const addresses = brokerAddresses(settings, { hostIp });
   const lendableIds = lendableClaudeAccounts(registry, settings, { canLend: brokerCanLend(settings) }).lendable.map((a) => a.id);
   const codexIds = codexAccountsFor(registry).map((a) => a.id);
   return t3EnvironmentStatus(settings, {
-    leaseSha: currentLeaseSha(), localLeaseSha: currentLocalLeaseSha(), lendableIds, codexIds, antigravity: antigravity ?? usesAntigravity({ settings }),
+    leaseSha: currentLeaseSha(), localLeaseSha: currentLocalLeaseSha(), localFolders, lendableIds, codexIds, antigravity: antigravity ?? usesAntigravity({ settings }),
     port: addresses.port, brokerUrl: addresses.lanUrl,
   });
 }

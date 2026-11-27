@@ -339,6 +339,7 @@ export async function runChecks({
   fetchImpl = fetch,
   isInstalled = null,
   t3LeaseSha = null,
+  t3LocalFolders = null,
   now = Date.now(),
 } = {}) {
   const checks = [];
@@ -545,9 +546,26 @@ export async function runChecks({
   //     setup or proof run failed cannot borrow, and one whose wrapper is older than this
   //     Switchboard, or that lacks an account added since, is missing something. Each says
   //     the command that puts it right; nothing here reaches out to the machine itself.
+  //     `t3LocalFolders` is what the caller found in this machine's own wrapper folders: a real
+  //     Claude in one is started by T3 in the wrapper's place, and only the folder shows it.
   const lendableIds = lendableClaudeAccounts({ accounts }, settings ?? {}).lendable.map((a) => a.id);
-  for (const env of t3EnvironmentStatus(settings ?? {}, { leaseSha: t3LeaseSha, lendableIds })) {
-    if (env.state === 'ok') continue;
+  for (const env of t3EnvironmentStatus(settings ?? {}, { leaseSha: t3LeaseSha, localFolders: t3LocalFolders, lendableIds, now })) {
+    if (env.state === 'ok') {
+      // The start-up refresh moves a real Claude out of this machine's wrapper folders with
+      // nobody watching, and T3 then cannot start those entries until it is restarted. Setting
+      // up again would change nothing, so this line carries the restart advice alone, for as
+      // long as the status line does. It is information, not a warning: Switchboard cannot
+      // tell whether T3 has been restarted since.
+      if (env.restartT3) {
+        checks.push({
+          id: `t3-env-${env.id}`,
+          level: 'info',
+          title: `T3 Code may need a restart before its Switchboard entries start (${env.id})`,
+          detail: `${env.detail}.`,
+        });
+      }
+      continue;
+    }
     checks.push({
       id: `t3-env-${env.id}`,
       level: 'warn',

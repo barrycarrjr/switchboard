@@ -640,9 +640,9 @@ that machine; `switchboard t3 sign-in <target>` runs Codex's one-time device-cod
 there, and Antigravity's is done in T3 itself (after installing Node.js on that machine, which
 T3 needs for Antigravity and which the advice then says first). On WSL it also adds a small
 `~/.local/bin/xdg-open` that opens links in the Windows browser, because T3's Antigravity
-program opens its Google sign-in page with that command and WSL has none. Health warns when an environment's setup failed or
-its wrapper is older than this Switchboard. The full behaviour is in
-`docs/references/cli-commands.md`.
+program opens its Google sign-in page with that command and WSL has none. Health warns when an environment's setup failed,
+its wrapper is older than this Switchboard, or (on this machine) T3 would start something
+other than the wrapper. The full behaviour is in `docs/references/cli-commands.md`.
 
 The target `local` is T3 Code on this Windows machine itself, which gets the same entries.
 T3 on Windows cannot start a script file as Claude, but it does start the folder layout an
@@ -652,6 +652,23 @@ npm install of Claude leaves, so each account gets a folder of that shape under
 (T3 runs the entries with it). New entries use `~/.claude` as their config folder, so their
 conversations stay in one place whichever account Switchboard last picked. The entries T3
 already had for this machine's own sign-ins are left as they are.
+
+Each of those folders holds exactly two files, the `.cmd` and the `cli.js`, and Switchboard
+keeps it that way, because T3 decides from the folder's contents what to start and what to
+offer. T3 looks for a real Claude (`node_modules/@anthropic-ai/claude-code/bin/claude.exe`)
+before the `cli.js`, so one installed there is started in the wrapper's place: the entry
+then runs on the sign-in in `~/.claude` whatever account it is named for, nothing is
+borrowed, and T3 still shows the entry as healthy. And a `package.json` beside the `cli.js`
+makes T3 take the folder for an npm install of Claude and offer to update it, which installs
+exactly such a copy. Versions up to 0.36.6 wrote that `package.json`; it is no longer
+written, and an old one is removed. Every setup, and the tray at start while the gateway is
+on, moves anything else found in those folders to `~/.local/share/switchboard/t3-set-aside`
+(moved, not deleted: it may be a program that is running, and it is yours to delete). When a
+real Claude was moved out, restart T3 Code: it keeps looking for the copy it found when it
+started, so those entries do not start until then. `switchboard t3 status`, the Gateway tab
+and Health say so when T3 would start something other than the wrapper, and for a day after
+such a copy was moved out they carry the advice to restart T3 Code. The setup's proof fails
+for an entry T3 would not run the wrapper for.
 
 When a run on a lent account comes back refused for a limit, the lease wrapper reports it
 with the reset time the vendor stated, and the broker lends that lane to nobody until then,
